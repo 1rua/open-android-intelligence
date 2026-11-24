@@ -1,6 +1,9 @@
 package com.openandroidintelligence.conversation.motion
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.os.Build
+import android.view.View
 import androidx.activity.BackEventCompat
 import androidx.activity.OnBackPressedDispatcher
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
@@ -18,9 +21,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
@@ -31,8 +38,11 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.click
@@ -1021,5 +1031,191 @@ class SharedTransitionsAndPredictiveBackTest {
         compose.waitForIdle()
         assertEquals(1f, capturedController.openProgress.value, 0.001f)
         assertEquals(0f, compose.onNodeWithTag("overlay-blank-surface").fetchSemanticsNode().positionInRoot.x, 0.5f)
+    }
+
+    @Test
+    fun fullscreenOverlayAllowsInnerVerticalScrollAndJitteryClicksWithoutLeakingToBackground() {
+        var bgClicks = 0
+        var innerClicks = 0
+        lateinit var innerScrollState: androidx.compose.foundation.ScrollState
+        lateinit var bgScrollState: androidx.compose.foundation.ScrollState
+
+        compose.setContent {
+            OpenAndroidIntelligenceTheme(reduceMotion = false) {
+                Box(Modifier.size(240.dp)) {
+                    val controller = rememberPredictiveOverlayBackController(
+                        overlayOpen = true,
+                        enabled = true,
+                        reduced = false,
+                        onDismiss = {},
+                        sdkInt = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+                    )
+                    FullscreenPredictiveSlideOverlay(
+                        controller = controller,
+                        reduced = false,
+                        modifier = Modifier.fillMaxSize(),
+                        backgroundContent = {
+                            bgScrollState = rememberScrollState()
+                            Column(
+                                Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(bgScrollState)
+                                    .testTag("bg-scroll"),
+                            ) {
+                                repeat(10) { idx ->
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .height(48.dp)
+                                            .clickable { bgClicks++ },
+                                    ) {
+                                        Text("BgRow-$idx")
+                                    }
+                                }
+                            }
+                        },
+                        overlayContent = {
+                            innerScrollState = rememberScrollState()
+                            Column(
+                                Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(innerScrollState)
+                                    .testTag("overlay-scroll"),
+                            ) {
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .clickable { innerClicks++ }
+                                        .testTag("inner-button"),
+                                ) {
+                                    Text("InnerButton")
+                                }
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .testTag("overlay-blank"),
+                                ) {
+                                    Text("OverlayBlank")
+                                }
+                                repeat(10) { idx ->
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .height(48.dp),
+                                    ) {
+                                        Text("InnerRow-$idx")
+                                    }
+                                }
+                            }
+                        },
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        // 1. 内层带微抖动点击应稳定触发，不受外层 pointerInput 干扰
+        compose.onNodeWithTag("inner-button").performTouchInput {
+            down(center)
+            advanceEventTime(16)
+            moveBy(Offset(2f, 2f))
+            advanceEventTime(16)
+            up()
+        }
+        compose.waitForIdle()
+        assertEquals("微抖动点击应正常触发内层回调", 1, innerClicks)
+
+        // 2. 内层小步增量竖向拖动应顺畅滚动，且不穿透到底层背景
+        compose.onNodeWithTag("overlay-scroll").performTouchInput {
+            down(center)
+            repeat(5) {
+                advanceEventTime(16)
+                moveBy(Offset(0f, -20f))
+            }
+            up()
+        }
+        compose.waitForIdle()
+        assertTrue("内层应顺畅滚动: innerScroll=${innerScrollState.value}", innerScrollState.value > 0)
+        assertEquals("覆盖层滚动不得穿透到底层背景", 0, bgScrollState.value)
+
+        // 3. 覆盖层空白区域点击与滑动均不得穿透到底层背景
+        compose.onNodeWithTag("overlay-blank").performTouchInput { click(center) }
+        compose.waitForIdle()
+        assertEquals("覆盖层空白区域点击不得穿透到底层", 0, bgClicks)
+        assertEquals("覆盖层操作后底层滚动仍保持为 0", 0, bgScrollState.value)
+    }
+
+    @Test
+    fun fullscreenOverlaySkipsBackgroundDrawWhenFullySettledAndResumesOnDrag() {
+        var bgDrawCount = 0
+        var overlayTick by mutableIntStateOf(0)
+        lateinit var dispatcher: OnBackPressedDispatcher
+        lateinit var hostView: View
+
+        compose.setContent {
+            dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
+            hostView = LocalView.current
+            OpenAndroidIntelligenceTheme(reduceMotion = false) {
+                Box(Modifier.size(240.dp)) {
+                    val controller = rememberPredictiveOverlayBackController(
+                        overlayOpen = true,
+                        enabled = true,
+                        reduced = false,
+                        onDismiss = {},
+                        sdkInt = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+                    )
+                    FullscreenPredictiveSlideOverlay(
+                        controller = controller,
+                        reduced = false,
+                        modifier = Modifier.fillMaxSize(),
+                        backgroundContent = {
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .drawBehind { bgDrawCount++ },
+                            ) {
+                                Text("OverlayBg")
+                            }
+                        },
+                        overlayContent = {
+                            Box(Modifier.fillMaxSize()) {
+                                Text("OverlayFg-$overlayTick")
+                            }
+                        },
+                    )
+                }
+            }
+        }
+        fun triggerDraw() {
+            compose.runOnIdle {
+                val bitmap = Bitmap.createBitmap(
+                    hostView.width.coerceAtLeast(1),
+                    hostView.height.coerceAtLeast(1),
+                    Bitmap.Config.ARGB_8888,
+                )
+                hostView.draw(Canvas(bitmap))
+            }
+        }
+        compose.waitForIdle()
+        triggerDraw()
+        val settledBgDraws = bgDrawCount
+        assertEquals("覆盖层全开遮挡时底层背景应完全跳过绘制", 0, settledBgDraws)
+
+        // 覆盖层完全遮挡且静止时，触发前景内容更新并重绘不得连带重绘底层背景
+        compose.runOnIdle { overlayTick = 1 }
+        compose.waitForIdle()
+        triggerDraw()
+        assertEquals("覆盖层全开遮挡时前景重绘不得触发底层背景绘制", settledBgDraws, bgDrawCount)
+
+        // 派发预测性返回露出底层后，底层背景立即恢复绘制
+        compose.runOnIdle {
+            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 100f, 0f, BackEventCompat.EDGE_LEFT))
+            dispatcher.dispatchOnBackProgressed(BackEventCompat(96f, 100f, 0.4f, BackEventCompat.EDGE_LEFT))
+        }
+        compose.waitForIdle()
+        triggerDraw()
+        assertTrue("预测返回露出底层后应恢复背景绘制: settled=$settledBgDraws, afterDrag=$bgDrawCount", bgDrawCount > settledBgDraws)
     }
 }

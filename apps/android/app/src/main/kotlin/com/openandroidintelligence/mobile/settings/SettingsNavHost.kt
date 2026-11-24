@@ -3,7 +3,6 @@ package com.openandroidintelligence.mobile.settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -49,7 +48,6 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.openandroidintelligence.conversation.components.SettingsNavigationItem
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
-import com.openandroidintelligence.conversation.motion.AppSharedTransitionHost
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.motion.LocalPredictiveOverlayBackController
 import com.openandroidintelligence.conversation.motion.NavPageTransitionRole
@@ -78,8 +76,11 @@ import com.openandroidintelligence.mobile.settings.security.AuditSettingsScreen
 import com.openandroidintelligence.mobile.updates.AppUpdateRoute
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.isReduced
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
-@OptIn(ExperimentalSharedTransitionApi::class)
+private val OverviewCardPadding = PaddingValues()
+
 @Composable
 internal fun SettingsNavHost(
     viewModel: SettingsViewModel,
@@ -91,7 +92,9 @@ internal fun SettingsNavHost(
     remoteRuntime: com.openandroidintelligence.mobile.RemoteRuntime? = null,
     hostOpen: Boolean = true,
 ) {
-    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val localError by remember(viewModel) {
+        viewModel.uiState.map { it.localError }.distinctUntilChanged()
+    }.collectAsStateWithLifecycle(initialValue = viewModel.uiState.value.localError)
     val localRuntime = viewModel.localSettingsRuntime
     val nav = rememberNavController()
     val entry by nav.currentBackStackEntryAsState()
@@ -117,8 +120,8 @@ internal fun SettingsNavHost(
         lifecycle.lifecycle.addObserver(observer)
         onDispose { lifecycle.lifecycle.removeObserver(observer) }
     }
-    LaunchedEffect(uiState.localError, navigationError) {
-        val message = uiState.localError ?: navigationError ?: return@LaunchedEffect
+    LaunchedEffect(localError, navigationError) {
+        val message = localError ?: navigationError ?: return@LaunchedEffect
         snackbar.showSnackbar(message, withDismissAction = true)
         viewModel.dismissLocalError()
         navigationError = null
@@ -200,7 +203,7 @@ internal fun SettingsNavHost(
         null
     }
     BackHandler(enabled = hostOpen && atOverview && presentation == SettingsPresentation.SIDEBAR, onBack = onBack)
-    // 设置内部自带独立 SharedTransitionHost，确保跨 840dp 断点移动 movableSettings 时作用域与导航状态完整保留。
+    // 设置内部无跨路由共享边界需求，避免挂载冗余 SharedTransitionLayout（LookaheadScope）引发双倍测量。
     val hostModifier = if (standaloneBackState != null) {
         modifier
             .fillMaxSize()
@@ -211,152 +214,154 @@ internal fun SettingsNavHost(
     } else {
         modifier.fillMaxSize()
     }
-    AppSharedTransitionHost(hostModifier) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(containerColor)
-                .clipToBounds(),
+    Box(
+        hostModifier
+            .background(containerColor)
+            .clipToBounds(),
+    ) {
+        NavHost(
+            navController = nav,
+            startDestination = SettingsRoutes.OVERVIEW,
+            modifier = Modifier.fillMaxSize(),
+            enterTransition = {
+                transitionRoles[targetState.id] = NavPageTransitionRole.FOREGROUND
+                AppTransitions.navEnter(reduce)
+            },
+            exitTransition = {
+                transitionRoles[initialState.id] = NavPageTransitionRole.BACKGROUND
+                AppTransitions.navExit(reduce)
+            },
+            popEnterTransition = {
+                transitionRoles[targetState.id] = NavPageTransitionRole.BACKGROUND
+                AppTransitions.navPopEnter(reduce)
+            },
+            popExitTransition = {
+                transitionRoles[initialState.id] = NavPageTransitionRole.FOREGROUND
+                AppTransitions.navPopExit(reduce)
+            },
         ) {
-            NavHost(
-                navController = nav,
-                startDestination = SettingsRoutes.OVERVIEW,
-                modifier = Modifier.fillMaxSize(),
-                enterTransition = {
-                    transitionRoles[targetState.id] = NavPageTransitionRole.FOREGROUND
-                    AppTransitions.navEnter(reduce)
-                },
-                exitTransition = {
-                    transitionRoles[initialState.id] = NavPageTransitionRole.BACKGROUND
-                    AppTransitions.navExit(reduce)
-                },
-                popEnterTransition = {
-                    transitionRoles[targetState.id] = NavPageTransitionRole.BACKGROUND
-                    AppTransitions.navPopEnter(reduce)
-                },
-                popExitTransition = {
-                    transitionRoles[initialState.id] = NavPageTransitionRole.FOREGROUND
-                    AppTransitions.navPopExit(reduce)
-                },
-            ) {
-                val roleProvider: (String) -> NavPageTransitionRole? = { entryId -> transitionRoles[entryId] }
-                settingsComposable(SettingsRoutes.OVERVIEW, containerColor, roleProvider, reduce) {
-                    SettingsPageScaffold("设置", presentation, onBack, closeSemantics = presentation == SettingsPresentation.SIDEBAR) { padding ->
-                        SettingsPageColumn(padding) {
-                            SettingsCategory.entries.forEach { category ->
-                                SettingsSectionCard(contentPadding = PaddingValues()) {
-                                    SettingsNavigationItem(
-                                        category.label,
-                                        supporting = category.summary,
-                                        icon = when (category) {
-                                            SettingsCategory.APPEARANCE -> Icons.Default.Palette
-                                            SettingsCategory.CONNECTION -> Icons.Default.Hub
-                                            SettingsCategory.NOTIFICATIONS -> Icons.Default.Notifications
-                                            SettingsCategory.CAPABILITIES -> Icons.Default.Extension
-                                            SettingsCategory.SECURITY -> Icons.Default.Security
-                                            SettingsCategory.ADVANCED -> Icons.Default.Info
-                                        },
-                                        onClick = { open(category.route) },
-                                    )
-                                }
+            val roleProvider: (String) -> NavPageTransitionRole? = { entryId -> transitionRoles[entryId] }
+            settingsComposable(SettingsRoutes.OVERVIEW, containerColor, roleProvider, reduce) {
+                SettingsPageScaffold("设置", presentation, onBack, closeSemantics = presentation == SettingsPresentation.SIDEBAR) { padding ->
+                    SettingsPageColumn(padding) {
+                        SettingsCategory.entries.forEach { category ->
+                            SettingsSectionCard(contentPadding = OverviewCardPadding) {
+                                SettingsNavigationItem(
+                                    category.label,
+                                    supporting = category.summary,
+                                    icon = when (category) {
+                                        SettingsCategory.APPEARANCE -> Icons.Default.Palette
+                                        SettingsCategory.CONNECTION -> Icons.Default.Hub
+                                        SettingsCategory.NOTIFICATIONS -> Icons.Default.Notifications
+                                        SettingsCategory.CAPABILITIES -> Icons.Default.Extension
+                                        SettingsCategory.SECURITY -> Icons.Default.Security
+                                        SettingsCategory.ADVANCED -> Icons.Default.Info
+                                    },
+                                    onClick = { open(category.route) },
+                                )
                             }
                         }
                     }
                 }
-                settingsComposable(SettingsRoutes.APPEARANCE, containerColor, roleProvider, reduce) {
-                    AppearanceSettingsScreen(uiState, presentation, ::back, viewModel::setTheme, viewModel::setDynamicColor,
-                        viewModel::setDynamicIconColor, viewModel::setPalette, viewModel::setReduceMotion,
-                        onStreamingHapticFeedbackChange = viewModel::setStreamingHapticFeedback)
-                }
-                settingsComposable(SettingsRoutes.GATEWAY, containerColor, roleProvider, reduce) {
-                    if (remoteRuntime != null) com.openandroidintelligence.mobile.RemoteConnectionSettingsScreen(remoteRuntime, presentation, ::back,
-                        onOpenDiagnostics = { open(SettingsRoutes.CONNECTION_DETAILS) })
-                    else SettingsPageScaffold("Remote", presentation, ::back) { padding ->
-                        SettingsPageColumn(padding) { Text(androidx.compose.ui.res.stringResource(com.openandroidintelligence.ui.resources.R.string.remote_conversation_not_ready)) }
-                    }
-                }
-                settingsComposable(SettingsRoutes.CONNECTION_DETAILS, containerColor, roleProvider, reduce) {
-                    if (remoteRuntime != null) com.openandroidintelligence.mobile.RemoteConnectionDiagnosticsScreen(remoteRuntime, presentation, ::back)
-                }
-                settingsComposable(SettingsRoutes.REMINDERS, containerColor, roleProvider, reduce) {
-                    NotificationSettingsScreen(uiState, presentation, ::back, ::setNotifications)
-                }
-                settingsComposable(SettingsRoutes.PAIRING, containerColor, roleProvider, reduce) {
-                    DeviceCapabilitiesScreen(environment, localRuntime, presentation, ::back,
-                        onOpenCapability = { plugin, capability -> open(capabilitySettingsRoute(plugin, capability)) },
-                        onOpenPlugins = { open(SettingsRoutes.PLUGINS) })
-                }
-                settingsComposable(
-                    route = SettingsRoutes.CAPABILITY,
-                    containerColor = containerColor,
-                    roleProvider = roleProvider,
-                    reduced = reduce,
-                    arguments = listOf(navArgument("pluginId") { type = NavType.StringType }, navArgument("capability") { type = NavType.StringType }),
-                ) { destination ->
-                    CapabilitySettingsScreen(destination.arguments?.getString("pluginId").orEmpty(), destination.arguments?.getString("capability").orEmpty(),
-                        environment, localRuntime, presentation, ::back, onRequestScreenCaptureAuthorization,
-                        onOpenPlugins = { open(SettingsRoutes.PLUGINS) })
-                }
-                settingsComposable(SettingsRoutes.SCREEN_CAPABILITY, containerColor, roleProvider, reduce) {
-                    CapabilitySettingsScreen("org.openandroidintelligence.screen-reader", "org.openandroidintelligence.screen-reader.read",
-                        environment, localRuntime, presentation, ::back, onRequestScreenCaptureAuthorization,
-                        onOpenPlugins = { open(SettingsRoutes.PLUGINS) }, showAllScreenCapabilities = true)
-                }
-                settingsComposable(SettingsRoutes.PLUGINS, containerColor, roleProvider, reduce) {
-                    PluginManagementScreen(uiState.allowRuntimePlugins, uiState.pluginRuntimesWired, ::back,
-                        onOpenNotificationSettings = { open(SettingsRoutes.NOTIFICATIONS) }, presentation = presentation,
-                        onOpenCapability = { plugin, capability -> open(capabilitySettingsRoute(plugin, capability)) },
-                        onOpenScreen = { open(SettingsRoutes.SCREEN_CAPABILITY) }, onOpenAuthorizations = { open(SettingsRoutes.PAIRING) })
-                }
-                composable(SettingsRoutes.NOTIFICATIONS) {
-                    Box(Modifier.fillMaxSize().background(containerColor))
-                    LaunchedEffect(Unit) {
-                        nav.navigate(notificationReadingRoute) {
-                            popUpTo(SettingsRoutes.NOTIFICATIONS) { inclusive = true }
-                            launchSingleTop = true
-                        }
-                    }
-                }
-                // 主动推送不再是独立页面：配置就在各能力详情里。旧路由仍可达，但只做重定向，
-                // 避免外部深链或旧返回栈落到一个不存在的页面。
-                composable(SettingsRoutes.DEVICE_PUSH) {
-                    Box(Modifier.fillMaxSize().background(containerColor))
-                    LaunchedEffect(Unit) {
-                        nav.navigate(notificationReadingRoute) {
-                            popUpTo(SettingsRoutes.DEVICE_PUSH) { inclusive = true }
-                            launchSingleTop = true
-                        }
-                    }
-                }
-                settingsComposable(SettingsRoutes.SECURITY, containerColor, roleProvider, reduce) {
-                    SecuritySettingsScreen(uiState, presentation, ::back,
-                        onToggleTrustMode = { if (it) trustDialog = true else viewModel.disableTrustMode() },
-                        onOpenAudit = { open(SettingsRoutes.AUDIT_LOG) }, onRequestEmergencyStop = { emergencyDialog = true })
-                }
-                settingsComposable(SettingsRoutes.AUDIT_LOG, containerColor, roleProvider, reduce) {
-                    AuditSettingsScreen(uiState, presentation, ::back)
-                }
-                settingsComposable(SettingsRoutes.ADVANCED, containerColor, roleProvider, reduce) {
-                    AdvancedSettingsScreen(localRuntime, presentation, ::back,
-                        onOpenUpdates = { open(SettingsRoutes.APP_UPDATES) }, onOpenBuildDetails = { open(SettingsRoutes.BUILD_DETAILS) },
-                        onOpenLicenses = { open(SettingsRoutes.LICENSES) }, onOpenBackup = { open(SettingsRoutes.BACKUP) },
-                        onReplayOnboarding = { app?.onboardingPreferences?.startReplay(); onBack() }, remoteRuntime = remoteRuntime)
-                }
-                settingsComposable(SettingsRoutes.APP_UPDATES, containerColor, roleProvider, reduce) {
-                    AppUpdateRoute(onBack = ::back, presentation = presentation)
-                }
-                settingsComposable(SettingsRoutes.BUILD_DETAILS, containerColor, roleProvider, reduce) {
-                    BuildDetailsScreen(presentation, ::back)
-                }
-                settingsComposable(SettingsRoutes.LICENSES, containerColor, roleProvider, reduce) {
-                    OpenSourceNoticesScreen(presentation, ::back)
-                }
-                settingsComposable(SettingsRoutes.BACKUP, containerColor, roleProvider, reduce) {
-                    SettingsBackupRoute(presentation, ::back, remoteRuntime)
+            }
+            settingsComposable(SettingsRoutes.APPEARANCE, containerColor, roleProvider, reduce) {
+                val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+                AppearanceSettingsScreen(uiState, presentation, ::back, viewModel::setTheme, viewModel::setDynamicColor,
+                    viewModel::setDynamicIconColor, viewModel::setPalette, viewModel::setReduceMotion,
+                    onStreamingHapticFeedbackChange = viewModel::setStreamingHapticFeedback)
+            }
+            settingsComposable(SettingsRoutes.GATEWAY, containerColor, roleProvider, reduce) {
+                if (remoteRuntime != null) com.openandroidintelligence.mobile.RemoteConnectionSettingsScreen(remoteRuntime, presentation, ::back,
+                    onOpenDiagnostics = { open(SettingsRoutes.CONNECTION_DETAILS) })
+                else SettingsPageScaffold("Remote", presentation, ::back) { padding ->
+                    SettingsPageColumn(padding) { Text(androidx.compose.ui.res.stringResource(com.openandroidintelligence.ui.resources.R.string.remote_conversation_not_ready)) }
                 }
             }
-            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter))
+            settingsComposable(SettingsRoutes.CONNECTION_DETAILS, containerColor, roleProvider, reduce) {
+                if (remoteRuntime != null) com.openandroidintelligence.mobile.RemoteConnectionDiagnosticsScreen(remoteRuntime, presentation, ::back)
+            }
+            settingsComposable(SettingsRoutes.REMINDERS, containerColor, roleProvider, reduce) {
+                val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+                NotificationSettingsScreen(uiState, presentation, ::back, ::setNotifications)
+            }
+            settingsComposable(SettingsRoutes.PAIRING, containerColor, roleProvider, reduce) {
+                DeviceCapabilitiesScreen(environment, localRuntime, presentation, ::back,
+                    onOpenCapability = { plugin, capability -> open(capabilitySettingsRoute(plugin, capability)) },
+                    onOpenPlugins = { open(SettingsRoutes.PLUGINS) })
+            }
+            settingsComposable(
+                route = SettingsRoutes.CAPABILITY,
+                containerColor = containerColor,
+                roleProvider = roleProvider,
+                reduced = reduce,
+                arguments = listOf(navArgument("pluginId") { type = NavType.StringType }, navArgument("capability") { type = NavType.StringType }),
+            ) { destination ->
+                CapabilitySettingsScreen(destination.arguments?.getString("pluginId").orEmpty(), destination.arguments?.getString("capability").orEmpty(),
+                    environment, localRuntime, presentation, ::back, onRequestScreenCaptureAuthorization,
+                    onOpenPlugins = { open(SettingsRoutes.PLUGINS) })
+            }
+            settingsComposable(SettingsRoutes.SCREEN_CAPABILITY, containerColor, roleProvider, reduce) {
+                CapabilitySettingsScreen("org.openandroidintelligence.screen-reader", "org.openandroidintelligence.screen-reader.read",
+                    environment, localRuntime, presentation, ::back, onRequestScreenCaptureAuthorization,
+                    onOpenPlugins = { open(SettingsRoutes.PLUGINS) }, showAllScreenCapabilities = true)
+            }
+            settingsComposable(SettingsRoutes.PLUGINS, containerColor, roleProvider, reduce) {
+                val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+                PluginManagementScreen(uiState.allowRuntimePlugins, uiState.pluginRuntimesWired, ::back,
+                    onOpenNotificationSettings = { open(SettingsRoutes.NOTIFICATIONS) }, presentation = presentation,
+                    onOpenCapability = { plugin, capability -> open(capabilitySettingsRoute(plugin, capability)) },
+                    onOpenScreen = { open(SettingsRoutes.SCREEN_CAPABILITY) }, onOpenAuthorizations = { open(SettingsRoutes.PAIRING) })
+            }
+            composable(SettingsRoutes.NOTIFICATIONS) {
+                Box(Modifier.fillMaxSize().background(containerColor))
+                LaunchedEffect(Unit) {
+                    nav.navigate(notificationReadingRoute) {
+                        popUpTo(SettingsRoutes.NOTIFICATIONS) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                }
+            }
+            // 主动推送不再是独立页面：配置就在各能力详情里。旧路由仍可达，但只做重定向，
+            // 避免外部深链或旧返回栈落到一个不存在的页面。
+            composable(SettingsRoutes.DEVICE_PUSH) {
+                Box(Modifier.fillMaxSize().background(containerColor))
+                LaunchedEffect(Unit) {
+                    nav.navigate(notificationReadingRoute) {
+                        popUpTo(SettingsRoutes.DEVICE_PUSH) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                }
+            }
+            settingsComposable(SettingsRoutes.SECURITY, containerColor, roleProvider, reduce) {
+                val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+                SecuritySettingsScreen(uiState, presentation, ::back,
+                    onToggleTrustMode = { if (it) trustDialog = true else viewModel.disableTrustMode() },
+                    onOpenAudit = { open(SettingsRoutes.AUDIT_LOG) }, onRequestEmergencyStop = { emergencyDialog = true })
+            }
+            settingsComposable(SettingsRoutes.AUDIT_LOG, containerColor, roleProvider, reduce) {
+                val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+                AuditSettingsScreen(uiState, presentation, ::back)
+            }
+            settingsComposable(SettingsRoutes.ADVANCED, containerColor, roleProvider, reduce) {
+                AdvancedSettingsScreen(localRuntime, presentation, ::back,
+                    onOpenUpdates = { open(SettingsRoutes.APP_UPDATES) }, onOpenBuildDetails = { open(SettingsRoutes.BUILD_DETAILS) },
+                    onOpenLicenses = { open(SettingsRoutes.LICENSES) }, onOpenBackup = { open(SettingsRoutes.BACKUP) },
+                    onReplayOnboarding = { app?.onboardingPreferences?.startReplay(); onBack() }, remoteRuntime = remoteRuntime)
+            }
+            settingsComposable(SettingsRoutes.APP_UPDATES, containerColor, roleProvider, reduce) {
+                AppUpdateRoute(onBack = ::back, presentation = presentation)
+            }
+            settingsComposable(SettingsRoutes.BUILD_DETAILS, containerColor, roleProvider, reduce) {
+                BuildDetailsScreen(presentation, ::back)
+            }
+            settingsComposable(SettingsRoutes.LICENSES, containerColor, roleProvider, reduce) {
+                OpenSourceNoticesScreen(presentation, ::back)
+            }
+            settingsComposable(SettingsRoutes.BACKUP, containerColor, roleProvider, reduce) {
+                SettingsBackupRoute(presentation, ::back, remoteRuntime)
+            }
         }
+        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter))
     }
     // Register after NavHost only for same-depth shortcuts; normal predictive back stays with NavHost.
     BackHandler(enabled = hostOpen && shortcutSources.isNotEmpty()) { back() }

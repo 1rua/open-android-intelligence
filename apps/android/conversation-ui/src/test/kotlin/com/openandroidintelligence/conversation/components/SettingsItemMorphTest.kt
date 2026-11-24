@@ -3,11 +3,16 @@ package com.openandroidintelligence.conversation.components
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.view.View
+import android.view.ViewConfiguration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -23,8 +28,8 @@ import androidx.compose.ui.graphics.PixelMap
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toPixelMap
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performTouchInput
@@ -62,13 +67,18 @@ class SettingsItemMorphTest {
                 SettingsNavigationItem("外观与动效", onClick = { clicks++ }, modifier = Modifier.testTag("item"))
             }
         }
+        val tapTimeout = ViewConfiguration.getTapTimeout().toLong().coerceAtLeast(32L)
         val resting = capture("$name-默认")
         compose.mainClock.autoAdvance = false
         val row = compose.onNodeWithTag("item")
         row.performTouchInput { down(Offset(12f, center.y)) }
-        compose.mainClock.advanceTimeBy(64)
+        compose.mainClock.advanceTimeBy(tapTimeout / 2)
+        val debouncing = capture("$name-消抖中")
+        assertColor("消抖窗口内按下不得提前触发胶囊形变", resting[resting.width / 2, 8], debouncing[debouncing.width / 2, 8])
+
+        compose.mainClock.advanceTimeBy(tapTimeout + 48)
         val moving = capture("$name-形变中")
-        assertTrue("按下后必须出现可见的背景过渡", moving[moving.width / 2, 8] != resting[resting.width / 2, 8])
+        assertTrue("跨过消抖窗口后必须出现可见的背景过渡", moving[moving.width / 2, 8] != resting[resting.width / 2, 8])
         compose.mainClock.advanceTimeBy(1000)
         val pressed = capture("$name-长按")
         assertTrue("动画中间帧不能直接跳到最终胶囊", moving[12, 12] != pressed[12, 12])
@@ -79,6 +89,105 @@ class SettingsItemMorphTest {
         assertEquals("松手后点击只触发一次", 1, clicks)
         val released = capture("$name-松开")
         assertColor("松手后恢复默认背景", resting[resting.width / 2, 8], released[released.width / 2, 8])
+    }
+
+    @Test
+    fun quickCancelWithinTapTimeoutDoesNotTriggerMorph() {
+        val scheme = lightColorScheme()
+        var clicks = 0
+        compose.setContent {
+            Fixture(scheme) {
+                SettingsNavigationItem("外观与动效", onClick = { clicks++ }, modifier = Modifier.testTag("item"))
+            }
+        }
+        val tapTimeout = ViewConfiguration.getTapTimeout().toLong().coerceAtLeast(32L)
+        val resting = capture("消抖取消-默认")
+        compose.mainClock.autoAdvance = false
+        val row = compose.onNodeWithTag("item")
+        row.performTouchInput { down(Offset(12f, center.y)) }
+        compose.mainClock.advanceTimeBy(tapTimeout / 2)
+        row.performTouchInput { cancel() }
+        compose.mainClock.advanceTimeBy(tapTimeout + 200)
+        val cancelled = capture("消抖取消-后")
+        assertEquals("取消手势不得触发点击", 0, clicks)
+        assertColor("消抖窗口内取消应全程保持默认背景", resting[resting.width / 2, 8], cancelled[cancelled.width / 2, 8])
+    }
+
+    @Test
+    fun verticalDragInsideScrollableContainerDoesNotTriggerMorphOrClick() {
+        val scheme = lightColorScheme()
+        var clicks = 0
+        lateinit var scrollState: androidx.compose.foundation.ScrollState
+        compose.setContent {
+            MaterialTheme(colorScheme = scheme, shapes = Shapes(medium = RoundedCornerShape(4.dp))) {
+                contentView = LocalView.current
+                scrollState = rememberScrollState()
+                Box(Modifier.width(320.dp).height(240.dp).background(scheme.background)) {
+                    Column(
+                        Modifier
+                            .width(320.dp)
+                            .height(240.dp)
+                            .verticalScroll(scrollState)
+                            .testTag("scroll-container"),
+                    ) {
+                        SettingsSectionCard(contentPadding = PaddingValues(8.dp)) {
+                            repeat(10) { index ->
+                                SettingsNavigationItem(
+                                    headline = "设置条目 $index",
+                                    onClick = { clicks++ },
+                                    modifier = Modifier.testTag("item-$index"),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        val tapTimeout = ViewConfiguration.getTapTimeout().toLong().coerceAtLeast(32L)
+        val resting = capture("滑动-默认", tag = "item-1")
+        compose.mainClock.autoAdvance = false
+        val row = compose.onNodeWithTag("item-1")
+        row.performTouchInput {
+            down(center)
+            advanceEventTime(16)
+            moveBy(Offset(0f, -12f))
+            advanceEventTime(16)
+            moveBy(Offset(0f, -20f))
+        }
+        compose.mainClock.advanceTimeBy(tapTimeout + 120)
+        assertTrue("纵向拖动应产生真实滚动位移", scrollState.value > 0)
+        assertEquals("滚动手势不得触发条目点击", 0, clicks)
+        val whileScrolling = capture("滑动-未形变", tag = "item-1")
+        assertColor("滑动途中列表项不得误触发胶囊形变", resting[resting.width / 2, 8], whileScrolling[whileScrolling.width / 2, 8])
+        row.performTouchInput { up() }
+        compose.mainClock.advanceTimeBy(200)
+        assertEquals("滑动松手后不得触发点击", 0, clicks)
+    }
+
+    @Test
+    fun quickTapWithinTapTimeoutStillTriggersClickAndMorphFeedback() {
+        val scheme = lightColorScheme()
+        var clicks = 0
+        compose.setContent {
+            Fixture(scheme) {
+                SettingsNavigationItem("外观与动效", onClick = { clicks++ }, modifier = Modifier.testTag("item"))
+            }
+        }
+        val resting = capture("快点-默认")
+        compose.mainClock.autoAdvance = false
+        val row = compose.onNodeWithTag("item")
+        row.performTouchInput { down(Offset(12f, center.y)) }
+        compose.mainClock.advanceTimeBy(24)
+        row.performTouchInput { up() }
+        compose.mainClock.advanceTimeByFrame()
+        assertEquals("消抖窗口内短按抬手必须立即触发点击", 1, clicks)
+        compose.mainClock.advanceTimeBy(64)
+        val pulsing = capture("快点-脉冲")
+        assertTrue("短按点击后应补发可见形变脉冲反馈", pulsing[pulsing.width / 2, 8] != resting[resting.width / 2, 8])
+        assertColor("短按脉冲期间胶囊角落保持裁剪", resting[4, 4], pulsing[4, 4])
+        compose.mainClock.advanceTimeBy(1200)
+        val settled = capture("快点-复原")
+        assertColor("脉冲结束后恢复默认背景", resting[resting.width / 2, 8], settled[settled.width / 2, 8])
     }
 
     @Test
@@ -135,12 +244,16 @@ class SettingsItemMorphTest {
                 }
             }
         }
+        val tapTimeout = ViewConfiguration.getTapTimeout().toLong().coerceAtLeast(32L)
         val resting = capture("减少动态-默认")
+        compose.mainClock.autoAdvance = false
         compose.onNodeWithTag("item").performTouchInput { down(center) }
+        compose.mainClock.advanceTimeBy(tapTimeout + 32)
         val pressed = capture("减少动态-按下")
         assertTrue("减少动态仍提供高亮反馈", pressed[pressed.width / 2, 8] != resting[resting.width / 2, 8])
         assertColor("减少动态时也必须裁剪胶囊角落", resting[4, 4], pressed[4, 4])
         compose.onNodeWithTag("item").performTouchInput { cancel() }
+        compose.mainClock.autoAdvance = true
     }
 
     @Test
@@ -166,8 +279,8 @@ class SettingsItemMorphTest {
         }
     }
 
-    private fun capture(name: String): PixelMap {
-        val bounds = compose.onNodeWithTag("item").fetchSemanticsNode().boundsInRoot
+    private fun capture(name: String, tag: String = "item"): PixelMap {
+        val bounds = compose.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
         // Robolectric 没有真实窗口帧回调，直接绘制 View 树，仍包含 Compose 的裁剪与波纹。
         val image = compose.runOnIdle {
             val bitmap = Bitmap.createBitmap(bounds.width.toInt(), bounds.height.toInt(), Bitmap.Config.ARGB_8888)

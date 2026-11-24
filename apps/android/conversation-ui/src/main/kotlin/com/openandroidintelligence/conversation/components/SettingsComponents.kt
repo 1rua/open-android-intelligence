@@ -1,18 +1,14 @@
 package com.openandroidintelligence.conversation.components
 
-import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -33,7 +29,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -43,12 +38,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 
 // 同一条目也被会话抽屉、附件库复用，仅在设置分组内启用新样式。
 private val LocalSettingsItemMorphing = staticCompositionLocalOf { false }
+
+private val SettingsSectionCardShape = RoundedCornerShape(AppRadius.Large)
+private val SettingsSectionCardDefaultPadding = PaddingValues(
+    horizontal = Dimensions.SpaceMedium,
+    vertical = Dimensions.SpaceSmall,
+)
 
 /** 设置条目的语义色调，决定前置图标容器与图标取哪个 M3 角色。 */
 enum class SettingsTone {
@@ -73,14 +73,11 @@ enum class SettingsTone {
 fun SettingsSectionCard(
     modifier: Modifier = Modifier,
     containerColor: Color = MaterialTheme.colorScheme.surfaceContainer,
-    contentPadding: PaddingValues = PaddingValues(
-        horizontal = Dimensions.SpaceMedium,
-        vertical = Dimensions.SpaceSmall,
-    ),
+    contentPadding: PaddingValues = SettingsSectionCardDefaultPadding,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Surface(
-        shape = RoundedCornerShape(AppRadius.Large),
+        shape = SettingsSectionCardShape,
         color = containerColor,
         contentColor = MaterialTheme.colorScheme.onSurface,
         modifier = modifier.fillMaxWidth(),
@@ -137,9 +134,13 @@ fun SettingsListItem(
     onClick: (() -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
 ) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val interactive = onClick != null && enabled
     val morphing = LocalSettingsItemMorphing.current
+    val interactive = onClick != null && enabled
+    val interactionSource = if (onClick != null && morphing) {
+        remember { MutableInteractionSource() }
+    } else {
+        null
+    }
     SettingsListItemContent(
         headline = headline,
         modifier = modifier,
@@ -153,8 +154,8 @@ fun SettingsListItem(
         interactionModifier = if (interactive) {
             if (morphing) {
                 Modifier.clickable(
-                    interactionSource = interactionSource,
-                    indication = LocalIndication.current,
+                    interactionSource = interactionSource!!,
+                    indication = null,
                     role = Role.Button,
                     onClick = onClick!!,
                 )
@@ -177,25 +178,42 @@ private fun SettingsListItemContent(
     tone: SettingsTone,
     selected: Boolean,
     enabled: Boolean,
-    interactionSource: MutableInteractionSource,
+    interactionSource: MutableInteractionSource?,
     scaleOnPress: Boolean,
     interactionModifier: Modifier,
     trailing: (@Composable () -> Unit)?,
 ) {
     val morphing = LocalSettingsItemMorphing.current
-    val pressed by interactionSource.collectIsPressedAsState()
-    val highlighted = morphing && (selected || (pressed && enabled))
-    val feedback = if (morphing) {
-        settingsItemMorphModifier(interactionSource, selected, enabled, scaleOnPress)
+    val highlighted: Boolean
+    val feedback: Modifier
+    if (morphing) {
+        if (interactionSource == null && !selected) {
+            highlighted = false
+            feedback = Modifier
+        } else {
+            val pressFeedback = rememberSettingsItemPressFeedback(
+                clickSource = interactionSource,
+                enabled = enabled,
+            )
+            val pressed = pressFeedback.pressed.value
+            highlighted = selected || pressed
+            feedback = settingsItemMorphModifier(
+                highlighted = highlighted,
+                pressed = pressed,
+                scaleOnPress = scaleOnPress,
+                visualInteractionSource = pressFeedback.visualInteractionSource,
+            )
+        }
     } else {
-        Modifier
+        highlighted = false
+        feedback = Modifier
     }
     ListItem(
         headlineContent = { Text(headline, style = MaterialTheme.typography.bodyLarge) },
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = Dimensions.MinimumTouchTarget)
-            .alpha(if (enabled) 1f else 0.38f)
+            .then(if (enabled) Modifier else Modifier.alpha(0.38f))
             .then(feedback)
             .then(interactionModifier),
         supportingContent = supporting?.let {
@@ -231,6 +249,7 @@ fun SettingsSwitchItem(
     tone: SettingsTone = SettingsTone.NEUTRAL,
     enabled: Boolean = true,
 ) {
+    val morphing = LocalSettingsItemMorphing.current
     val interactionSource = remember { MutableInteractionSource() }
     SettingsListItemContent(
         headline = headline,
@@ -245,7 +264,7 @@ fun SettingsSwitchItem(
         interactionModifier = Modifier.toggleable(
             value = checked,
             interactionSource = interactionSource,
-            indication = LocalIndication.current,
+            indication = if (morphing) null else androidx.compose.foundation.LocalIndication.current,
             enabled = enabled,
             role = Role.Switch,
             onValueChange = onCheckedChange,
@@ -310,23 +329,18 @@ fun SettingsIconBadge(
         SettingsTone.DANGER -> MaterialTheme.colorScheme.errorContainer to
             MaterialTheme.colorScheme.onErrorContainer
     }
-    Surface(
-        shape = CircleShape,
-        color = container,
-        contentColor = content,
+    Box(
         modifier = modifier
             .size(size)
-            .alpha(if (enabled) 1f else 0.38f),
+            .then(if (enabled) Modifier else Modifier.alpha(0.38f))
+            .background(color = container, shape = CircleShape),
+        contentAlignment = Alignment.Center,
     ) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                modifier = Modifier.size(Dimensions.SmallIcon),
-            )
-        }
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = content,
+            modifier = Modifier.size(Dimensions.SmallIcon),
+        )
     }
 }

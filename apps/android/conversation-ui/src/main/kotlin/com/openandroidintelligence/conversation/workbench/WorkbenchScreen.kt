@@ -65,6 +65,7 @@ import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.conversation.theme.LocalWindowMaxWidth
 import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.isReduced
@@ -425,8 +426,9 @@ fun WorkbenchScreen(
     }
 
     EnsureSharedTransitionHost {
-        BoxWithConstraints(modifier.fillMaxSize()) {
-            val expanded = maxWidth >= Dimensions.ExpandedWindow
+        val providedMaxWidth = LocalWindowMaxWidth.current
+        val body: @Composable (Dp) -> Unit = { availableWidth ->
+            val expanded = availableWidth >= Dimensions.ExpandedWindow
 
         val latestWorkspaceHydrate by rememberUpdatedState(workspaceMenu?.onHydrate)
         val hasWorkspaceMenu = workspaceMenu != null
@@ -1016,6 +1018,16 @@ fun WorkbenchScreen(
                 }
             )
         }
+        }
+        if (providedMaxWidth != null) {
+            Box(modifier.fillMaxSize()) { body(providedMaxWidth) }
+        } else {
+            BoxWithConstraints(modifier.fillMaxSize()) {
+                val measuredWidth = maxWidth
+                CompositionLocalProvider(LocalWindowMaxWidth provides measuredWidth) {
+                    body(measuredWidth)
+                }
+            }
         }
     }
 }

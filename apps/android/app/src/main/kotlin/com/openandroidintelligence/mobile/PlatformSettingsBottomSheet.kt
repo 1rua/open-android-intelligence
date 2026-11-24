@@ -15,6 +15,7 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.movableContentOf
@@ -27,6 +28,7 @@ import androidx.compose.ui.platform.testTag
 import com.openandroidintelligence.conversation.motion.FullscreenPredictiveSlideOverlay
 import com.openandroidintelligence.conversation.motion.rememberPredictiveOverlayBackController
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.conversation.theme.LocalWindowMaxWidth
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.launch
@@ -80,7 +82,8 @@ internal fun PlatformSettingsDrawer(
     }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val expanded = maxWidth >= Dimensions.ExpandedWindow
+        val windowMaxWidth = maxWidth
+        val expanded = windowMaxWidth >= Dimensions.ExpandedWindow
         val phoneOverlayController = rememberPredictiveOverlayBackController(
             overlayOpen = open,
             enabled = !expanded && open,
@@ -88,60 +91,62 @@ internal fun PlatformSettingsDrawer(
             onDismiss = onDismiss,
         )
 
-        if (expanded) {
-            val drawer = rememberDrawerState(DrawerValue.Closed)
-            val scope = rememberCoroutineScope()
-            val currentDismiss by rememberUpdatedState(onDismiss)
+        CompositionLocalProvider(LocalWindowMaxWidth provides windowMaxWidth) {
+            if (expanded) {
+                val drawer = rememberDrawerState(DrawerValue.Closed)
+                val scope = rememberCoroutineScope()
+                val currentDismiss by rememberUpdatedState(onDismiss)
 
-            LaunchedEffect(open, reduceMotion) {
-                if (open) {
-                    if (reduceMotion) drawer.snapTo(DrawerValue.Open) else drawer.open()
-                } else {
-                    if (reduceMotion) drawer.snapTo(DrawerValue.Closed) else drawer.close()
-                }
-            }
-            LaunchedEffect(open) {
-                if (!open) return@LaunchedEffect
-                var wasOpeningOrOpen = false
-                snapshotFlow { Triple(drawer.currentValue, drawer.targetValue, drawer.isAnimationRunning) }
-                    .collect { (current, target, animating) ->
-                        if (current == DrawerValue.Open || target == DrawerValue.Open) wasOpeningOrOpen = true
-                        if (wasOpeningOrOpen && current == DrawerValue.Closed && target == DrawerValue.Closed && !animating) {
-                            currentDismiss()
-                        }
+                LaunchedEffect(open, reduceMotion) {
+                    if (open) {
+                        if (reduceMotion) drawer.snapTo(DrawerValue.Open) else drawer.open()
+                    } else {
+                        if (reduceMotion) drawer.snapTo(DrawerValue.Closed) else drawer.close()
                     }
-            }
+                }
+                LaunchedEffect(open) {
+                    if (!open) return@LaunchedEffect
+                    var wasOpeningOrOpen = false
+                    snapshotFlow { Triple(drawer.currentValue, drawer.targetValue, drawer.isAnimationRunning) }
+                        .collect { (current, target, animating) ->
+                            if (current == DrawerValue.Open || target == DrawerValue.Open) wasOpeningOrOpen = true
+                            if (wasOpeningOrOpen && current == DrawerValue.Closed && target == DrawerValue.Closed && !animating) {
+                                currentDismiss()
+                            }
+                        }
+                }
 
-            ModalNavigationDrawer(
-                drawerState = drawer,
-                gesturesEnabled = open,
-                drawerContent = {
-                    ModalDrawerSheet(
-                        modifier = Modifier.width(Dimensions.DrawerWidth).testTag("platform-settings-drawer"),
-                        windowInsets = WindowInsets.systemBars.union(WindowInsets.displayCutout)
-                            .only(WindowInsetsSides.Vertical + WindowInsetsSides.Start),
-                    ) {
-                        if (open || !drawer.isClosed || drawer.isAnimationRunning) {
-                            movableSettings(SettingsPresentation.SIDEBAR) {
-                                scope.launch {
-                                    if (reduceMotion) drawer.snapTo(DrawerValue.Closed) else drawer.close()
+                ModalNavigationDrawer(
+                    drawerState = drawer,
+                    gesturesEnabled = open,
+                    drawerContent = {
+                        ModalDrawerSheet(
+                            modifier = Modifier.width(Dimensions.DrawerWidth).testTag("platform-settings-drawer"),
+                            windowInsets = WindowInsets.systemBars.union(WindowInsets.displayCutout)
+                                .only(WindowInsetsSides.Vertical + WindowInsetsSides.Start),
+                        ) {
+                            if (open || !drawer.isClosed || drawer.isAnimationRunning) {
+                                movableSettings(SettingsPresentation.SIDEBAR) {
+                                    scope.launch {
+                                        if (reduceMotion) drawer.snapTo(DrawerValue.Closed) else drawer.close()
+                                    }
                                 }
                             }
                         }
-                    }
-                },
-                content = content,
-            )
-        } else {
-            // 手机/紧凑端：全屏侧滑设置（同步驱动背景视差与手势预测性返回），不留侧栏缝隙或残留可见内容
-            FullscreenPredictiveSlideOverlay(
-                controller = phoneOverlayController,
-                reduced = reduceMotion,
-                modifier = Modifier.fillMaxSize(),
-                overlayTestTag = "phone-fullscreen-settings-container",
-                backgroundContent = { content() },
-                overlayContent = { movableSettings(SettingsPresentation.SCREEN, onDismiss) },
-            )
+                    },
+                    content = content,
+                )
+            } else {
+                // 手机/紧凑端：全屏侧滑设置（同步驱动背景视差与手势预测性返回），不留侧栏缝隙或残留可见内容
+                FullscreenPredictiveSlideOverlay(
+                    controller = phoneOverlayController,
+                    reduced = reduceMotion,
+                    modifier = Modifier.fillMaxSize(),
+                    overlayTestTag = "phone-fullscreen-settings-container",
+                    backgroundContent = { content() },
+                    overlayContent = { movableSettings(SettingsPresentation.SCREEN, onDismiss) },
+                )
+            }
         }
     }
 }
