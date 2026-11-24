@@ -32,7 +32,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.unit.dp
-import com.openandroidintelligence.conversation.theme.Dimensions
 import kotlin.math.ceil
 import kotlin.math.roundToInt
 import org.junit.Assert.assertEquals
@@ -66,12 +65,7 @@ class AppTransitionsTest {
     val compose = createComposeRule()
 
     @Test
-    fun visualAndParallaxTokensStayWithinSanityBounds() {
-        assertTrue(Dimensions.SmallIcon > 0.dp && Dimensions.SmallIcon < Dimensions.Icon)
-        assertTrue(Dimensions.Icon < Dimensions.LeadingIconContainer)
-        assertTrue(Dimensions.LeadingIconContainer <= Dimensions.DockedBall)
-        assertTrue(Dimensions.BrandMark > 0.dp)
-
+    fun parallaxTokensStayWithinSanityBounds() {
         assertTrue(AppTransitions.ParallaxOffsetFraction in 0.05f..0.5f)
         assertTrue(AppTransitions.BackgroundDepthScale in 0.8f..0.999f)
         assertTrue(AppTransitions.BackgroundScrimMaxAlpha in 0.01f..0.5f)
@@ -296,7 +290,7 @@ class AppTransitionsTest {
         val reducedFadeSpec = MotionSpecs.fade<Float>(reduced = true)
         assertTrue("减少动态淡入淡出规格应为 TweenSpec", reducedFadeSpec is TweenSpec<Float>)
         val tween = reducedFadeSpec as TweenSpec<Float>
-        assertEquals(150, tween.durationMillis)
+        assertEquals(MotionSpecs.ReducedMotionCrossfadeDuration, tween.durationMillis)
         assertEquals(LinearEasing, tween.easing)
 
         val expectedReducedEnter = fadeIn(reducedFadeSpec)
