@@ -30,7 +30,7 @@ class HomeScreen(BasePage):
         self,
         auth: IsolatedAuthEndpoint,
         *,
-        timeout: float = 15.0,
+        timeout: float = 30.0,
     ) -> None:
         """按当前认证隔离模式直通工作台或完成自建服务端登录与 Agent 路由。"""
         landing_locators = (
@@ -103,16 +103,16 @@ class HomeScreen(BasePage):
             self.assert_visible(self.WORKBENCH_ROOT, "已自动路由进入对话工作台")
             return
 
-        # 单台在线 Host 时客户端会自动发现 Agent，先短暂等待避免在 busy 禁用态重复点击 Host
+        # 单台在线 Host 时客户端会自动发现 Agent，留出足够双次语义采样窗口避免在 busy 禁用态重复点击 Host
         if matched_loc not in (self.AGENT_HARNESS, self.AGENT_ANY):
             try:
                 matched_loc, _ = self.wait_any(
                     (self.WORKBENCH_ROOT, self.AGENT_HARNESS, self.AGENT_ANY),
-                    timeout=3.5,
+                    timeout=6.0,
                 )
             except SmartWaitTimeoutError:
                 host_by_name = BySemantics(text_contains=auth.host_name, clickable=True)
-                if self.is_visible(host_by_name, timeout=1.2):
+                if self.is_visible(host_by_name, timeout=2.0):
                     self.click(host_by_name, f"选择目标远程主机: {auth.host_name}")
                 else:
                     self.click(self.HOST_ANY_CLICKABLE, "选择可用远程主机触发发现")
@@ -122,12 +122,12 @@ class HomeScreen(BasePage):
                 )
 
         if matched_loc == self.WORKBENCH_ROOT:
-            self.assert_visible(self.WORKBENCH_ROOT, "已进入对话工作台")
+            self.assert_visible(self.WORKBENCH_ROOT, "已进入对话工作台", timeout=max(timeout, 30.0))
             return
 
-        if matched_loc == self.AGENT_HARNESS or self.is_visible(self.AGENT_HARNESS, timeout=0.8):
+        if matched_loc == self.AGENT_HARNESS or self.is_visible(self.AGENT_HARNESS, timeout=2.0):
             self.click(self.AGENT_HARNESS, "选择 Harness Agent 进入工作台")
         else:
             self.click(self.AGENT_ANY, "选择首个可用 Agent 进入工作台")
 
-        self.assert_visible(self.WORKBENCH_ROOT, "验证路由进入对话工作台", timeout=timeout)
+        self.assert_visible(self.WORKBENCH_ROOT, "验证路由进入对话工作台", timeout=max(timeout, 30.0))

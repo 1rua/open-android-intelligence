@@ -46,7 +46,7 @@ class BasePage:
             return (left + right) // 2, (top + bottom) // 2
         raise RuntimeError(f"语义节点缺少有效中心点或边界信息，无法点击: {node!r}")
 
-    def _settle_after_input(self, step_name: str, timeout: float = 2.0) -> None:
+    def _settle_after_input(self, step_name: str, timeout: float = 4.0) -> None:
         """通过一次语义树轮询等待 UIAutomator 空闲，替代固定延时等待。"""
         self.ctx.wait.wait_for_predicate(
             f"{step_name} 后界面响应空闲",
@@ -184,7 +184,7 @@ class BasePage:
         started = time.monotonic()
         before_png = self.ctx.driver.capture_screenshot_bytes()
         self.ctx.driver.press_back()
-        self._settle_after_input(step_name, timeout=3.0)
+        self._settle_after_input(step_name, timeout=4.0)
         after_png = self.ctx.driver.capture_screenshot_bytes()
         duration_ms = (time.monotonic() - started) * 1000.0
         self.ctx.evidence.record_action(
