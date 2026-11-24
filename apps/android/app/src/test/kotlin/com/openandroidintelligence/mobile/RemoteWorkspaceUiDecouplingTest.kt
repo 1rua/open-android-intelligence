@@ -263,6 +263,122 @@ class RemoteWorkspaceUiDecouplingTest {
         compose.onNodeWithText(context.getString(UiR.string.conn_status_offline_mode_hint)).assertDoesNotExist()
     }
 
+    @Test
+    fun `错误横幅与CONNECTED和冷启动宽限期强互斥且连接恢复后瞬时销毁错误卡片`() {
+        var agentConn by mutableStateOf(
+            AgentConnectionState(
+                phase = AgentConnectionPhase.CONNECTING,
+                offlineConfirmed = false,
+                errorCode = "REMOTE_CONNECTION_FAILED",
+            ),
+        )
+        var sessionReady by mutableStateOf(true)
+        var forceOfflineBanner by mutableStateOf<Boolean?>(null)
+        var directNoticeError by mutableStateOf<String?>(null)
+        var ghostBannerText = ""
+        val offlineHintText = context.getString(UiR.string.conn_status_offline_mode_hint)
+
+        compose.setContent {
+            ghostBannerText = remoteConnectionFailureText("REMOTE_CONNECTION_FAILED")
+            OpenAndroidIntelligenceTheme(darkTheme = false, dynamicColor = false) {
+                val offlineBannerVisible = forceOfflineBanner ?: (
+                    agentConn.offlineConfirmed &&
+                        (agentConn.phase == AgentConnectionPhase.OFFLINE || agentConn.phase == AgentConnectionPhase.RECONNECTING)
+                    )
+                val bannerError = resolveWorkbenchBannerError(
+                    agentConn = agentConn,
+                    offlineBannerVisible = offlineBannerVisible,
+                    dismissedError = false,
+                    sessionReady = sessionReady,
+                )
+                RemoteWorkbenchNotices(
+                    offline = offlineBannerVisible,
+                    error = directNoticeError ?: bannerError,
+                    onRetry = {},
+                    onDismiss = {},
+                    reconnecting = agentConn.reconnectingInPlace,
+                    phase = agentConn.phase,
+                    sessionReady = sessionReady,
+                )
+            }
+        }
+
+        // 1. 冷启动 CONNECTING 期间即便存在瞬态 errorCode 也绝不暴露错误横幅或离线黄条
+        compose.onNodeWithText(ghostBannerText).assertDoesNotExist()
+        compose.onNodeWithText(offlineHintText).assertDoesNotExist()
+
+        // 2. 断网后宽限期（RECONNECTING 且未确认离线）不提前暴露错误横幅与离线黄条
+        compose.runOnIdle {
+            agentConn = agentConn.copy(
+                phase = AgentConnectionPhase.RECONNECTING,
+                offlineConfirmed = false,
+                errorCode = "REMOTE_CONNECTION_FAILED",
+            )
+        }
+        compose.onNodeWithText(ghostBannerText).assertDoesNotExist()
+        compose.onNodeWithText(offlineHintText).assertDoesNotExist()
+
+        // 3. 确认离线态仅显示正常离线模式提示黄条，且工作台真实恢复前误报红卡受状态控制
+        compose.runOnIdle {
+            agentConn = agentConn.copy(
+                phase = AgentConnectionPhase.OFFLINE,
+                offlineConfirmed = true,
+                errorCode = "REMOTE_CONNECTION_FAILED",
+            )
+        }
+        compose.onNodeWithText(offlineHintText).assertIsDisplayed()
+        compose.onNodeWithText(ghostBannerText).assertDoesNotExist()
+
+        // 4. 若处于明确非离线失败态，先展示错误卡片；一旦进入 CONNECTED（哪怕滞留 errorCode），瞬时销毁错误卡片
+        compose.runOnIdle {
+            forceOfflineBanner = false
+            sessionReady = false
+            agentConn = agentConn.copy(
+                phase = AgentConnectionPhase.OFFLINE,
+                offlineConfirmed = false,
+                errorCode = "REMOTE_CONNECTION_FAILED",
+            )
+        }
+        compose.onNodeWithText(ghostBannerText).assertIsDisplayed()
+
+        compose.runOnIdle {
+            agentConn = agentConn.copy(
+                phase = AgentConnectionPhase.CONNECTED,
+                offlineConfirmed = false,
+                errorCode = "REMOTE_CONNECTION_FAILED",
+            )
+        }
+        compose.onNodeWithText(ghostBannerText).assertDoesNotExist()
+
+        // 5. 会话就绪态下仅保留 CONNECTED/OFFLINE/AUTH_REVOKED 真实语义，非离线残余错误卡同样不渲染
+        compose.runOnIdle {
+            sessionReady = true
+            agentConn = agentConn.copy(
+                phase = AgentConnectionPhase.DISCONNECTED,
+                offlineConfirmed = false,
+                errorCode = "REMOTE_CONNECTION_FAILED",
+            )
+        }
+        compose.onNodeWithText(ghostBannerText).assertDoesNotExist()
+
+        // 6. 直调 RemoteWorkbenchNotices 时即便传入非空 error，在 CONNECTED 或 RECONNECTING+offline=false 宽限期也必须拦截错误卡片
+        compose.runOnIdle {
+            sessionReady = false
+            forceOfflineBanner = false
+            directNoticeError = "REMOTE_CONNECTION_FAILED"
+            agentConn = agentConn.copy(
+                phase = AgentConnectionPhase.RECONNECTING,
+                offlineConfirmed = false,
+                errorCode = "REMOTE_CONNECTION_FAILED",
+            )
+        }
+        compose.onNodeWithText(ghostBannerText).assertDoesNotExist()
+        compose.runOnIdle {
+            agentConn = agentConn.copy(phase = AgentConnectionPhase.CONNECTED)
+        }
+        compose.onNodeWithText(ghostBannerText).assertDoesNotExist()
+    }
+
     private inner class FakeUiAccountConnection : RemoteAccountConnection {
         override val account = MutableStateFlow<RemoteActiveAccount?>(null)
         override val state = MutableStateFlow(RemoteAccountConnectionState.CONNECTED)

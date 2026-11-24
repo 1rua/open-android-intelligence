@@ -120,7 +120,8 @@ class BubbleConversationActivity : ComponentActivity() {
 
 @Composable
 private fun BubbleConversationContent(runtime: RemoteRuntime, target: ReplyNotificationTarget?, onClose: () -> Unit) {
-    val connection by runtime.state.collectAsState()
+    val agentConn by runtime.agentConnection.collectAsState()
+    val workspaceCtx by runtime.workspaceContext.collectAsState()
     val sessions by runtime.nativeConversationNotifications.sessions.collectAsState()
     // A replacement authenticated workspace invalidates every old picker and draft destination.
     val activeSession by runtime.controller.collectAsState()
@@ -130,7 +131,7 @@ private fun BubbleConversationContent(runtime: RemoteRuntime, target: ReplyNotif
         runtime.restoreSessionIfAvailable().join()
         target?.let { runtime.activateNotificationEndpoint(it) }
     }
-    val agentDiscovered = target?.agentId != null && connection.selected != null
+    val agentDiscovered = target?.agentId != null && workspaceCtx.activeWorkspace != null
     // 直接求值而不缓存：目标可用性还依赖工作区与连接阶段。
     val valid = target != null && agentDiscovered && runtime.isBubbleTargetCurrent(target)
     // 原生会话由气泡自己的控制器承载，不依赖主界面当前打开的是哪个会话/Agent；
@@ -162,8 +163,8 @@ private fun BubbleConversationContent(runtime: RemoteRuntime, target: ReplyNotif
     if (!valid) {
         val message = when {
             target == null -> "会话链接无效"
-            connection.busy -> stringResource(UiR.string.remote_bubble_connecting)
-            connection.account != null -> stringResource(UiR.string.remote_bubble_select_workspace)
+            agentConn.busy -> stringResource(UiR.string.remote_bubble_connecting)
+            agentConn.account != null -> stringResource(UiR.string.remote_bubble_select_workspace)
             else -> stringResource(UiR.string.remote_bubble_disconnected)
         }
         BubbleUnavailable(message, onClose)

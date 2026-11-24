@@ -158,7 +158,7 @@ internal fun RemoteConnectionSettingsScreen(
     onBack: () -> Unit,
     onOpenDiagnostics: () -> Unit,
 ) {
-    val state by runtime.state.collectAsState()
+    val agentConn by runtime.agentConnection.collectAsState()
     val client by runtime.accountRuntime.state.collectAsState()
     val host by runtime.accountRuntime.hostState.collectAsState()
     var confirmLogout by rememberSaveable { mutableStateOf(false) }
@@ -171,7 +171,7 @@ internal fun RemoteConnectionSettingsScreen(
             SectionLabel(stringResource(UiR.string.conn_section_current_connection))
             SettingsSectionCard {
                 SettingsListItem(stringResource(UiR.string.conn_server_address_title),
-                    supporting = state.account?.origin ?: stringResource(UiR.string.conn_server_address_none))
+                    supporting = agentConn.account?.origin ?: stringResource(UiR.string.conn_server_address_none))
                 SettingsListItem(stringResource(UiR.string.remote_client_role),
                     modifier = Modifier.testTag("remote-client-status"), supporting = remoteClientLabel(client))
                 SettingsListItem(stringResource(UiR.string.remote_host_role), supporting = remoteHostLabel(host))
@@ -188,14 +188,14 @@ internal fun RemoteConnectionSettingsScreen(
             SectionLabel(stringResource(UiR.string.conn_section_account_management))
             SettingsSectionCard {
                 SettingsListItem(stringResource(UiR.string.conn_item_current_account), icon = Icons.Default.Person,
-                    supporting = state.account?.accountId ?: stringResource(UiR.string.conn_account_status_not_logged_in))
-                if (state.account != null) SettingsListItem(stringResource(UiR.string.common_action_logout),
+                    supporting = agentConn.account?.accountId ?: stringResource(UiR.string.conn_account_status_not_logged_in))
+                if (agentConn.account != null) SettingsListItem(stringResource(UiR.string.common_action_logout),
                     tone = SettingsTone.DANGER, onClick = { confirmLogout = true })
             }
             SectionLabel(stringResource(UiR.string.conn_section_security))
             SettingsSectionCard {
                 val connected = client == RemoteAccountConnectionState.CONNECTED || host == RemoteHostConnectionState.ONLINE
-                val address = state.account?.origin?.let(ServiceAddress::parse).takeIf { connected }
+                val address = agentConn.account?.origin?.let(ServiceAddress::parse).takeIf { connected }
                 SettingsListItem(stringResource(UiR.string.conn_item_transport_encryption), supporting = stringResource(when {
                     address == null -> UiR.string.conn_encryption_none
                     address.scheme.equals("https", ignoreCase = true) -> UiR.string.conn_encryption_system_ca
@@ -252,7 +252,7 @@ internal fun RemoteDeviceNameSetting(name: String?, onSave: suspend (String) -> 
 
 @Composable
 internal fun RemoteConnectionDiagnosticsScreen(runtime: RemoteRuntime, presentation: SettingsPresentation, onBack: () -> Unit) {
-    val state by runtime.state.collectAsState()
+    val agentConn by runtime.agentConnection.collectAsState()
     val client by runtime.accountRuntime.state.collectAsState()
     val host by runtime.accountRuntime.hostState.collectAsState()
     SettingsPageScaffold(stringResource(UiR.string.conn_item_diagnostics), presentation, onBack) { padding ->
@@ -263,8 +263,8 @@ internal fun RemoteConnectionDiagnosticsScreen(runtime: RemoteRuntime, presentat
                 SettingsListItem(stringResource(UiR.string.remote_host_role), supporting = remoteHostLabel(host))
                 SettingsListItem(stringResource(UiR.string.conn_item_current_agent), supporting = runtime.connectedAgentName
                     ?: stringResource(UiR.string.conn_agent_not_fetched))
-                state.errorCode?.let { SettingsListItem(stringResource(UiR.string.conn_status_failed), supporting = remoteConnectionFailureText(it), tone = SettingsTone.DANGER) }
-                state.backendFailures.forEach { (backend, code) -> SettingsListItem(backend, supporting = remoteConnectionFailureText(code), tone = SettingsTone.DANGER) }
+                agentConn.errorCode?.let { SettingsListItem(stringResource(UiR.string.conn_status_failed), supporting = remoteConnectionFailureText(it), tone = SettingsTone.DANGER) }
+                agentConn.backendFailures.forEach { (backend, code) -> SettingsListItem(backend, supporting = remoteConnectionFailureText(code), tone = SettingsTone.DANGER) }
             }
         }
     }

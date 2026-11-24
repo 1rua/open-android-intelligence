@@ -85,9 +85,11 @@ class RemoteRuntime(
     private val hydrationControlLock = Any()
     private val workspaceCachePersistenceLock = Any()
     private var activeOperationJob: Job? = null
+    @Volatile
     private var startupRecoveryJob: Job? = null
     private var reconnectLoopJob: Job? = null
     private val hydrationJob = AtomicReference<Job?>(null)
+    @Volatile
     private var coldStartBootstrapped = false
     private val foregroundBootstrap by lazy { bootstrapColdStartCacheFirst() }
 
@@ -338,9 +340,9 @@ class RemoteRuntime(
                     )
                 },
             )
-            // 无上次工作区时，复用账号恢复入口；生产账号会启动已授权的控制角色并读取目录。
-            startupRecoveryJob = restoreSessionIfAvailable()
+            // 无上次工作区时，复用账号恢复入口；先标记冷启动已完成引导再触发恢复，避免竞态重入。
             coldStartBootstrapped = true
+            startupRecoveryJob = restoreSessionIfAvailable()
             return
         }
         val agentKey = AgentKey.fromEndpointKey(savedWorkspace.endpoint.key)
@@ -350,27 +352,60 @@ class RemoteRuntime(
         }
         putCachedWorkspaces(agentKey, cachedAgentWorkspaces)
         val matchedAgent = cachedAgents.firstOrNull { it.key == agentKey }
-        // 为消除冷启动首帧闪烁登录页，必须在此同步打开单个上次激活工作区镜像并挂载控制器；其余兄弟工作区由后续异步水合补齐。
-        val installedOk = runCatching {
-            installOfflineWorkspaceSynchronously(savedWorkspace, StreamHealth.CONNECTING)
-        }.isSuccess
-        if (!installedOk) return
-
         val cachedSessions = loadCachedWorkspaceSessionsSnapshot(listOf(savedWorkspace))
-        coldStartBootstrapped = true
+        // 为消除冷启动首帧闪烁登录页与短暂 DISCONNECTED 状态，先构造句柄与会话快照并原子发布 CONNECTING，
+        // 再发布控制器并使用惰性协程先行登记 startupRecoveryJob，防止首帧网络回调提前打断宽限期。
+        if (!mountOfflineWorkspaceSynchronously(
+                workspace = savedWorkspace,
+                cachedAgentWorkspaces = cachedAgentWorkspaces,
+                cachedSessions = cachedSessions,
+                activeHostName = matchedAgent?.hostName,
+                activeAgentName = matchedAgent?.displayName ?: savedWorkspace.endpoint.key.backendId.value,
+                extraAgentTransform = { current ->
+                    current.copy(
+                        account = cachedAccount,
+                        agents = cachedAgents,
+                        accountAvatarBase64 = avatarBase64,
+                    )
+                },
+            )
+        ) {
+            return
+        }
+        val recoveryJob = scope.launch(start = CoroutineStart.LAZY) {
+            runColdStartGracefulRecovery(cachedAccount, savedWorkspace)
+        }
+        synchronized(stateLock) {
+            startupRecoveryJob = recoveryJob
+            coldStartBootstrapped = true
+        }
+        recoveryJob.start()
+    }
+
+    /** 原子构造离线工作区句柄与缓存会话快照，发布 CONNECTING 状态后再挂载控制器。 */
+    private fun mountOfflineWorkspaceSynchronously(
+        workspace: RemoteWorkspace,
+        cachedAgentWorkspaces: List<RemoteWorkspace>,
+        cachedSessions: Map<EndpointKey, Loadable<List<ConversationSummary>>>,
+        activeHostName: String? = null,
+        activeAgentName: String = workspace.endpoint.key.backendId.value,
+        extraAgentTransform: (AgentConnectionState) -> AgentConnectionState = { it },
+    ): Boolean {
+        val agentKey = AgentKey.fromEndpointKey(workspace.endpoint.key)
+        val offlineHandle = runCatching {
+            buildOfflineWorkspaceHandle(workspace, StreamHealth.CONNECTING)
+        }.getOrNull() ?: return false
         updateLayerStates(
-            agentTransform = {
-                it.copy(
-                    account = cachedAccount,
-                    agents = cachedAgents,
+            agentTransform = { current ->
+                extraAgentTransform(current).copy(
                     activeAgent = agentKey,
-                    activeHostName = matchedAgent?.hostName,
-                    activeAgentName = matchedAgent?.displayName ?: savedWorkspace.endpoint.key.backendId.value,
+                    activeHostName = activeHostName ?: current.activeHostName,
+                    activeAgentName = activeAgentName,
                     phase = AgentConnectionPhase.CONNECTING,
                     busy = false,
                     offlineConfirmed = false,
+                    reconnectingInPlace = false,
                     errorCode = null,
-                    accountAvatarBase64 = avatarBase64,
                 )
             },
             workspaceTransform = {
@@ -378,14 +413,13 @@ class RemoteRuntime(
                     agentKey = agentKey,
                     workspaces = cachedAgentWorkspaces,
                     catalogPhase = WorkspaceCatalogPhase.READY,
-                    activeWorkspace = savedWorkspace.endpoint.key,
+                    activeWorkspace = workspace.endpoint.key,
                     sessionsByWorkspace = cachedSessions,
                 )
             },
         )
-        startupRecoveryJob = scope.launch {
-            runColdStartGracefulRecovery(cachedAccount, savedWorkspace)
-        }
+        publishOfflineWorkspaceHandle(offlineHandle)
+        return true
     }
 
     /** UI 在首帧读取缓存前显式进入普通恢复；后台待命只创建运行时，不调用此入口。 */
@@ -846,76 +880,124 @@ class RemoteRuntime(
     }
 
     fun restoreSessionIfAvailable(): Job {
-        val activeStartup = startupRecoveryJob
-        if (coldStartBootstrapped && activeStartup != null && activeStartup.isActive) return activeStartup
-        if (coldStartBootstrapped && agentConnection.value.phase != AgentConnectionPhase.DISCONNECTED) {
-            return CompletableDeferred(Unit)
-        }
-        if (accountRuntime.account.value != null && agentConnection.value.hosts.isNotEmpty()) {
-            return CompletableDeferred(Unit)
-        }
-        return scope.launch {
-            if (agentConnection.value.busy) return@launch
-            updateLayerStates(agentTransform = { it.copy(busy = true) })
-            try {
-                // 后台已发布的账号可能只启动了 Host，前台恢复需要让账号层补齐 Client。
-                val account = accountRuntime.restore()
-                if (account == null) {
-                    updateLayerStates(agentTransform = { it.copy(account = null) })
-                    return@launch
-                }
-                val cachedAgents = loadDiscoveredAgents(account)
-                updateLayerStates(
-                    agentTransform = {
-                        it.copy(
-                            account = account,
-                            agents = if (it.agents.isEmpty()) cachedAgents else it.agents,
-                            accountAvatarBase64 = avatar(account),
-                        )
-                    },
-                )
-                val saved = loadSavedSelection(account)
-                if (saved != null && mutableController.value == null) {
-                    val agentKey = AgentKey.fromEndpointKey(saved.endpoint.key)
+        val (jobToRun, shouldStart) = synchronized(stateLock) {
+            val activeStartup = startupRecoveryJob
+            if (coldStartBootstrapped && activeStartup != null && activeStartup.isActive) {
+                return@synchronized activeStartup to false
+            }
+            if (coldStartBootstrapped && agentConnection.value.phase != AgentConnectionPhase.DISCONNECTED) {
+                return@synchronized CompletableDeferred(Unit) to false
+            }
+            if (accountRuntime.account.value != null && agentConnection.value.hosts.isNotEmpty()) {
+                return@synchronized CompletableDeferred(Unit) to false
+            }
+            if (activeStartup != null && activeStartup.isActive) {
+                return@synchronized activeStartup to false
+            }
+            val createdJob = scope.launch(start = CoroutineStart.LAZY) {
+                if (agentConnection.value.busy) return@launch
+                // 若本地已有未吊销账号与上次工作区缓存（例如测试关闭 coldStartOnInit 后显式调用恢复），
+                // 先在宽限期前挂载缓存并把 accountRuntime.restore() 纳入 runColdStartGracefulRecovery 宽限重试，避免提前 fail()。
+                val peekedAccount = accountRuntime.peekRestorableAccount()
+                val peekedSaved = peekedAccount?.let { loadSavedSelection(it) }
+                if (peekedAccount != null && peekedSaved != null && mutableController.value == null) {
+                    val agentKey = AgentKey.fromEndpointKey(peekedSaved.endpoint.key)
+                    val cachedAgents = loadDiscoveredAgents(peekedAccount)
                     val cachedAgentWorkspaces = loadCachedAgentWorkspaces(agentKey).let { list ->
-                        if (list.any { it.endpoint.key == saved.endpoint.key }) list else list + saved
+                        if (list.any { it.endpoint.key == peekedSaved.endpoint.key }) list else list + peekedSaved
                     }
                     putCachedWorkspaces(agentKey, cachedAgentWorkspaces)
-                    installOfflineWorkspaceSynchronously(saved, StreamHealth.CONNECTING)
                     val cachedSessions = withContext(Dispatchers.IO) {
                         loadCachedWorkspaceSessionsSnapshot(cachedAgentWorkspaces)
                     }
+                    val mounted = selection.withLock {
+                        if (mutableController.value != null) {
+                            false
+                        } else {
+                            mountOfflineWorkspaceSynchronously(
+                                workspace = peekedSaved,
+                                cachedAgentWorkspaces = cachedAgentWorkspaces,
+                                cachedSessions = cachedSessions,
+                                activeHostName = cachedAgents.firstOrNull { it.key == agentKey }?.hostName,
+                                activeAgentName = cachedAgents.firstOrNull { it.key == agentKey }?.displayName
+                                    ?: peekedSaved.endpoint.key.backendId.value,
+                                extraAgentTransform = { current ->
+                                    current.copy(
+                                        account = peekedAccount,
+                                        agents = if (current.agents.isEmpty()) cachedAgents else current.agents,
+                                        accountAvatarBase64 = avatar(peekedAccount),
+                                    )
+                                },
+                            )
+                        }
+                    }
+                    if (mounted) {
+                        runColdStartGracefulRecovery(peekedAccount, peekedSaved)
+                        return@launch
+                    }
+                }
+                updateLayerStates(agentTransform = { it.copy(busy = true) })
+                try {
+                    // 后台已发布的账号可能只启动了 Host，前台恢复需要让账号层补齐 Client。
+                    val account = accountRuntime.restore()
+                    if (account == null) {
+                        updateLayerStates(agentTransform = { it.copy(account = null) })
+                        return@launch
+                    }
+                    val cachedAgents = loadDiscoveredAgents(account)
                     updateLayerStates(
                         agentTransform = {
                             it.copy(
-                                activeAgent = agentKey,
-                                activeAgentName = saved.endpoint.key.backendId.value,
-                                phase = AgentConnectionPhase.CONNECTING,
-                                offlineConfirmed = false,
-                                busy = false,
-                            )
-                        },
-                        workspaceTransform = {
-                            WorkspaceContextState(
-                                agentKey = agentKey,
-                                workspaces = cachedAgentWorkspaces,
-                                catalogPhase = WorkspaceCatalogPhase.READY,
-                                activeWorkspace = saved.endpoint.key,
-                                sessionsByWorkspace = cachedSessions,
+                                account = account,
+                                agents = if (it.agents.isEmpty()) cachedAgents else it.agents,
+                                accountAvatarBase64 = avatar(account),
                             )
                         },
                     )
-                    runColdStartGracefulRecovery(account, saved)
-                } else {
-                    refreshHostsInternal()
+                    val saved = loadSavedSelection(account)
+                    if (saved != null && mutableController.value == null) {
+                        val agentKey = AgentKey.fromEndpointKey(saved.endpoint.key)
+                        val cachedAgentWorkspaces = loadCachedAgentWorkspaces(agentKey).let { list ->
+                            if (list.any { it.endpoint.key == saved.endpoint.key }) list else list + saved
+                        }
+                        putCachedWorkspaces(agentKey, cachedAgentWorkspaces)
+                        val cachedSessions = withContext(Dispatchers.IO) {
+                            loadCachedWorkspaceSessionsSnapshot(cachedAgentWorkspaces)
+                        }
+                        val mounted = selection.withLock {
+                            if (mutableController.value != null) {
+                                false
+                            } else {
+                                mountOfflineWorkspaceSynchronously(
+                                    workspace = saved,
+                                    cachedAgentWorkspaces = cachedAgentWorkspaces,
+                                    cachedSessions = cachedSessions,
+                                    activeHostName = agentConnection.value.agents.firstOrNull { it.key == agentKey }?.hostName,
+                                    activeAgentName = agentConnection.value.agents.firstOrNull { it.key == agentKey }?.displayName
+                                        ?: saved.endpoint.key.backendId.value,
+                                )
+                            }
+                        }
+                        if (mounted) {
+                            runColdStartGracefulRecovery(account, saved)
+                        } else if (agentConnection.value.phase != AgentConnectionPhase.CONNECTED) {
+                            refreshHostsInternal()
+                        }
+                    } else if (agentConnection.value.phase != AgentConnectionPhase.CONNECTED) {
+                        refreshHostsInternal()
+                    }
+                } catch (failure: Exception) {
+                    if (failure.isTrueCancellation()) throw failure
+                    fail(failure)
+                } finally {
+                    updateLayerStates(agentTransform = { it.copy(busy = false) })
                 }
-            } catch (failure: Exception) {
-                if (failure.isTrueCancellation()) throw failure
-                fail(failure)
-            } finally {
-                updateLayerStates(agentTransform = { it.copy(busy = false) })
             }
+            startupRecoveryJob = createdJob
+            createdJob to true
         }
+        if (shouldStart) jobToRun.start()
+        return jobToRun
     }
 
     fun dismissConnectionError() {
@@ -1090,7 +1172,9 @@ class RemoteRuntime(
                                         }.onFailure {
                                             if (it.isTrueCancellation()) throw it
                                         }.isSuccess
-                                        if (!restoredOnline) {
+                                        if (restoredOnline) {
+                                            refreshModels()
+                                        } else {
                                             updateLayerStates(
                                                 agentTransform = {
                                                     it.copy(
@@ -1245,16 +1329,15 @@ class RemoteRuntime(
                 availability = EndpointAvailability.AVAILABLE,
             )
 
+            val cachedSessions = withContext(Dispatchers.IO) {
+                loadCachedWorkspaceSessionsSnapshot(formattedWorkspaces)
+            }
             val reuseExistingController = mutableController.value != null &&
                 hotRepository?.isOnline == true &&
                 agent == prevActiveAgent &&
                 workspaceContext.value.activeWorkspace == targetWorkspace.endpoint.key
             if (reuseExistingController) {
-                val activeCtrl = mutableController.value
-                if (initialThreadId != null) {
-                    activeCtrl?.openThread(initialThreadId)
-                }
-                refreshModels(activeCtrl?.state?.value?.activeThreadId)
+                initialThreadId?.let { mutableController.value?.openThread(it) }
             } else {
                 switchWorkspaceControllerLocked(
                     account = activeAccount,
@@ -1265,9 +1348,6 @@ class RemoteRuntime(
                 )
             }
 
-            val cachedSessions = withContext(Dispatchers.IO) {
-                loadCachedWorkspaceSessionsSnapshot(formattedWorkspaces)
-            }
             updateLayerStates(
                 agentTransform = { current ->
                     val mergedAgents = (current.agents.filterNot { it.key == agent } + discoveredEntry)
@@ -1297,6 +1377,9 @@ class RemoteRuntime(
                     )
                 },
             )
+            mutableController.value?.state?.value?.activeThreadId?.let { activeId ->
+                refreshModels(activeId)
+            }
             hydrateWorkspaces(force = true)
         } catch (failure: Exception) {
             if (failure.isTrueCancellation()) throw failure
@@ -1380,10 +1463,20 @@ class RemoteRuntime(
                     val currentChannel = channel
                     val currentOnlineCarrier = activeCarriers.firstOrNull { it.backend == targetAgent.backendId.value }
 
-                    // 若就是当前工作区：在线时直接打开目标会话，离线时就地重连
+                    // 若就是当前工作区：在线时先清空滞留错误态并打开目标会话，离线时就地重连
                     if (workspaceContext.value.activeWorkspace == workspace.endpoint.key) {
                         val activeCtrl = controller.value
                         if (activeCtrl != null && hotRepository?.isOnline == true) {
+                            updateLayerStates(
+                                agentTransform = {
+                                    it.copy(
+                                        phase = AgentConnectionPhase.CONNECTED,
+                                        offlineConfirmed = false,
+                                        reconnectingInPlace = false,
+                                        errorCode = null,
+                                    )
+                                },
+                            )
                             initialThreadId?.let(activeCtrl::openThread)
                             return@withLock
                         }
@@ -2025,9 +2118,6 @@ class RemoteRuntime(
             mutableAssistantVersion.value++
 
             saveSelection(formattedConfirmed)
-            publishConnectedLayerState()
-            observeBackgroundWork()
-
             val supported = carrier.capabilities
             currentController.updateRemoteCapabilities(
                 online = true,
@@ -2038,6 +2128,8 @@ class RemoteRuntime(
                 approvals = SessionCapability.APPROVAL in supported,
                 unarchive = SessionCapability.UNARCHIVE in supported,
             )
+            publishConnectedLayerState()
+            observeBackgroundWork()
         }
     }
 
@@ -2132,9 +2224,8 @@ class RemoteRuntime(
             mutableController.value = newController
             assistantWorkspace = buildAssistantWorkspace(local, confirmed, ownedScope)
             initialThreadId?.let(newController::openThread)
-            newController.state.value.activeThreadId?.let { activeId ->
+            newController.state.value.activeThreadId?.let {
                 binding.repo.activeConversationChanged()
-                refreshModels(activeId)
             }
             runCatching { saveSelection(confirmed) }
             observeBackgroundWork()
@@ -2243,6 +2334,13 @@ class RemoteRuntime(
             onActiveThreadChanged = { id ->
                 active.set(id)
                 if (activeThreadRef === active) {
+                    if (agentConnection.value.errorCode != null &&
+                        (agentConnection.value.phase == AgentConnectionPhase.CONNECTED ||
+                            agentConnection.value.phase == AgentConnectionPhase.CONNECTING ||
+                            hotRepository?.isOnline == true)
+                    ) {
+                        updateLayerStates(agentTransform = { it.copy(errorCode = null) })
+                    }
                     repository?.activeConversationChanged()
                     if (restore) refreshModels(id)
                 }
@@ -2280,9 +2378,8 @@ class RemoteRuntime(
                 }
             } catch (failure: Exception) {
                 if (failure.isTrueCancellation()) throw failure
-                if (repository === repo && modelSequence.get() == sequence && !agentConnection.value.busy) {
-                    fail(failure)
-                }
+                // 模型目录属于辅助元信息，冷启动、会话切换或新建会话读取失败时仅跳过更新，
+                // 严禁调用 fail(failure) 污染 agentConnection.errorCode 导致误弹连接失败横幅。
             } finally {
                 if (repository === repo && modelSequence.get() == sequence) {
                     updateLayerStates(workspaceTransform = { it.copy(modelBusy = false) })
@@ -2680,7 +2777,10 @@ class RemoteRuntime(
     private fun endpointForNotification(target: ReplyNotificationTarget): RemoteWorkspace? {
         val account = agentConnection.value.account ?: return null
         if (target.profileId != profileId(account.origin) || target.accountId != account.accountId || target.agentId == null) return null
-        state.value.endpoints.firstOrNull { endpointId(it.endpoint.key) == target.agentId }?.let { return it }
+        val knownWorkspaces = workspaceContext.value.workspaces + synchronized(stateLock) {
+            cachedWorkspacesByAgent.values.flatten()
+        }
+        knownWorkspaces.firstOrNull { endpointId(it.endpoint.key) == target.agentId }?.let { return it }
         val encoded = preferences.getString("endpoint:${target.profileId}:${target.accountId}:${target.agentId}", null) ?: return null
         return decodeWorkspaceArray(account, encoded)?.takeIf { endpointId(it.endpoint.key) == target.agentId }
     }
@@ -2947,10 +3047,17 @@ class RemoteRuntime(
         accountRuntime.refreshControlConnection()
         val activeKey = workspaceContext.value.activeWorkspace ?: return
         val phase = agentConnection.value.phase
-        val needReconnect = hasPendingNetworkLoss() ||
-            phase == AgentConnectionPhase.OFFLINE ||
-            (phase == AgentConnectionPhase.RECONNECTING && !agentConnection.value.reconnectingInPlace) ||
-            controller.value?.state?.value?.isOnline == false
+        if (phase == AgentConnectionPhase.AUTH_REVOKED || phase == AgentConnectionPhase.DISCONNECTED) return
+        val startupInFlight = startupRecoveryJob?.isActive == true
+        val needReconnect = when (phase) {
+            // 冷启动初始建链与宽限期重试仍在进行中时，不得被并发网络可用回调取消并切入失败态。
+            AgentConnectionPhase.CONNECTING ->
+                !startupInFlight && activeOperationJob?.isActive != true && (hasPendingNetworkLoss() || hotRepository?.isOnline != true)
+            AgentConnectionPhase.CONNECTED -> hasPendingNetworkLoss() || hotRepository?.isOnline != true
+            AgentConnectionPhase.OFFLINE -> true
+            AgentConnectionPhase.RECONNECTING -> hasPendingNetworkLoss() || !agentConnection.value.reconnectingInPlace
+            AgentConnectionPhase.AUTH_REVOKED, AgentConnectionPhase.DISCONNECTED -> false
+        }
         if (needReconnect) {
             reconnectInPlace()
         } else {
@@ -2988,6 +3095,7 @@ class RemoteRuntime(
                                     phase = AgentConnectionPhase.RECONNECTING,
                                     offlineConfirmed = false,
                                     reconnectingInPlace = false,
+                                    errorCode = null,
                                 )
                             },
                         )
