@@ -6,25 +6,19 @@ import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -37,8 +31,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -50,8 +44,8 @@ import com.openandroidintelligence.conversation.components.SettingsCardHeader
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.mobile.SettingsPresentation
+import com.openandroidintelligence.mobile.settings.SettingsAdaptiveSingleChoiceSelector
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
-import com.openandroidintelligence.mobile.settings.isCompactSettingsSelector
 
 internal const val APP_RELEASES_URL = "https://github.com/1rua/open-android-intelligence/releases"
 
@@ -94,7 +88,6 @@ fun AppUpdateRoute(onBack: () -> Unit, presentation: SettingsPresentation = Sett
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun AppUpdateScreen(
     installed: InstalledAppBuild,
@@ -143,42 +136,17 @@ internal fun AppUpdateScreen(
                 }
                 SettingsSectionCard {
                     SettingsCardHeader("更新渠道")
-                    val compact = isCompactSettingsSelector(
+                    val layoutDirection = LocalLayoutDirection.current
+                    SettingsAdaptiveSingleChoiceSelector(
+                        options = AppUpdateChannel.entries,
+                        selected = state.channel,
+                        labelOf = { if (it == AppUpdateChannel.STABLE) "正式版" else "预览版" },
+                        onSelect = onSelectChannel,
                         presentation = presentation,
                         horizontalChrome = Dimensions.ScreenHorizontal * 2 + Dimensions.SpaceMedium * 2,
+                        horizontalInsets = padding.calculateStartPadding(layoutDirection) +
+                            padding.calculateEndPadding(layoutDirection),
                     )
-                    if (compact) {
-                        Column(Modifier.fillMaxWidth().selectableGroup()) {
-                            AppUpdateChannel.entries.forEach { channel ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().selectable(
-                                        selected = state.channel == channel,
-                                        role = Role.RadioButton,
-                                        onClick = { onSelectChannel(channel) },
-                                    ),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    RadioButton(selected = state.channel == channel, onClick = null)
-                                    Text(
-                                        text = if (channel == AppUpdateChannel.STABLE) "正式版" else "预览版",
-                                        modifier = Modifier.weight(1f),
-                                    )
-                                }
-                            }
-                        }
-                    } else {
-                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                            AppUpdateChannel.entries.forEachIndexed { index, channel ->
-                                SegmentedButton(
-                                    selected = state.channel == channel,
-                                    onClick = { onSelectChannel(channel) },
-                                    shape = SegmentedButtonDefaults.itemShape(index, AppUpdateChannel.entries.size),
-                                ) {
-                                    Text(if (channel == AppUpdateChannel.STABLE) "正式版" else "预览版")
-                                }
-                            }
-                        }
-                    }
                     Text(
                         text = if (state.channel == AppUpdateChannel.STABLE) {
                             "仅检查已发布的正式版本。"

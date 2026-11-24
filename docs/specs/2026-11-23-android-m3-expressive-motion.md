@@ -69,15 +69,14 @@ OpenAndroidIntelligenceTheme
                  ├─ 输入/录音容器：m3SharedBounds(SharedTransitionKeys.composerContainer())
                  └─ 发送/停止按钮：M3MorphingIconButton(sharedBoundsKey = composerAction("send-stop"))
 
-SettingsNavHost（独立隔离作用域，刻意挂在 movableSettings 内部）
- └─ AppSharedTransitionHost（随 movableSettings 在 839dp <-> 840dp 间整体迁移，不复用外层宿主以防重挂丢状态）
-     └─ Box(fillMaxSize + background(containerColor) + clipToBounds)
-         └─ NavHost（navEnter / navExit / navPopEnter / navPopExit 全透明淡出移除；非快照 transitionRoles + visibleEntries 清理）
-             ├─ OVERVIEW / 一级分类页 / 二级子页（统一经 settingsComposable）
-             │   └─ ProvideSharedVisibilityScope -> Box(fillMaxSize + background(containerColor) + navPageTransitionDecoration)
-             │       └─ SettingsPageScaffold(fillMaxSize + background(color) + containerColor)
-             └─ NOTIFICATIONS / DEVICE_PUSH 重定向占位页
-                 └─ Box(fillMaxSize + background(containerColor))（消除重定向期间透明瞬闪）
+SettingsNavHost（独立轻量容器，刻意挂在 movableSettings 内部）
+ └─ Box(fillMaxSize + background(containerColor) + clipToBounds)
+     └─ NavHost（navEnter / navExit / navPopEnter / navPopExit 全透明淡出移除；非快照 transitionRoles + visibleEntries 清理）
+         ├─ OVERVIEW / 一级分类页 / 二级子页（统一经 settingsComposable；设置内部无跨路由共享边界需求，不再挂载冗余 AppSharedTransitionHost / LookaheadScope 以避免双倍测量）
+         │   └─ Box(fillMaxSize + background(containerColor) + navPageTransitionDecoration)
+         │       └─ SettingsPageScaffold(fillMaxSize + containerColor)
+         └─ NOTIFICATIONS / DEVICE_PUSH 重定向占位页
+             └─ Box(fillMaxSize + background(containerColor))（消除重定向期间透明瞬闪）
 ```
 
 Key 命名空间统一收敛在 [SharedTransitions.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/SharedTransitions.kt) 的 `SharedTransitionKeys`（全部英文静态前缀，不受文案与语言影响）：
@@ -113,7 +112,7 @@ PlatformSettingsDrawer / WorkbenchScreen（窄屏 < 840dp）
              ├─ 1) 当 overlayBackController != null（嵌入全屏覆盖层）：
              │   └─ 注册中层 `PredictiveBackOverlayBridge(enabled = hostOpen && atOverview && SCREEN)`
              │       ├─ atOverview == true  -> 直接驱动 phoneOverlayController 联动背景视差并滑出关闭
-             │       └─ 禁止再对 AppSharedTransitionHost 叠加 .predictiveBackSlideTransform
+             │       └─ 禁止再对设置根容器叠加 .predictiveBackSlideTransform
              ├─ 2) 当 overlayBackController == null（独立渲染如单元测试）：
              │   └─ 退化挂载 `rememberPredictiveBackState` + `.predictiveBackSlideTransform(...)`
              ├─ 3) NavHost（处于 LIFO 更上层）：
@@ -544,15 +543,13 @@ fun LayeredParallaxSettingsHostExample(
                     },
                 ) {
                     composable("overview") { entry ->
-                        ProvideSharedVisibilityScope {
-                            Box(
-                                Modifier
-                                    .fillMaxSize()
-                                    .background(containerColor)
-                                    .navPageTransitionDecoration({ roles[entry.id] }, reduced),
-                            ) {
-                                // 实色设置总览页内容
-                            }
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .background(containerColor)
+                                .navPageTransitionDecoration({ roles[entry.id] }, reduced),
+                        ) {
+                            // 实色设置总览页内容
                         }
                     }
                 }
@@ -575,4 +572,4 @@ fun LayeredParallaxSettingsHostExample(
 | `:conversation-ui` | `M3ExpressiveCard.kt`、`M3MorphingButton.kt`、`Theme.kt`、`ExpandableRegion.kt`、`Interaction.kt` | 动态圆角卡片、形变按钮与主题/展开/按压弹簧升级 | `M3ExpressiveComponentsTest` |
 | `:conversation-ui` | [WorkbenchScreen.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/WorkbenchScreen.kt)、`ComposerBar.kt`、`VoiceRecordingRow.kt`、`TimelineScaffold.kt`、`ApprovalCard.kt`、`CommandMenu.kt`、`ComposerAttachmentSheet.kt`、`MarkdownThoughtView.kt`、`MarkdownToolCallView.kt`、`ScreenSelectionOverlay.kt`、`SettingsItemMorph.kt`、`RecordingWaveform.kt`、`AssistantView.kt` | 手机设置改用 `FullscreenPredictiveSlideOverlay` 视差联动与松手不弹回提交、平板侧栏 `AnimatedContent` 接入 `navPageTransitionDecoration` 与 Z-Index 顺序、发送/停止与录音发送键共享边界形变、折叠思维链/工具卡升级 | `M3ExpressiveComponentsTest`、`ThoughtCardTest`、`VoiceRecordingRowTest`、`ScreenSelectionMinimumSizeTest`（包含在 `:conversation-ui:test`） |
 | `:app` | [RemoteWorkbenchRoot.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/RemoteWorkbenchRoot.kt)、[RemoteLoginScreen.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/RemoteLoginScreen.kt)、[SettingsScreen.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/SettingsScreen.kt)、[NotificationAppPicker.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/notifications/NotificationAppPicker.kt) | 主题内层 `AppSharedTransitionHost`、登录/推送兜底/应用选择器实色 `surface` 背景补齐、`m3SharedBounds` + `M3MorphingButton` | `ExpressiveMotionNavigationTest`、`RemoteRootInteractionTest`、`RemoteLoginPresentationTest` |
-| `:app` | [PlatformSettingsBottomSheet.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/PlatformSettingsBottomSheet.kt)、[SettingsNavHost.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/SettingsNavHost.kt)、[SettingsScaffold.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/SettingsScaffold.kt) | 在 `if (expanded)` 前注册 `rememberPredictiveOverlayBackController`、手机端 `FullscreenPredictiveSlideOverlay`、内置 `AppSharedTransitionHost`、`containerColor` + `clipToBounds` + `transitionRoles` + `navPageTransitionDecoration`、根路由 `PredictiveBackOverlayBridge` 与 `SettingsPageScaffold` 强制实色铺满 | `ExpressiveMotionNavigationTest`、`SettingsNavigationTest`、`SettingsHonestyCopyTest`、`SettingsResponsiveHostRegressionTest`、`MaterialTokenGuardTest` |
+| `:app` | [PlatformSettingsBottomSheet.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/PlatformSettingsBottomSheet.kt)、[SettingsNavHost.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/SettingsNavHost.kt)、[SettingsScaffold.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/SettingsScaffold.kt) | 在 `if (expanded)` 前注册 `rememberPredictiveOverlayBackController`、手机端 `FullscreenPredictiveSlideOverlay`、移除 `SettingsNavHost` 冗余内嵌 `AppSharedTransitionHost`、`containerColor` + `clipToBounds` + `transitionRoles` + `navPageTransitionDecoration`、根路由 `PredictiveBackOverlayBridge` 与 `SettingsPageScaffold` 复用 `containerColor` 实色铺满 | `ExpressiveMotionNavigationTest`、`SettingsNavigationTest`、`SettingsHonestyCopyTest`、`SettingsResponsiveHostRegressionTest`、`MaterialTokenGuardTest` |

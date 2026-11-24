@@ -16,8 +16,10 @@ import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -34,22 +36,31 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onParent
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.LayoutDirection
@@ -1037,8 +1048,8 @@ class SharedTransitionsAndPredictiveBackTest {
     fun fullscreenOverlayAllowsInnerVerticalScrollAndJitteryClicksWithoutLeakingToBackground() {
         var bgClicks = 0
         var innerClicks = 0
-        lateinit var innerScrollState: androidx.compose.foundation.ScrollState
-        lateinit var bgScrollState: androidx.compose.foundation.ScrollState
+        lateinit var innerScrollState: ScrollState
+        lateinit var bgScrollState: ScrollState
 
         compose.setContent {
             OpenAndroidIntelligenceTheme(reduceMotion = false) {
@@ -1217,5 +1228,143 @@ class SharedTransitionsAndPredictiveBackTest {
         compose.waitForIdle()
         triggerDraw()
         assertTrue("预测返回露出底层后应恢复背景绘制: settled=$settledBgDraws, afterDrag=$bgDrawCount", bgDrawCount > settledBgDraws)
+    }
+
+    @Test
+    fun predictiveBackSlideTransformZeroRelayoutDuringDragAndZeroLayerAtRest() {
+        var progress by mutableFloatStateOf(0f)
+        var layoutPlacements = 0
+
+        compose.setContent {
+            Box(
+                Modifier
+                    .size(200.dp)
+                    .predictiveBackSlideTransform(progressProvider = { progress }, reduced = false)
+                    .layout { measurable, constraints ->
+                        val placeable = measurable.measure(constraints)
+                        layout(placeable.width, placeable.height) {
+                            layoutPlacements++
+                            placeable.place(0, 0)
+                        }
+                    }
+                    .testTag("slide-node"),
+            ) {
+                Text("SlideContent")
+            }
+        }
+        compose.waitForIdle()
+        val fullWidthPx = with(compose.density) { 200.dp.toPx() }
+        assertEquals(0f, compose.onNodeWithTag("slide-node").fetchSemanticsNode().positionInRoot.x, 0.5f)
+        val settledPlacements = layoutPlacements
+        val defaultScaleReduction = 0.04f
+
+        // 0f -> 0.2f：首次进入拖动，触发图层挂载并开始位移
+        compose.runOnIdle { progress = 0.2f }
+        compose.waitForIdle()
+        val expectedX02 = fullWidthPx * 0.2f + fullWidthPx * (0.2f * defaultScaleReduction) / 2f
+        val afterFirstMoveX = compose.onNodeWithTag("slide-node").fetchSemanticsNode().positionInRoot.x
+        assertEquals(expectedX02, afterFirstMoveX, 2f)
+        val afterEnterDragPlacements = layoutPlacements
+
+        // 连续推进 0.4f -> 0.7f -> 0.9f：图层开关恒为 true，子内容必须零额外重排
+        listOf(0.4f, 0.7f, 0.9f).forEach { nextProgress ->
+            compose.runOnIdle { progress = nextProgress }
+            compose.waitForIdle()
+            val expectedX = fullWidthPx * nextProgress + fullWidthPx * (nextProgress * defaultScaleReduction) / 2f
+            assertEquals(
+                expectedX,
+                compose.onNodeWithTag("slide-node").fetchSemanticsNode().positionInRoot.x,
+                2f,
+            )
+            assertEquals(
+                "预测返回连续拖动到 $nextProgress 时子布局不应额外重排",
+                afterEnterDragPlacements,
+                layoutPlacements,
+            )
+        }
+        assertTrue(settledPlacements >= 1)
+    }
+
+    @Test
+    fun fullscreenOverlayIsolatesAccessibilityAndFocusWhenFullyOccluded() {
+        var overlayOpen by mutableStateOf(false)
+        var bgRecomposeCount = 0
+        var bgFocused = false
+        val bgFocusRequester = FocusRequester()
+        lateinit var dispatcher: OnBackPressedDispatcher
+
+        compose.setContent {
+            dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
+            OpenAndroidIntelligenceTheme(reduceMotion = false) {
+                Box(Modifier.size(240.dp)) {
+                    val controller = rememberPredictiveOverlayBackController(
+                        overlayOpen = overlayOpen,
+                        enabled = overlayOpen,
+                        reduced = false,
+                        onDismiss = { overlayOpen = false },
+                        sdkInt = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+                    )
+                    FullscreenPredictiveSlideOverlay(
+                        controller = controller,
+                        reduced = false,
+                        modifier = Modifier.fillMaxSize(),
+                        backgroundContent = {
+                            SideEffect { bgRecomposeCount++ }
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .testTag("bg-a11y-root"),
+                            ) {
+                                Box(
+                                    Modifier
+                                        .size(48.dp)
+                                        .testTag("bg-focus-target")
+                                        .focusRequester(bgFocusRequester)
+                                        .onFocusChanged { bgFocused = it.isFocused }
+                                        .focusable(),
+                                )
+                            }
+                        },
+                        overlayContent = {
+                            Box(Modifier.fillMaxSize().testTag("overlay-fg")) {
+                                Text("OverlayFg")
+                            }
+                        },
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+        val hasInvisibleToUser = SemanticsMatcher.keyIsDefined(SemanticsProperties.InvisibleToUser)
+
+        // 覆盖层关闭时底层可见且可获焦
+        val bgWrapper = compose.onNodeWithTag("bg-a11y-root", useUnmergedTree = true).onParent()
+        bgWrapper.assert(hasInvisibleToUser.not())
+        compose.runOnIdle { bgFocusRequester.requestFocus() }
+        compose.waitForIdle()
+        assertTrue(bgFocused)
+
+        // 打开覆盖层并稳定到全遮挡态：自动清除底层焦点，背景宿主节点打上 InvisibleToUser 隔离（不擦除子 testTag），且再次请求焦点被取消
+        compose.runOnIdle { overlayOpen = true }
+        compose.waitForIdle()
+        assertFalse("覆盖层全遮挡后应清除底层已持有焦点", bgFocused)
+        bgWrapper.assert(hasInvisibleToUser)
+        compose.onNodeWithTag("bg-a11y-root", useUnmergedTree = true).assertExists()
+        compose.runOnIdle { bgFocusRequester.requestFocus() }
+        compose.waitForIdle()
+        assertFalse("覆盖层全遮挡时底层不得再次获焦", bgFocused)
+
+        val recomposeAtSettledOpen = bgRecomposeCount
+        // 预测性返回拖出 0.4f 露出底层：解除无障碍隐藏且底层可重新获焦，同时全程零背景重组
+        compose.runOnIdle {
+            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 100f, 0f, BackEventCompat.EDGE_LEFT))
+            dispatcher.dispatchOnBackProgressed(BackEventCompat(96f, 100f, 0.4f, BackEventCompat.EDGE_LEFT))
+        }
+        compose.waitForIdle()
+        assertEquals("露出底层切换隔离态期间不得触发背景重组", recomposeAtSettledOpen, bgRecomposeCount)
+        bgWrapper.assert(hasInvisibleToUser.not())
+        compose.runOnIdle { bgFocusRequester.requestFocus() }
+        compose.waitForIdle()
+        assertTrue("覆盖层部分拉回露出底层后应恢复底层获焦能力", bgFocused)
     }
 }

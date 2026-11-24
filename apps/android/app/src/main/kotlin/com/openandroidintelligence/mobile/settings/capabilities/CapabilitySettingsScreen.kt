@@ -197,8 +197,12 @@ private fun CapabilityDetailContent(
     var notice by remember { mutableStateOf<String?>(null) }
     var saveError by remember { mutableStateOf<String?>(null) }
     val accessibilityConnected by ScreenHostRegistry.accessibilityConnected.collectAsState()
+    val captureAvailabilityRevision by RemoteScreenCaptureRegistry.availabilityRevision.collectAsState()
     val notificationBinding = NotificationControlRegistry.bindingPort()
-    val notificationListenerConnected by rememberNotificationListenerConnected(notificationBinding)
+    val notificationListenerConnected by rememberNotificationListenerConnected(
+        binding = notificationBinding,
+        refreshKey = refreshTick to pollTick,
+    )
     val lifecycle = LocalLifecycleOwner.current
     fun refresh() {
         probeAccessibilityBinding(context)
@@ -242,7 +246,17 @@ private fun CapabilityDetailContent(
             if (reconciled) refresh()
         }
     }
-    val inspector = remember(context, refreshTick, pollTick, hostRevision, accessibilityConnected, notificationListenerConnected, deniedPermissions) {
+    val inspector = remember(
+        context,
+        notificationBinding,
+        refreshTick,
+        pollTick,
+        hostRevision,
+        accessibilityConnected,
+        captureAvailabilityRevision,
+        notificationListenerConnected,
+        deniedPermissions,
+    ) {
         DeviceCapabilityGrantInspector(
             context = context,
             notificationAccessGranted = ::isNotificationListenerReady,
@@ -283,6 +297,7 @@ private fun CapabilityDetailContent(
         hostRevision,
         localState?.revision,
         accessibilityConnected,
+        captureAvailabilityRevision,
         notificationListenerConnected,
         refreshTick,
         pollTick,
@@ -340,7 +355,7 @@ private fun CapabilityDetailContent(
     // 过滤键必须是授权作用域自身的键（`policyKey`，含身份/Schema/风险/原语摘要），
     // 不能是 `entry.key`（`id@version`）：`approveRequest()` 存的是前者，两者永不相等，
     // 用后者会让真实批准全部被过滤掉、撤销入口随之消失。
-    val approvalScopeKeys = remember(host, pluginId, hostRevision, entries) {
+    val approvalScopeKeys = remember(host, pluginId, capabilityId, hostRevision, capabilityRows) {
         val owned = capabilityRows.map { it.draftIdentity }
         val siblingScopes = if (capabilityId == SMS_QUERY_ID) {
             // 短信详情统一管理四项能力，它们的批准也必须能在这里看到并撤销。
@@ -399,7 +414,7 @@ private fun CapabilityDetailContent(
     // 且调度器同时要求全局与身份作用域两项许可。不在这里补上，用户打开「短信定时任务设置」
     // 后每次调度仍会以 BACKGROUND_GRANT_REQUIRED 失败，且无法撤销已有的许可。
     val supportsBackground = remember(host, hostRevision, pluginId) { host.supportsBackground(pluginId) }
-    val backgroundEnabled = remember(host, hostRevision, refreshTick, pluginId, supportsBackground) {
+    val backgroundEnabled = remember(host, hostRevision, localState, refreshTick, pluginId, supportsBackground) {
         if (supportsBackground) host.isBackgroundEnabled(pluginId) else false
     }
     if (supportsBackground) {
@@ -443,13 +458,13 @@ private fun CapabilityDetailContent(
         val fallbackNeeded = remember(requirements, states) {
             needsFallbackConsent(requirements) { states.getValue(it) }
         }
-        val accessibilityDisconnected = remember(inspector, requirements, states) {
+        val accessibilityDisconnected = remember(context, inspector, requirements, states) {
             requirements.any {
                 it.grantKind == DeviceCapabilityGrantKind.ACCESSIBILITY_SERVICE &&
                     states[it] != DeviceCapabilityGrantState.GRANTED
             } && accessibilityServiceDisconnected(context)
         }
-        val notificationListenerBound = remember(inspector, requirements, states) {
+        val notificationListenerBound = remember(notificationBinding, inspector, requirements, states) {
             requirements.any {
                 it.grantKind == DeviceCapabilityGrantKind.NOTIFICATION_ACCESS &&
                     states[it] != DeviceCapabilityGrantState.GRANTED

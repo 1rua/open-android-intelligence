@@ -161,6 +161,11 @@ fun WorkbenchScreen(
      */
     settingsPanel: (@Composable (onClose: () -> Unit) -> Unit)? = null,
     workspaceMenu: WorkspaceMenuState? = null,
+    /**
+     * 由外层已测量且保证与本组件等宽的宿主显式透传的可用最大宽度；
+     * 为 null 时组件自行测量自身约束宽度，不盲目信任外层环境。
+     */
+    availableWidthOverride: Dp? = null,
 ) {
     LocalWorkbenchCompositionObserver.current?.invoke("workbench")
     val state by controller.state.collectAsState()
@@ -426,606 +431,614 @@ fun WorkbenchScreen(
     }
 
     EnsureSharedTransitionHost {
-        val providedMaxWidth = LocalWindowMaxWidth.current
-        val body: @Composable (Dp) -> Unit = { availableWidth ->
+        val currentBody by rememberUpdatedState<@Composable (Dp) -> Unit> { availableWidth ->
             val expanded = availableWidth >= Dimensions.ExpandedWindow
 
-        val latestWorkspaceHydrate by rememberUpdatedState(workspaceMenu?.onHydrate)
-        val hasWorkspaceMenu = workspaceMenu != null
-        LaunchedEffect(expanded, hasWorkspaceMenu, workspaceMenu?.agentTitle, state.isOnline, drawer) {
-            if (!hasWorkspaceMenu) return@LaunchedEffect
-            snapshotFlow { expanded || drawer.isOpen || drawer.targetValue == DrawerValue.Open }
-                .distinctUntilChanged()
-                .collect { visible ->
-                    if (visible) latestWorkspaceHydrate?.invoke()
-                }
-        }
-
-        // 手机设置覆盖会话抽屉；设置显示状态本身直接随宿主输入更新。
-        LaunchedEffect(settingsOpen, expanded, settingsPanel != null) {
-            if (settingsPanel == null) return@LaunchedEffect
-            if (!settingsOpen && expanded) settingsFromConversations = false
-            if (settingsOpen && !expanded && (drawer.isOpen || drawer.isAnimationRunning)) {
-                drawer.snapTo(DrawerValue.Closed)
+            val latestWorkspaceHydrate by rememberUpdatedState(workspaceMenu?.onHydrate)
+            val hasWorkspaceMenu = workspaceMenu != null
+            LaunchedEffect(expanded, hasWorkspaceMenu, workspaceMenu?.agentTitle, state.isOnline, drawer) {
+                if (!hasWorkspaceMenu) return@LaunchedEffect
+                snapshotFlow { expanded || drawer.isOpen || drawer.targetValue == DrawerValue.Open }
+                    .distinctUntilChanged()
+                    .collect { visible ->
+                        if (visible) latestWorkspaceHydrate?.invoke()
+                    }
             }
-        }
 
-        val hasSettingsPanel = settingsPanel != null
-        val onDrawerOpenSettings = remember(hasSettingsPanel, expanded, scope, drawer) {
-            {
-                settingsFromConversations = hasSettingsPanel
-                if (!hasSettingsPanel || !expanded) scope.launch { drawer.close() }
-                currentOnOpenSettings()
-            }
-        }
-
-        val drawerContent: @Composable () -> Unit = {
-            ThreadDrawer(
-                accountName = accountName,
-                agentName = agentName,
-                avatar = accountAvatar,
-                onChangeAvatar = onChangeAvatar,
-                streamHealth = displayStreamHealth,
-                gatewayLabel = gatewayLabel,
-                threads = state.threads,
-                activeThreadId = state.activeThreadId,
-                organization = browserOrganization,
-                selectedFolderId = state.selectedFolderId,
-                managementSupported = state.conversationManagementSupported,
-                deleteSupported = state.conversationDeleteSupported,
-                archiveSupported = state.conversationArchiveSupported,
-                unarchiveSupported = state.conversationUnarchiveSupported,
-                renameSupported = state.conversationRenameSupported,
-                organizationStoredLocally = state.organizationStoredLocally,
-                managing = state.managingThreads,
-                online = state.isOnline,
-                busyThreadIds = state.busyThreadIds,
-                actions = browserActions,
-                onOpenThread = onDrawerOpenThread,
-                onCreateThread = onDrawerCreateThread,
-                onRefresh = controller::refreshThreads,
-                onOpenSettings = onDrawerOpenSettings,
-                onCloseDrawer = onDrawerClose,
-                showClose = !expanded,
-                onOpenAttachments = onDrawerOpenAttachments,
-                onLogout = onDrawerLogout,
-                workspaceMenu = workspaceMenu,
-            )
-        }
-
-        val mainContent: @Composable () -> Unit = {
-            // M01：列表离开顶部后，顶栏与内容之间出现 1dp 分隔线（150ms alpha）。
-            val timelineScrolled by remember(listState) {
-                derivedStateOf {
-                    listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0
+            // 手机设置覆盖会话抽屉；设置显示状态本身直接随宿主输入更新。
+            LaunchedEffect(settingsOpen, expanded, settingsPanel != null) {
+                if (settingsPanel == null) return@LaunchedEffect
+                if (!settingsOpen && expanded) settingsFromConversations = false
+                if (settingsOpen && !expanded && (drawer.isOpen || drawer.isAnimationRunning)) {
+                    drawer.snapTo(DrawerValue.Closed)
                 }
             }
-            val dividerAlpha by animateFloatAsState(
-                targetValue = if (timelineScrolled) 1f else 0f,
-                animationSpec = MotionSpecs.effectsFast(reduceMotion),
-                label = "topbar-divider",
-            )
 
-            Scaffold(
-                modifier = Modifier.testTag("chat-workbench-root"),
-                snackbarHost = {
-                    SnackbarHost(snackbar) { data ->
-                        Snackbar(
-                            snackbarData = data,
-                            shape = RoundedCornerShape(AppRadius.Small),
-                            modifier = Modifier
-                                .padding(horizontal = Dimensions.TimelineHorizontal)
-                                // M15：Snackbar 必须避让输入坞 + 系统手势条；在布局阶段读取避免组合期重组。
-                                .dockBottomPadding(extra = Dimensions.SpaceSmall) { bottomDockHeightPx.intValue },
-                        )
+            val hasSettingsPanel = settingsPanel != null
+            val onDrawerOpenSettings = remember(hasSettingsPanel, expanded, scope, drawer) {
+                {
+                    settingsFromConversations = hasSettingsPanel
+                    if (!hasSettingsPanel || !expanded) scope.launch { drawer.close() }
+                    currentOnOpenSettings()
+                }
+            }
+
+            val drawerContent: @Composable () -> Unit = {
+                ThreadDrawer(
+                    accountName = accountName,
+                    agentName = agentName,
+                    avatar = accountAvatar,
+                    onChangeAvatar = onChangeAvatar,
+                    streamHealth = displayStreamHealth,
+                    gatewayLabel = gatewayLabel,
+                    threads = state.threads,
+                    activeThreadId = state.activeThreadId,
+                    organization = browserOrganization,
+                    selectedFolderId = state.selectedFolderId,
+                    managementSupported = state.conversationManagementSupported,
+                    deleteSupported = state.conversationDeleteSupported,
+                    archiveSupported = state.conversationArchiveSupported,
+                    unarchiveSupported = state.conversationUnarchiveSupported,
+                    renameSupported = state.conversationRenameSupported,
+                    organizationStoredLocally = state.organizationStoredLocally,
+                    managing = state.managingThreads,
+                    online = state.isOnline,
+                    busyThreadIds = state.busyThreadIds,
+                    actions = browserActions,
+                    onOpenThread = onDrawerOpenThread,
+                    onCreateThread = onDrawerCreateThread,
+                    onRefresh = controller::refreshThreads,
+                    onOpenSettings = onDrawerOpenSettings,
+                    onCloseDrawer = onDrawerClose,
+                    showClose = !expanded,
+                    onOpenAttachments = onDrawerOpenAttachments,
+                    onLogout = onDrawerLogout,
+                    workspaceMenu = workspaceMenu,
+                )
+            }
+
+            val mainContent: @Composable () -> Unit = {
+                // M01：列表离开顶部后，顶栏与内容之间出现 1dp 分隔线（150ms alpha）。
+                val timelineScrolled by remember(listState) {
+                    derivedStateOf {
+                        listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0
                     }
-                },
-                containerColor = MaterialTheme.colorScheme.surface,
-                contentWindowInsets = WindowInsets(0, 0, 0, 0),
-                topBar = {
-                    // M3 TopAppBar 的高度是固定值（默认 64dp）并裁剪内容，两行标题在
-                    // 系统字号放大到约 160% 以上时会被裁掉。这里按字体缩放决定第二行
-                    // 放在顶栏内（紧凑）还是顶栏下方（大字号，随内容增高），
-                    // 保证 200% 字号下连接状态依然完整可读；布局整体仍只占一块顶栏区域。
-                    val stackedContext = density.fontScale > 1.55f
-                    Column {
-                        WorkbenchTopBar(
-                            threadTitle = state.activeThreadTitle,
-                            gatewayLabel = gatewayLabel,
-                            streamHealth = displayStreamHealth,
-                            expanded = expanded,
-                            canRename = state.activeThreadId != null,
-                            creatingThread = state.creatingThread,
-                            overflowExpanded = overflowMenuExpanded,
-                            subtitleInBar = !stackedContext,
-                            onOpenDrawer = { scope.launch { drawer.open() } },
-                            onCreateThread = controller::createThread,
-                            onRenameThread = {
-                                renameDraft = state.activeThreadTitle
-                                showRenameDialog = true
-                            },
-                            onOpenAttachments = { showAttachmentLibrary = true },
-                            onOpenSettings = {
-                                settingsFromConversations = false
-                                onOpenSettings()
-                            },
-                            onOverflowExpandedChange = { overflowMenuExpanded = it },
-                        )
-                        if (stackedContext) {
-                            WorkbenchContextLine(
-                                gatewayLabel = gatewayLabel,
-                                streamHealth = displayStreamHealth,
-                                modifier = Modifier.padding(
-                                    start = Dimensions.SpaceMedium,
-                                    end = Dimensions.SpaceMedium,
-                                    bottom = Dimensions.SpaceSmall,
-                                ),
-                            )
-                        }
-                        HorizontalDivider(
-                            thickness = Dimensions.StrokeHairline,
-                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = dividerAlpha),
-                        )
-                    }
-                },
-            ) { padding ->
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding)
-                        // 横屏刘海与侧边手势区：Scaffold 内容窗口 inset 为零，
-                        // 左右安全区由这里补上（顶栏自己消费顶部）。
-                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)),
-                    contentAlignment = Alignment.TopCenter,
-                ) {
-                    val isCommandPopupVisible = !commandPopupDismissed && state.draft.startsWith("/")
+                }
+                val dividerAlpha by animateFloatAsState(
+                    targetValue = if (timelineScrolled) 1f else 0f,
+                    animationSpec = MotionSpecs.effectsFast(reduceMotion),
+                    label = "topbar-divider",
+                )
 
-                    // 抽屉盖在上面时它才是「当前可见的一层」：不能让背后看不见的
-                    // 命令菜单先吃掉返回键（否则按一次返回抽屉纹丝不动）。
-                    if (isCommandPopupVisible && !drawer.isOpen && sidebarPanel != SidebarPanel.SETTINGS) {
-                        BackHandler {
-                            commandPopupDismissed = true
-                        }
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .widthIn(max = Dimensions.ReadingWidth)
-                            .fillMaxSize(),
-                    ) {
-                        Column(
-                            modifier = Modifier.fillMaxSize(),
-                        ) {
-                            header()
-                            // a) 会话消息区域
-                            Box(Modifier.weight(1f)) {
-                                if (state.timeline == Loadable.Empty || (state.activeThreadId == null && state.timeline == Loadable.Idle)) {
-                                    Column(Modifier.fillMaxSize()) {
-                                        pluginCards()
-                                        ConversationWelcome(
-                                            onCreate = if (state.activeThreadId == null) controller::createThread else null,
-                                            catalog = state.catalog,
-                                            onSelectCommand = controller::selectCommand,
-                                            modifier = Modifier.weight(1f),
-                                        )
-                                    }
-                                } else {
-                                    LoadableRegion(
-                                        state.timeline,
-                                        "发送消息开始对话",
-                                        controller::retryTimeline,
-                                        modifier = Modifier.fillMaxSize(),
-                                        ready = { _ ->
-                                            val downloadAction =
-                                                if (controller.downloadsSupported) controller::downloadAttachment else null
-                                            AttachmentPreviewHost(
-                                                attachments = allAttachments,
-                                                onDownload = downloadAction,
-                                                onRequestOriginal = controller::requestOriginalImage,
-                                                modifier = Modifier.fillMaxSize(),
-                                            ) { openPreview ->
-                                            LazyColumn(
-                                                state = listState,
-                                                modifier = Modifier
-                                                    .fillMaxSize()
-                                                    .then(firstFrameModifier)
-                                                    .testTag("chat-timeline"),
-                                                contentPadding = PaddingValues(
-                                                    start = Dimensions.TimelineHorizontal,
-                                                    end = Dimensions.TimelineHorizontal,
-                                                    top = Dimensions.SpaceSmall,
-                                                    bottom = Dimensions.SpaceLarge,
-                                                ),
-                                                verticalArrangement = Arrangement.spacedBy(Dimensions.TimelineSpacing),
-                                            ) {
-                                                item(key = "protected_plugin_cards") {
-                                                    Box(Modifier.animateItem(
-                                                        fadeInSpec = null,
-                                                        placementSpec = MotionSpecs.morph(reduceMotion),
-                                                    )) { pluginCards() }
-                                                }
-                                                items(displayItems, key = { it.key }, contentType = { it.contentType }) { item ->
-                                                    val fresh = item.key in freshEntryKeys
-                                                    val isTail = item.key == displayItems.lastOrNull()?.key
-                                                    val jumpTarget = (item as? TimelineDisplayItem.Single)?.entry?.systemThreadId
-                                                    val rowModifier = Modifier
-                                                        // M04：只有真正新增的消息淡入 + 8dp 上浮；
-                                                        // 历史消息滚进视口不重放。
-                                                        .animateItem(
-                                                            fadeInSpec = if (fresh) MotionSpecs.fade(reduceMotion) else null,
-                                                            placementSpec = MotionSpecs.morph(reduceMotion),
-                                                        )
-                                                        .timelineItemRise(fresh = fresh, reduced = reduceMotion)
-                                                        .then(
-                                                            if (isTail) {
-                                                                Modifier.onSizeChanged { size ->
-                                                                    val previous = lastEntryHeightPx
-                                                                    // 只有「同一条消息继续长高」才补差值。
-                                                                    // 尾巴换成下一条消息时高度变化属于新条目，
-                                                                    // 由条目数量变化那条路径平滑跟随，不能再叠加一次。
-                                                                    val sameRow = lastEntryKey == item.key
-                                                                    lastEntryKey = item.key
-                                                                    lastEntryHeightPx = size.height
-                                                                    // 只补「长高」的差值：缩短不应把用户往下拽。
-                                                                    if (sameRow && followLatest && previous > 0 && size.height > previous) {
-                                                                        scope.launch {
-                                                                            listState.scrollBy((size.height - previous).toFloat())
-                                                                        }
-                                                                    }
-                                                                }
-                                                            } else {
-                                                                Modifier
-                                                            },
-                                                        )
-                                                    if (jumpTarget != null) {
-                                                        CreatedThreadJumpRow(
-                                                            label = (item as TimelineDisplayItem.Single).entry.text,
-                                                            onClick = { controller.openThread(jumpTarget) },
-                                                            modifier = rowModifier,
-                                                        )
-                                                    } else {
-                                                        TimelineDisplayRow(
-                                                            item = item,
-                                                            presentations = presentations,
-                                                            evidenceOwner = controller to state.activeThreadId,
-                                                            onDecide = controller::decideApproval,
-                                                            timing = executionTiming,
-                                                            onDownloadAttachment = downloadAction,
-                                                            onRequestOriginalAttachment = controller::requestOriginalImage,
-                                                            onOpenAttachmentPreview = openPreview,
-                                                            modifier = rowModifier,
-                                                        )
-                                                    }
-                                                }
-                                                if (creatingThreadInThisThread) {
-                                                    // Waiting is a state the user must be able to see
-                                                    // and leave: silence here is exactly what made the
-                                                    // button look like it did nothing. Scoped to the
-                                                    // thread it was sent from — the conversation the user
-                                                    // switched to is not the one waiting.
-                                                    item(key = "creating_thread") {
-                                                        CreatingThreadRow(
-                                                            onCancel = controller::cancelThreadCreation,
-                                                            modifier = Modifier
-                                                                .animateItem(
-                                                                    fadeInSpec = MotionSpecs.fade(reduceMotion),
-                                                                    placementSpec = MotionSpecs.morph(reduceMotion),
-                                                                )
-                                                                .padding(vertical = Dimensions.SpaceSmall),
-                                                        )
-                                                    }
-                                                }
-                                                if (isThinking) {
-                                                    item(key = "thinking_indicator") {
-                                                        ThinkingIndicator(
-                                                            modifier = Modifier
-                                                                .animateItem(
-                                                                    fadeInSpec = MotionSpecs.fade(reduceMotion),
-                                                                    placementSpec = MotionSpecs.morph(reduceMotion),
-                                                                )
-                                                                .padding(vertical = Dimensions.SpaceSmall),
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                            }
-                                        },
-                                    )
-                                }
-                                ScrollToLatestButton(
-                                    visible = !followLatest && entries.isNotEmpty() && !latestItemVisible,
-                                    onClick = {
-                                        followLatest = true
-                                        scope.launch {
-                                            val target = latestScrollTarget() ?: return@launch
-                                            if (reduceMotion) {
-                                                listState.scrollToItem(target)
-                                            } else {
-                                                listState.animateScrollToItem(target)
-                                            }
-                                        }
-                                    },
-                                    modifier = Modifier.align(Alignment.BottomCenter),
-                                )
-                            }
-
-                            // b) Bottom dock：输入坞外围负责系统手势条安全区。
-                            Column(
+                Scaffold(
+                    modifier = Modifier.testTag("chat-workbench-root"),
+                    snackbarHost = {
+                        SnackbarHost(snackbar) { data ->
+                            Snackbar(
+                                snackbarData = data,
+                                shape = RoundedCornerShape(AppRadius.Small),
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .windowInsetsPadding(
-                                        WindowInsets.navigationBars.only(
-                                            WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom,
-                                        ),
-                                    )
-                                    .onSizeChanged { size ->
-                                        if (bottomDockHeightPx.intValue != size.height) {
-                                            bottomDockHeightPx.intValue = size.height
-                                        }
-                                    },
-                            ) {
-                                PendingBatchStrip(state.pendingBatch)
-                                // Honest degradation: a Gateway that cannot take
-                                // a decision gets no card at all, and the user is
-                                // told the text command is the way to answer.
-                                if (state.isOnline && !state.approvalCardsSupported && !approvalHintDismissed) {
-                                    ApprovalUnsupportedHint(onDismiss = { approvalHintDismissed = true })
-                                }
-                                ComposerBar(
-                                    editorKey = controller to state.activeThreadId,
-                                    onPasteImages = onPasteImages,
-                                    draft = state.draft,
-                                    draftEpoch = state.draftEpoch,
-                                    onDraftChange = controller::editDraft,
-                                    onDraftEdit = { newDraft, expectedEpoch ->
-                                        val current = controller.state.value
-                                        if (expectedEpoch == current.draftEpoch) {
-                                            if (commandPopupDismissed && (newDraft.isEmpty() || !newDraft.startsWith(current.draft))) {
-                                                commandPopupDismissed = false
-                                            } else if (newDraft != current.draft && !newDraft.startsWith("/")) {
-                                                commandPopupDismissed = false
-                                            }
-                                            controller.editDraft(newDraft, expectedEpoch)
-                                        }
-                                    },
-                                    onSubmitDraft = controller::submitComposerDraft,
-                                    generation = state.generation,
-                                    canSend = state.canSend,
-                                    onSend = controller::sendDraft,
-                                    onQueue = {
-                                        controller.sendDraft(
-                                            com.openandroidintelligence.conversation.ports.MessageDeliveryMode.QUEUE,
-                                        )
-                                    },
-                                    onSteer = {
-                                        controller.sendDraft(
-                                            com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER,
-                                        )
-                                    },
-                                    onStop = controller::stopGeneration,
-                                    onPickCamera = onPickCamera,
-                                    onPickGallery = onPickGallery,
-                                    onPickDocument = onPickDocument,
-                                    onVoiceInput = onVoiceInput,
-                                    recording = recording,
-                                    onCancelRecording = onCancelRecording,
-                                    onFinishRecording = onFinishRecording,
-                                    voiceInputEnabled = controller.canSendVoiceAttachment(state.activeThreadId),
-                                    attachments = state.attachments,
-                                    inFlightAttachmentIds = state.inFlightAttachmentIds,
-                                    pendingDeliveries = state.pendingDeliveries,
-                                    onRetryPendingDelivery = controller::retryPendingDeliveries,
-                                    onRemoveAttachment = controller::removeAttachment,
-                                    onRetryAttachment = controller::retryAttachment,
-                                    modifier = Modifier.padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceSmall),
-                                )
-                            }
-                        }
-
-                        // c) Command autocomplete popup overlay（在布局阶段读取输入坞高度，避免 IME 动画逐帧触发重组）
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .fillMaxWidth()
-                                .dockBottomPadding(extra = 8.dp) { bottomDockHeightPx.intValue },
-                        ) {
-                            CommandMenu(
-                                catalogState = state.catalog,
-                                query = state.draft,
-                                onSelect = { cmd ->
-                                    commandPopupDismissed = true
-                                    controller.selectCommand(cmd)
-                                },
-                                onRetry = controller::loadCatalog,
-                                visible = isCommandPopupVisible,
-                                onDismissRequest = { commandPopupDismissed = true },
+                                    .padding(horizontal = Dimensions.TimelineHorizontal)
+                                    // M15：Snackbar 必须避让输入坞 + 系统手势条；在布局阶段读取避免组合期重组。
+                                    .dockBottomPadding(extra = Dimensions.SpaceSmall) { bottomDockHeightPx.intValue },
                             )
-                        }
-                    }
-                }
-            }
-        }
-
-        val sidebarInsets = WindowInsets.systemBars.union(WindowInsets.displayCutout)
-            .only(WindowInsetsSides.Vertical + WindowInsetsSides.Start)
-        val savedSidebarState = rememberSaveableStateHolder()
-        val latestMainContent by rememberUpdatedState(mainContent)
-        val movableMain = remember { movableContentOf { latestMainContent() } }
-        val latestSettingsPanel by rememberUpdatedState(settingsPanel)
-        val movableSettings = remember {
-            movableContentOf<() -> Unit> { onClose ->
-                savedSidebarState.SaveableStateProvider(SidebarPanel.SETTINGS) {
-                    latestSettingsPanel?.invoke(onClose)
-                }
-            }
-        }
-        val dismissPhoneSettings: () -> Unit = {
-            if (settingsFromConversations) {
-                scope.launch {
-                    drawer.open()
-                }
-            }
-            onSettingsOpenChange(false)
-        }
-        // 在 if (expanded) 之前稳定注册兜底预测返回与覆盖层控制器，确保从宽屏折叠至 < 840dp 时
-        // 外层处理器始终处于 OnBackPressedDispatcher 栈底，不会压在 movableSettings 内部子页返回之上。
-        val phoneOverlayController = rememberPredictiveOverlayBackController(
-            overlayOpen = settingsOpen,
-            enabled = !expanded && settingsOpen,
-            reduced = reduceMotion,
-            onDismiss = dismissPhoneSettings,
-        )
-
-        // 平板与宽屏（expanded）：设置与会话侧栏原位替换（320dp），右侧会话不被覆盖、不重新加载。
-        // 手机与紧凑屏（!expanded）：设置页面采用独立全屏侧滑容器（从屏幕左向右滑入，占满窗口全部宽度和高度）。
-        if (expanded) {
-            val sidebarTransitionRoles = remember { mutableMapOf<SidebarPanel, NavPageTransitionRole>() }
-            val tabletSidebarContent: @Composable () -> Unit = {
-                AnimatedContent(
-                    targetState = sidebarPanel,
-                    transitionSpec = {
-                        if (targetState == SidebarPanel.SETTINGS) {
-                            sidebarTransitionRoles[SidebarPanel.SETTINGS] = NavPageTransitionRole.FOREGROUND
-                            sidebarTransitionRoles[SidebarPanel.CONVERSATIONS] = NavPageTransitionRole.BACKGROUND
-                            (AppTransitions.navEnter(reduceMotion) togetherWith AppTransitions.navExit(reduceMotion)).apply {
-                                targetContentZIndex = 1f
-                            }
-                        } else {
-                            sidebarTransitionRoles[SidebarPanel.CONVERSATIONS] = NavPageTransitionRole.BACKGROUND
-                            sidebarTransitionRoles[SidebarPanel.SETTINGS] = NavPageTransitionRole.FOREGROUND
-                            (AppTransitions.navPopEnter(reduceMotion) togetherWith AppTransitions.navPopExit(reduceMotion)).apply {
-                                targetContentZIndex = -1f
-                            }
                         }
                     },
-                    modifier = Modifier.fillMaxSize(),
-                    label = "tablet-sidebar-content",
-                ) { panel ->
-                    ProvideSharedVisibilityScope {
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                    topBar = {
+                        // M3 TopAppBar 的高度是固定值（默认 64dp）并裁剪内容，两行标题在
+                        // 系统字号放大到约 160% 以上时会被裁掉。这里按字体缩放决定第二行
+                        // 放在顶栏内（紧凑）还是顶栏下方（大字号，随内容增高），
+                        // 保证 200% 字号下连接状态依然完整可读；布局整体仍只占一块顶栏区域。
+                        val stackedContext = density.fontScale > 1.55f
+                        Column {
+                            WorkbenchTopBar(
+                                threadTitle = state.activeThreadTitle,
+                                gatewayLabel = gatewayLabel,
+                                streamHealth = displayStreamHealth,
+                                expanded = expanded,
+                                canRename = state.activeThreadId != null,
+                                creatingThread = state.creatingThread,
+                                overflowExpanded = overflowMenuExpanded,
+                                subtitleInBar = !stackedContext,
+                                onOpenDrawer = { scope.launch { drawer.open() } },
+                                onCreateThread = controller::createThread,
+                                onRenameThread = {
+                                    renameDraft = state.activeThreadTitle
+                                    showRenameDialog = true
+                                },
+                                onOpenAttachments = { showAttachmentLibrary = true },
+                                onOpenSettings = {
+                                    settingsFromConversations = false
+                                    onOpenSettings()
+                                },
+                                onOverflowExpandedChange = { overflowMenuExpanded = it },
+                            )
+                            if (stackedContext) {
+                                WorkbenchContextLine(
+                                    gatewayLabel = gatewayLabel,
+                                    streamHealth = displayStreamHealth,
+                                    modifier = Modifier.padding(
+                                        start = Dimensions.SpaceMedium,
+                                        end = Dimensions.SpaceMedium,
+                                        bottom = Dimensions.SpaceSmall,
+                                    ),
+                                )
+                            }
+                            HorizontalDivider(
+                                thickness = Dimensions.StrokeHairline,
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = dividerAlpha),
+                            )
+                        }
+                    },
+                ) { padding ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(padding)
+                            // 横屏刘海与侧边手势区：Scaffold 内容窗口 inset 为零，
+                            // 左右安全区由这里补上（顶栏自己消费顶部）。
+                            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)),
+                        contentAlignment = Alignment.TopCenter,
+                    ) {
+                        val isCommandPopupVisible = !commandPopupDismissed && state.draft.startsWith("/")
+
+                        // 抽屉盖在上面时它才是「当前可见的一层」：不能让背后看不见的
+                        // 命令菜单先吃掉返回键（否则按一次返回抽屉纹丝不动）。
+                        if (isCommandPopupVisible && !drawer.isOpen && sidebarPanel != SidebarPanel.SETTINGS) {
+                            BackHandler {
+                                commandPopupDismissed = true
+                            }
+                        }
+
                         Box(
                             modifier = Modifier
-                                .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.surfaceContainerLow)
-                                .navPageTransitionDecoration(
-                                    roleProvider = { sidebarTransitionRoles[panel] },
-                                    reduced = reduceMotion,
-                                ),
+                                .widthIn(max = Dimensions.ReadingWidth)
+                                .fillMaxSize(),
                         ) {
-                            when (panel) {
-                                SidebarPanel.CONVERSATIONS -> savedSidebarState.SaveableStateProvider(panel) { drawerContent() }
-                                SidebarPanel.SETTINGS -> movableSettings { onSettingsOpenChange(false) }
+                            Column(
+                                modifier = Modifier.fillMaxSize(),
+                            ) {
+                                header()
+                                // a) 会话消息区域
+                                Box(Modifier.weight(1f)) {
+                                    if (state.timeline == Loadable.Empty || (state.activeThreadId == null && state.timeline == Loadable.Idle)) {
+                                        Column(Modifier.fillMaxSize()) {
+                                            pluginCards()
+                                            ConversationWelcome(
+                                                onCreate = if (state.activeThreadId == null) controller::createThread else null,
+                                                catalog = state.catalog,
+                                                onSelectCommand = controller::selectCommand,
+                                                modifier = Modifier.weight(1f),
+                                            )
+                                        }
+                                    } else {
+                                        LoadableRegion(
+                                            state.timeline,
+                                            "发送消息开始对话",
+                                            controller::retryTimeline,
+                                            modifier = Modifier.fillMaxSize(),
+                                            ready = { _ ->
+                                                val downloadAction =
+                                                    if (controller.downloadsSupported) controller::downloadAttachment else null
+                                                AttachmentPreviewHost(
+                                                    attachments = allAttachments,
+                                                    onDownload = downloadAction,
+                                                    onRequestOriginal = controller::requestOriginalImage,
+                                                    modifier = Modifier.fillMaxSize(),
+                                                ) { openPreview ->
+                                                LazyColumn(
+                                                    state = listState,
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .then(firstFrameModifier)
+                                                        .testTag("chat-timeline"),
+                                                    contentPadding = PaddingValues(
+                                                        start = Dimensions.TimelineHorizontal,
+                                                        end = Dimensions.TimelineHorizontal,
+                                                        top = Dimensions.SpaceSmall,
+                                                        bottom = Dimensions.SpaceLarge,
+                                                    ),
+                                                    verticalArrangement = Arrangement.spacedBy(Dimensions.TimelineSpacing),
+                                                ) {
+                                                    item(key = "protected_plugin_cards") {
+                                                        Box(Modifier.animateItem(
+                                                            fadeInSpec = null,
+                                                            placementSpec = MotionSpecs.morph(reduceMotion),
+                                                        )) { pluginCards() }
+                                                    }
+                                                    items(displayItems, key = { it.key }, contentType = { it.contentType }) { item ->
+                                                        val fresh = item.key in freshEntryKeys
+                                                        val isTail = item.key == displayItems.lastOrNull()?.key
+                                                        val jumpTarget = (item as? TimelineDisplayItem.Single)?.entry?.systemThreadId
+                                                        val rowModifier = Modifier
+                                                            // M04：只有真正新增的消息淡入 + 8dp 上浮；
+                                                            // 历史消息滚进视口不重放。
+                                                            .animateItem(
+                                                                fadeInSpec = if (fresh) MotionSpecs.fade(reduceMotion) else null,
+                                                                placementSpec = MotionSpecs.morph(reduceMotion),
+                                                            )
+                                                            .timelineItemRise(fresh = fresh, reduced = reduceMotion)
+                                                            .then(
+                                                                if (isTail) {
+                                                                    Modifier.onSizeChanged { size ->
+                                                                        val previous = lastEntryHeightPx
+                                                                        // 只有「同一条消息继续长高」才补差值。
+                                                                        // 尾巴换成下一条消息时高度变化属于新条目，
+                                                                        // 由条目数量变化那条路径平滑跟随，不能再叠加一次。
+                                                                        val sameRow = lastEntryKey == item.key
+                                                                        lastEntryKey = item.key
+                                                                        lastEntryHeightPx = size.height
+                                                                        // 只补「长高」的差值：缩短不应把用户往下拽。
+                                                                        if (sameRow && followLatest && previous > 0 && size.height > previous) {
+                                                                            scope.launch {
+                                                                                listState.scrollBy((size.height - previous).toFloat())
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                } else {
+                                                                    Modifier
+                                                                },
+                                                            )
+                                                        if (jumpTarget != null) {
+                                                            CreatedThreadJumpRow(
+                                                                label = (item as TimelineDisplayItem.Single).entry.text,
+                                                                onClick = { controller.openThread(jumpTarget) },
+                                                                modifier = rowModifier,
+                                                            )
+                                                        } else {
+                                                            TimelineDisplayRow(
+                                                                item = item,
+                                                                presentations = presentations,
+                                                                evidenceOwner = controller to state.activeThreadId,
+                                                                onDecide = controller::decideApproval,
+                                                                timing = executionTiming,
+                                                                onDownloadAttachment = downloadAction,
+                                                                onRequestOriginalAttachment = controller::requestOriginalImage,
+                                                                onOpenAttachmentPreview = openPreview,
+                                                                modifier = rowModifier,
+                                                            )
+                                                        }
+                                                    }
+                                                    if (creatingThreadInThisThread) {
+                                                        // Waiting is a state the user must be able to see
+                                                        // and leave: silence here is exactly what made the
+                                                        // button look like it did nothing. Scoped to the
+                                                        // thread it was sent from — the conversation the user
+                                                        // switched to is not the one waiting.
+                                                        item(key = "creating_thread") {
+                                                            CreatingThreadRow(
+                                                                onCancel = controller::cancelThreadCreation,
+                                                                modifier = Modifier
+                                                                    .animateItem(
+                                                                        fadeInSpec = MotionSpecs.fade(reduceMotion),
+                                                                        placementSpec = MotionSpecs.morph(reduceMotion),
+                                                                    )
+                                                                    .padding(vertical = Dimensions.SpaceSmall),
+                                                            )
+                                                        }
+                                                    }
+                                                    if (isThinking) {
+                                                        item(key = "thinking_indicator") {
+                                                            ThinkingIndicator(
+                                                                modifier = Modifier
+                                                                    .animateItem(
+                                                                        fadeInSpec = MotionSpecs.fade(reduceMotion),
+                                                                        placementSpec = MotionSpecs.morph(reduceMotion),
+                                                                    )
+                                                                    .padding(vertical = Dimensions.SpaceSmall),
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                                }
+                                            },
+                                        )
+                                    }
+                                    ScrollToLatestButton(
+                                        visible = !followLatest && entries.isNotEmpty() && !latestItemVisible,
+                                        onClick = {
+                                            followLatest = true
+                                            scope.launch {
+                                                val target = latestScrollTarget() ?: return@launch
+                                                if (reduceMotion) {
+                                                    listState.scrollToItem(target)
+                                                } else {
+                                                    listState.animateScrollToItem(target)
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.align(Alignment.BottomCenter),
+                                    )
+                                }
+
+                                // b) Bottom dock：输入坞外围负责系统手势条安全区。
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .windowInsetsPadding(
+                                            WindowInsets.navigationBars.only(
+                                                WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom,
+                                            ),
+                                        )
+                                        .onSizeChanged { size ->
+                                            if (bottomDockHeightPx.intValue != size.height) {
+                                                bottomDockHeightPx.intValue = size.height
+                                            }
+                                        },
+                                ) {
+                                    PendingBatchStrip(state.pendingBatch)
+                                    // Honest degradation: a Gateway that cannot take
+                                    // a decision gets no card at all, and the user is
+                                    // told the text command is the way to answer.
+                                    if (state.isOnline && !state.approvalCardsSupported && !approvalHintDismissed) {
+                                        ApprovalUnsupportedHint(onDismiss = { approvalHintDismissed = true })
+                                    }
+                                    ComposerBar(
+                                        editorKey = controller to state.activeThreadId,
+                                        onPasteImages = onPasteImages,
+                                        draft = state.draft,
+                                        draftEpoch = state.draftEpoch,
+                                        onDraftChange = controller::editDraft,
+                                        onDraftEdit = { newDraft, expectedEpoch ->
+                                            val current = controller.state.value
+                                            if (expectedEpoch == current.draftEpoch) {
+                                                if (commandPopupDismissed && (newDraft.isEmpty() || !newDraft.startsWith(current.draft))) {
+                                                    commandPopupDismissed = false
+                                                } else if (newDraft != current.draft && !newDraft.startsWith("/")) {
+                                                    commandPopupDismissed = false
+                                                }
+                                                controller.editDraft(newDraft, expectedEpoch)
+                                            }
+                                        },
+                                        onSubmitDraft = controller::submitComposerDraft,
+                                        generation = state.generation,
+                                        canSend = state.canSend,
+                                        onSend = controller::sendDraft,
+                                        onQueue = {
+                                            controller.sendDraft(
+                                                com.openandroidintelligence.conversation.ports.MessageDeliveryMode.QUEUE,
+                                            )
+                                        },
+                                        onSteer = {
+                                            controller.sendDraft(
+                                                com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER,
+                                            )
+                                        },
+                                        onStop = controller::stopGeneration,
+                                        onPickCamera = onPickCamera,
+                                        onPickGallery = onPickGallery,
+                                        onPickDocument = onPickDocument,
+                                        onVoiceInput = onVoiceInput,
+                                        recording = recording,
+                                        onCancelRecording = onCancelRecording,
+                                        onFinishRecording = onFinishRecording,
+                                        voiceInputEnabled = controller.canSendVoiceAttachment(state.activeThreadId),
+                                        attachments = state.attachments,
+                                        inFlightAttachmentIds = state.inFlightAttachmentIds,
+                                        pendingDeliveries = state.pendingDeliveries,
+                                        onRetryPendingDelivery = controller::retryPendingDeliveries,
+                                        onRemoveAttachment = controller::removeAttachment,
+                                        onRetryAttachment = controller::retryAttachment,
+                                        modifier = Modifier.padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceSmall),
+                                    )
+                                }
+                            }
+
+                            // c) Command autocomplete popup overlay（在布局阶段读取输入坞高度，避免 IME 动画逐帧触发重组）
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomCenter)
+                                    .fillMaxWidth()
+                                    .dockBottomPadding(extra = 8.dp) { bottomDockHeightPx.intValue },
+                            ) {
+                                CommandMenu(
+                                    catalogState = state.catalog,
+                                    query = state.draft,
+                                    onSelect = { cmd ->
+                                        commandPopupDismissed = true
+                                        controller.selectCommand(cmd)
+                                    },
+                                    onRetry = controller::loadCatalog,
+                                    visible = isCommandPopupVisible,
+                                    onDismissRequest = { commandPopupDismissed = true },
+                                )
                             }
                         }
                     }
                 }
             }
-            Row(Modifier.fillMaxSize()) {
-                Box(
-                    Modifier.width(Dimensions.DrawerWidth).fillMaxHeight()
-                        .background(MaterialTheme.colorScheme.surfaceContainerLow)
-                        .clipToBounds()
-                        .windowInsetsPadding(sidebarInsets),
-                ) { tabletSidebarContent() }
-                VerticalDivider()
-                Box(Modifier.weight(1f)) { movableMain() }
-            }
-        } else {
-            // 手机端：侧边抽屉始终仅承载会话列表（固定320dp），绝不把全屏设置塞入抽屉假装全屏
-            val phoneDrawerContent: @Composable () -> Unit = {
-                drawerContent()
-            }
-            val latestPhoneDrawerContent by rememberUpdatedState(phoneDrawerContent)
-            val movablePhoneDrawer = remember { movableContentOf { latestPhoneDrawerContent() } }
 
-            FullscreenPredictiveSlideOverlay(
-                controller = phoneOverlayController,
+            val sidebarInsets = WindowInsets.systemBars.union(WindowInsets.displayCutout)
+                .only(WindowInsetsSides.Vertical + WindowInsetsSides.Start)
+            val savedSidebarState = rememberSaveableStateHolder()
+            val latestMainContent by rememberUpdatedState(mainContent)
+            val movableMain = remember { movableContentOf { latestMainContent() } }
+            val latestSettingsPanel by rememberUpdatedState(settingsPanel)
+            val movableSettings = remember {
+                movableContentOf<() -> Unit> { onClose ->
+                    savedSidebarState.SaveableStateProvider(SidebarPanel.SETTINGS) {
+                        latestSettingsPanel?.invoke(onClose)
+                    }
+                }
+            }
+            val dismissPhoneSettings: () -> Unit = {
+                if (settingsFromConversations) {
+                    scope.launch {
+                        drawer.open()
+                    }
+                }
+                onSettingsOpenChange(false)
+            }
+            // 在 if (expanded) 之前稳定注册兜底预测返回与覆盖层控制器，确保从宽屏折叠至 < 840dp 时
+            // 外层处理器始终处于 OnBackPressedDispatcher 栈底，不会压在 movableSettings 内部子页返回之上。
+            val phoneOverlayController = rememberPredictiveOverlayBackController(
+                overlayOpen = settingsOpen,
+                enabled = !expanded && settingsOpen,
                 reduced = reduceMotion,
-                modifier = Modifier.fillMaxSize(),
-                overlayTestTag = "phone-fullscreen-settings-container",
-                backgroundContent = {
-                    ModalNavigationDrawer(
-                        drawerState = drawer,
-                        gesturesEnabled = !settingsOpen,
-                        drawerContent = {
-                            ModalDrawerSheet(
-                                modifier = Modifier.width(Dimensions.DrawerWidth).testTag("workbench-drawer"),
-                                windowInsets = sidebarInsets,
-                            ) {
-                                movablePhoneDrawer()
+                onDismiss = dismissPhoneSettings,
+            )
+
+            // 平板与宽屏（expanded）：设置与会话侧栏原位替换（320dp），右侧会话不被覆盖、不重新加载。
+            // 手机与紧凑屏（!expanded）：设置页面采用独立全屏侧滑容器（从屏幕左向右滑入，占满窗口全部宽度和高度）。
+            if (expanded) {
+                val sidebarTransitionRoles = remember { mutableMapOf<SidebarPanel, NavPageTransitionRole>() }
+                val tabletSidebarContent: @Composable () -> Unit = {
+                    AnimatedContent(
+                        targetState = sidebarPanel,
+                        transitionSpec = {
+                            if (targetState == SidebarPanel.SETTINGS) {
+                                sidebarTransitionRoles[SidebarPanel.SETTINGS] = NavPageTransitionRole.FOREGROUND
+                                sidebarTransitionRoles[SidebarPanel.CONVERSATIONS] = NavPageTransitionRole.BACKGROUND
+                                (AppTransitions.navEnter(reduceMotion) togetherWith AppTransitions.navExit(reduceMotion)).apply {
+                                    targetContentZIndex = 1f
+                                }
+                            } else {
+                                sidebarTransitionRoles[SidebarPanel.CONVERSATIONS] = NavPageTransitionRole.BACKGROUND
+                                sidebarTransitionRoles[SidebarPanel.SETTINGS] = NavPageTransitionRole.FOREGROUND
+                                (AppTransitions.navPopEnter(reduceMotion) togetherWith AppTransitions.navPopExit(reduceMotion)).apply {
+                                    targetContentZIndex = -1f
+                                }
                             }
                         },
-                    ) {
-                        movableMain()
+                        modifier = Modifier.fillMaxSize(),
+                        label = "tablet-sidebar-content",
+                    ) { panel ->
+                        ProvideSharedVisibilityScope {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                                    .navPageTransitionDecoration(
+                                        roleProvider = { sidebarTransitionRoles[panel] },
+                                        reduced = reduceMotion,
+                                    ),
+                            ) {
+                                when (panel) {
+                                    SidebarPanel.CONVERSATIONS -> savedSidebarState.SaveableStateProvider(panel) { drawerContent() }
+                                    SidebarPanel.SETTINGS -> movableSettings { onSettingsOpenChange(false) }
+                                }
+                            }
+                        }
                     }
-                },
-                overlayContent = {
-                    movableSettings(dismissPhoneSettings)
-                },
-            )
-        }
+                }
+                Row(Modifier.fillMaxSize()) {
+                    Box(
+                        Modifier.width(Dimensions.DrawerWidth).fillMaxHeight()
+                            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                            .clipToBounds()
+                            .windowInsetsPadding(sidebarInsets),
+                    ) { tabletSidebarContent() }
+                    VerticalDivider()
+                    Box(Modifier.weight(1f)) { movableMain() }
+                }
+            } else {
+                // 手机端：侧边抽屉始终仅承载会话列表（固定320dp），绝不把全屏设置塞入抽屉假装全屏
+                val phoneDrawerContent: @Composable () -> Unit = {
+                    drawerContent()
+                }
+                val latestPhoneDrawerContent by rememberUpdatedState(phoneDrawerContent)
+                val movablePhoneDrawer = remember { movableContentOf { latestPhoneDrawerContent() } }
 
-        if (showAttachmentLibrary) {
-            ModalBottomSheet(
-                onDismissRequest = { showAttachmentLibrary = false },
-                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-                containerColor = MaterialTheme.colorScheme.surface,
-            ) {
-                AttachmentLibraryScreen(
-                    attachments = state.attachments,
-                    onPickGallery = onPickGallery,
-                    onPickDocument = onPickDocument,
-                    onPickCamera = onPickCamera,
-                    onRemoveAttachment = controller::removeAttachment,
-                    onRetryAttachment = controller::retryAttachment,
-                    onClose = { showAttachmentLibrary = false },
-                    historical=entries.flatMap { it.attachments }.distinctBy { it.draftId },
-                    onDownloadHistorical=if (controller.downloadsSupported) controller::downloadAttachment else null,
-                    onRequestOriginalHistorical=controller::requestOriginalImage,
+                FullscreenPredictiveSlideOverlay(
+                    controller = phoneOverlayController,
+                    reduced = reduceMotion,
+                    modifier = Modifier.fillMaxSize(),
+                    overlayTestTag = "phone-fullscreen-settings-container",
+                    backgroundContent = {
+                        ModalNavigationDrawer(
+                            drawerState = drawer,
+                            gesturesEnabled = !settingsOpen,
+                            drawerContent = {
+                                ModalDrawerSheet(
+                                    modifier = Modifier.width(Dimensions.DrawerWidth).testTag("workbench-drawer"),
+                                    windowInsets = sidebarInsets,
+                                ) {
+                                    movablePhoneDrawer()
+                                }
+                            },
+                        ) {
+                            movableMain()
+                        }
+                    },
+                    overlayContent = {
+                        movableSettings(dismissPhoneSettings)
+                    },
+                )
+            }
+
+            if (showAttachmentLibrary) {
+                ModalBottomSheet(
+                    onDismissRequest = { showAttachmentLibrary = false },
+                    sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ) {
+                    AttachmentLibraryScreen(
+                        attachments = state.attachments,
+                        onPickGallery = onPickGallery,
+                        onPickDocument = onPickDocument,
+                        onPickCamera = onPickCamera,
+                        onRemoveAttachment = controller::removeAttachment,
+                        onRetryAttachment = controller::retryAttachment,
+                        onClose = { showAttachmentLibrary = false },
+                        historical=entries.flatMap { it.attachments }.distinctBy { it.draftId },
+                        onDownloadHistorical=if (controller.downloadsSupported) controller::downloadAttachment else null,
+                        onRequestOriginalHistorical=controller::requestOriginalImage,
+                    )
+                }
+            }
+
+            if (showRenameDialog) {
+                AlertDialog(
+                    onDismissRequest = { showRenameDialog = false },
+                    title = { Text(stringResource(UiR.string.conv_workbench_title_rename_dialog)) },
+                    text = {
+                        OutlinedTextField(
+                            value = renameDraft,
+                            onValueChange = { renameDraft = it },
+                            singleLine = true,
+                            label = { Text(stringResource(UiR.string.conv_workbench_title_rename_label)) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                val trimmed = renameDraft.trim()
+                                if (trimmed.isNotEmpty()) {
+                                    controller.renameActiveThread(trimmed)
+                                }
+                                showRenameDialog = false
+                            },
+                        ) {
+                            Text(stringResource(UiR.string.common_action_confirm))
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showRenameDialog = false }) {
+                            Text(stringResource(UiR.string.common_action_cancel))
+                        }
+                    }
                 )
             }
         }
-
-        if (showRenameDialog) {
-            AlertDialog(
-                onDismissRequest = { showRenameDialog = false },
-                title = { Text(stringResource(UiR.string.conv_workbench_title_rename_dialog)) },
-                text = {
-                    OutlinedTextField(
-                        value = renameDraft,
-                        onValueChange = { renameDraft = it },
-                        singleLine = true,
-                        label = { Text(stringResource(UiR.string.conv_workbench_title_rename_label)) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                },
-                confirmButton = {
-                    TextButton(
-                        onClick = {
-                            val trimmed = renameDraft.trim()
-                            if (trimmed.isNotEmpty()) {
-                                controller.renameActiveThread(trimmed)
-                            }
-                            showRenameDialog = false
-                        },
-                    ) {
-                        Text(stringResource(UiR.string.common_action_confirm))
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showRenameDialog = false }) {
-                        Text(stringResource(UiR.string.common_action_cancel))
-                    }
+        val movableBody = remember {
+            movableContentOf<Dp> { availableWidth ->
+                currentBody(availableWidth)
+            }
+        }
+        if (availableWidthOverride != null) {
+            Box(modifier.fillMaxSize()) {
+                CompositionLocalProvider(LocalWindowMaxWidth provides availableWidthOverride) {
+                    movableBody(availableWidthOverride)
                 }
-            )
-        }
-        }
-        if (providedMaxWidth != null) {
-            Box(modifier.fillMaxSize()) { body(providedMaxWidth) }
+            }
         } else {
             BoxWithConstraints(modifier.fillMaxSize()) {
                 val measuredWidth = maxWidth
                 CompositionLocalProvider(LocalWindowMaxWidth provides measuredWidth) {
-                    body(measuredWidth)
+                    movableBody(measuredWidth)
                 }
             }
         }

@@ -13,13 +13,9 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -46,9 +42,9 @@ import com.openandroidintelligence.mobile.SettingsPresentation
 import com.openandroidintelligence.mobile.SettingsUiState
 import com.openandroidintelligence.mobile.ThemePreference
 import com.openandroidintelligence.mobile.settings.SectionLabel
+import com.openandroidintelligence.mobile.settings.SettingsAdaptiveSingleChoiceSelector
 import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
-import com.openandroidintelligence.mobile.settings.isCompactSettingsSelector
 import com.openandroidintelligence.ui.resources.R as UiR
 import kotlinx.coroutines.CancellationException
 
@@ -217,7 +213,6 @@ private fun AppearanceSaveFailure() {
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ThemeSelector(
     selected: ThemePreference,
@@ -225,32 +220,13 @@ private fun ThemeSelector(
     presentation: SettingsPresentation?,
     onSelect: (ThemePreference) -> Unit,
 ) {
-    val compact = isCompactSettingsSelector(presentation = presentation)
-    if (compact) {
-        Column(Modifier.selectableGroup()) {
-            ThemePreference.entries.forEach { option ->
-                Row(
-                    modifier = Modifier.fillMaxWidth()
-                        .heightIn(min = Dimensions.MinimumTouchTarget)
-                        .selectable(selected = selected == option, role = Role.RadioButton, onClick = { onSelect(option) }),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    RadioButton(selected = selected == option, onClick = null)
-                    Text(themeLabel(option, onboarding), modifier = Modifier.weight(1f))
-                }
-            }
-        }
-    } else {
-        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-            ThemePreference.entries.forEachIndexed { index, option ->
-                SegmentedButton(
-                    selected = selected == option,
-                    onClick = { onSelect(option) },
-                    shape = SegmentedButtonDefaults.itemShape(index, ThemePreference.entries.size),
-                ) { Text(themeLabel(option, onboarding)) }
-            }
-        }
-    }
+    SettingsAdaptiveSingleChoiceSelector(
+        options = ThemePreference.entries,
+        selected = selected,
+        labelOf = { themeLabel(it, onboarding) },
+        onSelect = onSelect,
+        presentation = presentation,
+    )
 }
 
 private fun themeLabel(option: ThemePreference, onboarding: Boolean): String = when (option) {

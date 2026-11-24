@@ -7,6 +7,7 @@ import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
@@ -27,29 +28,42 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.GraphicsLayerScope
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEvent
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.MeasureResult
 import androidx.compose.ui.layout.MeasureScope
 import androidx.compose.ui.node.LayoutModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.PointerInputModifierNode
 import androidx.compose.ui.node.invalidatePlacement
 import androidx.compose.ui.platform.InspectorInfo
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.invisibleToUser
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.zIndex
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.isReduced
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /**
@@ -360,38 +374,46 @@ private class PredictiveBackSlideElement(
 }
 
 private class PredictiveBackSlideNode(
-    var stateProvider: () -> PredictiveBackState,
+    stateProvider: () -> PredictiveBackState,
     var direction: Float?,
     var scaleReduction: Float,
 ) : Modifier.Node(), LayoutModifierNode {
+    private var stateProviderState by mutableStateOf(stateProvider)
+    var stateProvider: () -> PredictiveBackState
+        get() = stateProviderState
+        set(value) {
+            stateProviderState = value
+        }
+    private val needsLayer: State<Boolean> = derivedStateOf { stateProviderState().progress > 0f }
+    private var currentLayoutDirection: LayoutDirection = LayoutDirection.Ltr
+    private val layerBlock: GraphicsLayerScope.() -> Unit = {
+        val latestState = stateProviderState()
+        val latestClamped = latestState.progress.coerceIn(0f, 1f)
+        if (latestClamped <= 0f) {
+            translationX = 0f
+            scaleX = 1f
+            scaleY = 1f
+        } else {
+            val resolvedDirection = direction
+                ?: resolvePredictiveBackDirection(latestState.swipeEdge, currentLayoutDirection)
+            val targetScale = (1f - latestClamped * scaleReduction).coerceIn(0.1f, 1f)
+            translationX = size.width * latestClamped * resolvedDirection
+            scaleX = targetScale
+            scaleY = targetScale
+        }
+    }
+
     override fun MeasureScope.measure(
         measurable: Measurable,
         constraints: Constraints,
     ): MeasureResult {
-        val currentLayoutDirection = layoutDirection
+        currentLayoutDirection = layoutDirection
         val placeable = measurable.measure(constraints)
         return layout(placeable.width, placeable.height) {
-            val state = stateProvider()
-            val clamped = state.progress.coerceIn(0f, 1f)
-            if (clamped <= 0f) {
+            if (!needsLayer.value) {
                 placeable.place(0, 0)
             } else {
-                placeable.placeWithLayer(x = 0, y = 0) {
-                    val latestState = stateProvider()
-                    val latestClamped = latestState.progress.coerceIn(0f, 1f)
-                    if (latestClamped <= 0f) {
-                        translationX = 0f
-                        scaleX = 1f
-                        scaleY = 1f
-                    } else {
-                        val resolvedDirection = direction
-                            ?: resolvePredictiveBackDirection(latestState.swipeEdge, currentLayoutDirection)
-                        val targetScale = (1f - latestClamped * scaleReduction).coerceIn(0.1f, 1f)
-                        translationX = size.width * latestClamped * resolvedDirection
-                        scaleX = targetScale
-                        scaleY = targetScale
-                    }
-                }
+                placeable.placeWithLayer(x = 0, y = 0, layerBlock = layerBlock)
             }
         }
     }
@@ -676,6 +698,7 @@ fun PredictiveBackOverlayBridge(
  * - `Z = 1`（顶层覆盖层）：强制实色 `surface` 背景与命中阻断（仅拦截向底层穿透，不消费未处理事件以免干扰内层滚动），
  *   静止全开态移除独立图形层包装，仅在转场/预测返回期间启用图形层并绘制 `20.dp` Elevation 渐变阴影。
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun FullscreenPredictiveSlideOverlay(
     controller: PredictiveOverlayBackController,
@@ -687,11 +710,27 @@ fun FullscreenPredictiveSlideOverlay(
 ) {
     val scrimColor = MaterialTheme.colorScheme.scrim
     val surfaceColor = MaterialTheme.colorScheme.surface
+    // 全开静止态仍保留背景图层：一方面维持预测返回视差基线坐标契约（测试在 openProgress == 1f
+    // 读取背景坐标），另一方面保证返回手势首帧免触发 Placement 重排；真正像素过绘由下方 drawWithContent 跳过。
     val bgNeedsLayer = remember(controller, reduced) {
         derivedStateOf { !reduced && controller.openProgress.value > 0f }
     }
     val fgNeedsLayer = remember(controller) {
         derivedStateOf { controller.openProgress.value < 0.999f }
+    }
+    val bgOccluded = remember(controller) {
+        derivedStateOf { controller.overlayMounted && controller.openProgress.value >= 0.999f }
+    }
+    val bgHasFocus = remember { AtomicBoolean(false) }
+    val focusManager = LocalFocusManager.current
+    LaunchedEffect(controller, bgOccluded) {
+        snapshotFlow { bgOccluded.value }
+            .distinctUntilChanged()
+            .collect { occluded ->
+                if (occluded && bgHasFocus.get()) {
+                    focusManager.clearFocus(force = true)
+                }
+            }
     }
     val bgLayerBlock = remember(controller, reduced) {
         { scope: GraphicsLayerScope ->
@@ -726,6 +765,18 @@ fun FullscreenPredictiveSlideOverlay(
                 .fillMaxSize()
                 .zIndex(0f)
                 .conditionalGraphicsLayer(needsLayer = bgNeedsLayer, layerBlock = bgLayerBlock)
+                .semantics {
+                    if (bgOccluded.value) {
+                        invisibleToUser()
+                    }
+                }
+                .onFocusChanged { bgHasFocus.set(it.hasFocus) }
+                .focusProperties {
+                    enter = {
+                        if (bgOccluded.value) FocusRequester.Cancel else FocusRequester.Default
+                    }
+                }
+                .focusGroup()
                 .drawWithContent {
                     val p = controller.openProgress.value.coerceIn(0f, 1f)
                     if (controller.overlayMounted && p >= 0.999f) {
@@ -778,9 +829,34 @@ fun FullscreenPredictiveSlideOverlay(
     }
 }
 
-/** 仅借助命中测试截断向低 Z 序兄弟节点穿透，不消费事件以免干扰内层滚动与点击手势。 */
-private fun Modifier.blockSiblingPointerHits(): Modifier = pointerInput(Unit) {
-    // 命中测试已阻断兄弟节点穿透，协程挂起结束即可维持拦截节点语义。
+/**
+ * 仅借助默认关闭兄弟共享的 `PointerInputModifierNode` 截断向低 Z 序兄弟节点穿透：
+ * 不消费向祖先冒泡的事件，也不启动任何协程。
+ */
+private fun Modifier.blockSiblingPointerHits(): Modifier = this then BlockSiblingPointerHitsElement
+
+private object BlockSiblingPointerHitsElement : ModifierNodeElement<BlockSiblingPointerHitsNode>() {
+    override fun create(): BlockSiblingPointerHitsNode = BlockSiblingPointerHitsNode()
+
+    override fun update(node: BlockSiblingPointerHitsNode) = Unit
+
+    override fun InspectorInfo.inspectableProperties() {
+        name = "blockSiblingPointerHits"
+    }
+
+    override fun equals(other: Any?): Boolean = other === this
+
+    override fun hashCode(): Int = 135792468
+}
+
+private class BlockSiblingPointerHitsNode : Modifier.Node(), PointerInputModifierNode {
+    override fun onPointerEvent(
+        pointerEvent: PointerEvent,
+        pass: PointerEventPass,
+        bounds: IntSize,
+    ) = Unit
+
+    override fun onCancelPointerInput() = Unit
 }
 
 internal fun Modifier.conditionalGraphicsLayer(

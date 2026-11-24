@@ -1,5 +1,6 @@
 package com.openandroidintelligence.conversation.components
 
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -40,6 +41,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Dp
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
+
+private class BooleanLatch(var latched: Boolean = false)
 
 // 同一条目也被会话抽屉、附件库复用，仅在设置分组内启用新样式。
 private val LocalSettingsItemMorphing = staticCompositionLocalOf { false }
@@ -136,7 +139,11 @@ fun SettingsListItem(
 ) {
     val morphing = LocalSettingsItemMorphing.current
     val interactive = onClick != null && enabled
-    val interactionSource = if (interactive && morphing) {
+    val interactionLatched = remember(morphing) { BooleanLatch() }
+    if (morphing && interactive) {
+        interactionLatched.latched = true
+    }
+    val interactionSource = if (morphing && interactionLatched.latched) {
         remember { MutableInteractionSource() }
     } else {
         null
@@ -151,19 +158,16 @@ fun SettingsListItem(
         enabled = enabled,
         interactionSource = interactionSource,
         scaleOnPress = interactive,
-        interactionModifier = if (interactive) {
-            if (morphing) {
-                Modifier.clickable(
-                    interactionSource = interactionSource!!,
-                    indication = null,
-                    role = Role.Button,
-                    onClick = onClick!!,
-                )
-            } else {
-                Modifier.bouncyClickable(role = Role.Button, onClick = onClick!!)
-            }
-        } else {
-            Modifier
+        interactionModifier = when {
+            morphing && interactionSource != null && onClick != null -> Modifier.clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                enabled = enabled,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            interactive -> Modifier.bouncyClickable(role = Role.Button, onClick = onClick!!)
+            else -> Modifier
         },
         trailing = trailing,
     )
@@ -184,10 +188,14 @@ private fun SettingsListItemContent(
     trailing: (@Composable () -> Unit)?,
 ) {
     val morphing = LocalSettingsItemMorphing.current
+    val morphLatched = remember(morphing) { BooleanLatch() }
+    if (morphing && (interactionSource != null || selected)) {
+        morphLatched.latched = true
+    }
     val highlighted: Boolean
     val feedback: Modifier
     if (morphing) {
-        if (interactionSource == null && !selected) {
+        if (!morphLatched.latched) {
             highlighted = false
             feedback = Modifier
         } else {
@@ -202,6 +210,7 @@ private fun SettingsListItemContent(
                 pressed = pressed,
                 scaleOnPress = scaleOnPress,
                 visualInteractionSource = pressFeedback.visualInteractionSource,
+                clipActive = pressFeedback.clipActive,
             )
         }
     } else {
@@ -250,7 +259,15 @@ fun SettingsSwitchItem(
     enabled: Boolean = true,
 ) {
     val morphing = LocalSettingsItemMorphing.current
-    val interactionSource = remember { MutableInteractionSource() }
+    val interactionLatched = remember(morphing) { BooleanLatch() }
+    if (morphing && enabled) {
+        interactionLatched.latched = true
+    }
+    val interactionSource = if (morphing && interactionLatched.latched) {
+        remember { MutableInteractionSource() }
+    } else {
+        null
+    }
     SettingsListItemContent(
         headline = headline,
         modifier = modifier,
@@ -264,7 +281,7 @@ fun SettingsSwitchItem(
         interactionModifier = Modifier.toggleable(
             value = checked,
             interactionSource = interactionSource,
-            indication = if (morphing) null else androidx.compose.foundation.LocalIndication.current,
+            indication = if (morphing) null else LocalIndication.current,
             enabled = enabled,
             role = Role.Switch,
             onValueChange = onCheckedChange,
@@ -295,7 +312,7 @@ fun SettingsNavigationItem(
             icon = icon,
             tone = tone,
             enabled = enabled,
-            onClick = if (enabled) onClick else null,
+            onClick = onClick,
             trailing = {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,

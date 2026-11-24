@@ -239,8 +239,8 @@ object MotionSpecs {
         morph(reduced)
 
     /** 容器形变：临界阻尼弹簧（700f）；减少动态直接落到目标值。 */
-    fun <T> morph(reduced: Boolean): FiniteAnimationSpec<T> =
-        springSpecFrom(reduced = reduced, template = MorphSpring, visibilityThreshold = null)
+    fun <T> morph(reduced: Boolean, visibilityThreshold: T? = null): FiniteAnimationSpec<T> =
+        springSpecFrom(reduced = reduced, template = MorphSpring, visibilityThreshold = visibilityThreshold)
 
     /** 轻快吸附：对齐 [spatialFast]；减少动态直接落到目标值。 */
     fun <T> snappy(reduced: Boolean): FiniteAnimationSpec<T> =
@@ -264,8 +264,8 @@ object MotionSpecs {
         springSpecFrom(reduced = reduced, template = CollapseSpring, visibilityThreshold = null)
 
     /** 按压反馈：物理弹簧微缩回弹；减少动态时直接落位不做缩放。 */
-    fun <T> press(reduced: Boolean): FiniteAnimationSpec<T> =
-        springSpecFrom(reduced = reduced, template = PressSpring, visibilityThreshold = null)
+    fun <T> press(reduced: Boolean, visibilityThreshold: T? = null): FiniteAnimationSpec<T> =
+        springSpecFrom(reduced = reduced, template = PressSpring, visibilityThreshold = visibilityThreshold)
 
     /** 列表错峰：第 [index] 项的延迟时长（毫秒）。 */
     fun staggerDelayMillis(index: Int, reduced: Boolean): Int =

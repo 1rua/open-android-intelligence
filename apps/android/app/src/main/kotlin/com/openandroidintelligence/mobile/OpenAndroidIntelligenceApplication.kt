@@ -196,6 +196,11 @@ class OpenAndroidIntelligenceApplication : Application(), RemoteStandbyOwner {
                 pluginHost.notifyCapabilityStateChanged()
             }
         }
+        remoteScope.launch {
+            com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.availabilityRevision.drop(1).collect {
+                pluginHost.notifyCapabilityStateChanged()
+            }
+        }
         remoteScope.launch(Dispatchers.IO) {
             com.openandroidintelligence.notification.control.NotificationControlRegistry
                 .bindingPort()

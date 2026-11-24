@@ -16,6 +16,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -28,6 +29,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
 import com.openandroidintelligence.control.ScreenHostRegistry
 import com.openandroidintelligence.conversation.components.SettingsNavigationItem
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
@@ -49,8 +51,10 @@ import com.openandroidintelligence.mobile.screen.probeAccessibilityBinding
 import com.openandroidintelligence.mobile.settings.SectionLabel
 import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
+import com.openandroidintelligence.notification.control.NotificationBindingPort
 import com.openandroidintelligence.notification.control.NotificationControlRegistry
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.withContext
@@ -100,9 +104,13 @@ internal fun DeviceCapabilitiesScreen(
     val hostRevision = observedHost?.revision?.collectAsState()?.value
     val localState by environment.pairingGrants.state.collectAsState()
     val accessibilityConnected by ScreenHostRegistry.accessibilityConnected.collectAsState()
-    val notificationBinding = NotificationControlRegistry.bindingPort()
-    val notificationListenerConnected by rememberNotificationListenerConnected(notificationBinding)
+    val captureAvailabilityRevision by RemoteScreenCaptureRegistry.availabilityRevision.collectAsState()
     var refreshTick by remember { mutableIntStateOf(0) }
+    val notificationBinding = NotificationControlRegistry.bindingPort()
+    val notificationListenerConnected by rememberNotificationListenerConnected(
+        binding = notificationBinding,
+        refreshKey = refreshTick,
+    )
     val lifecycle = LocalLifecycleOwner.current
     // 从系统权限设置返回后必须主动探测绑定态并重新读真实状态，不能沿用离开前的缓存。
     DisposableEffect(lifecycle, appContext) {
@@ -134,6 +142,8 @@ internal fun DeviceCapabilitiesScreen(
         hostRevision,
         localState,
         accessibilityConnected,
+        captureAvailabilityRevision,
+        notificationBinding,
         notificationListenerConnected,
         refreshTick,
     ) {
@@ -144,7 +154,7 @@ internal fun DeviceCapabilitiesScreen(
             notificationAccessGranted = ::isNotificationListenerReady,
             accessibilityEnabled = { accessibilityServiceReady(appContext) },
             captureAuthorized = {
-                runCatching { com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source?.isAvailable == true }
+                runCatching { RemoteScreenCaptureRegistry.source?.isAvailable == true }
                     .getOrDefault(false)
             },
         )
@@ -296,13 +306,22 @@ private fun CapabilityState.tone(): SettingsTone = when (this) {
     CapabilityState.OFF -> SettingsTone.NEUTRAL
 }
 
-/** 订阅系统通知监听服务实时连接状态并缓存流与初始值，避免重组重复创建订阅。 */
+/**
+ * 订阅系统通知监听服务实时连接状态：
+ * - 若端口提供持久更新的 [StateFlow]，直接缓存流对象避免重组重复订阅；
+ * - 若端口沿用接口默认的冷 `flowOf` 实现（或其它非 [StateFlow] 实现），随 [refreshKey] 刷新重新读取，避免状态永久冻结在首次值。
+ */
 @Composable
 internal fun rememberNotificationListenerConnected(
-    binding: com.openandroidintelligence.notification.control.NotificationBindingPort = NotificationControlRegistry.bindingPort(),
-): androidx.compose.runtime.State<Boolean> {
-    val listenerFlow = remember(binding) { binding.observeListenerConnected() }
-    val initialConnected = remember(binding) {
+    binding: NotificationBindingPort = NotificationControlRegistry.bindingPort(),
+    refreshKey: Any? = Unit,
+): State<Boolean> {
+    val cachedFlow = remember(binding) { binding.observeListenerConnected() }
+    if (cachedFlow is StateFlow<Boolean>) {
+        return cachedFlow.collectAsState()
+    }
+    val listenerFlow = remember(binding, refreshKey) { binding.observeListenerConnected() }
+    val initialConnected = remember(binding, refreshKey) {
         runCatching { binding.isListenerConnected() }.getOrDefault(false)
     }
     return listenerFlow.collectAsState(initial = initialConnected)

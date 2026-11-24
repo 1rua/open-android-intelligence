@@ -225,7 +225,7 @@ class ExpressiveMotionNavigationTest {
     }
 
     @Test
-    fun settingsNavHostWithInternalSharedHostPreservesSubpageAndScrollAcross840dpBreakpoint() {
+    fun settingsNavHostPreservesSubpageAndScrollAcross840dpBreakpoint() {
         val environment = settingsEnvironment()
         var width by mutableStateOf(839.dp)
         var open by mutableStateOf(false)
