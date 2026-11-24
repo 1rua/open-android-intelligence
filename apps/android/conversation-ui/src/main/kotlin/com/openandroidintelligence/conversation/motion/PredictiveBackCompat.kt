@@ -531,9 +531,8 @@ class PredictiveOverlayBackController internal constructor(
                 val spec = if (reduced) {
                     MotionSpecs.reducedFade<Float>()
                 } else {
-                    MotionSpecs.spatialDefault(
+                    MotionSpecs.modalEnter(
                         reduced = false,
-                        expressive = true,
                         visibilityThreshold = AppTransitions.ScaleVisibilityThreshold,
                     )
                 }

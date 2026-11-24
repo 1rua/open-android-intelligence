@@ -124,7 +124,30 @@ class MotionPhysicsTest {
         assertTrue(defaultExpressive.dampingRatio < defaultStandard.dampingRatio)
 
         assertIs<SpringSpec<Float>>(MotionSpecs.spatialSlow<Float>(reduced = false, expressive = true))
-        assertIs<SpringSpec<Float>>(MotionSpecs.modalExit<Float>(reduced = false))
+        val modalEnterSpec = assertIs<SpringSpec<Float>>(MotionSpecs.modalEnter<Float>(reduced = false))
+        val modalExitSpec = assertIs<SpringSpec<Float>>(MotionSpecs.modalExit<Float>(reduced = false))
+        assertTrue(modalEnterSpec.dampingRatio < modalExitSpec.dampingRatio)
+        assertTrue(modalExitSpec.stiffness > modalEnterSpec.stiffness)
+
+        // 其余空间/形变/按压工厂在标准模式下必须返回 SpringSpec，且布局形变类保持临界阻尼
+        listOf(
+            MotionSpecs.spatial<Float>(reduced = false),
+            MotionSpecs.snappy<Float>(reduced = false),
+            MotionSpecs.entrance<Float>(reduced = false),
+            MotionSpecs.press<Float>(reduced = false),
+        ).forEach { spec ->
+            val spring = assertIs<SpringSpec<Float>>(spec)
+            assertTrue(spring.stiffness > 0f && spring.dampingRatio > 0f)
+        }
+        listOf(
+            MotionSpecs.emphasized<Float>(reduced = false),
+            MotionSpecs.morph<Float>(reduced = false),
+            MotionSpecs.expand<Float>(reduced = false),
+            MotionSpecs.collapse<Float>(reduced = false),
+        ).forEach { spec ->
+            val spring = assertIs<SpringSpec<Float>>(spec)
+            assertTrue(spring.dampingRatio >= Spring.DampingRatioNoBouncy)
+        }
 
         // 非减少动态下的 Effects 工厂必须临界阻尼
         listOf(
@@ -142,6 +165,7 @@ class MotionPhysicsTest {
             MotionSpecs.spatialFast<Float>(reduced = true),
             MotionSpecs.spatialDefault<Float>(reduced = true, expressive = true),
             MotionSpecs.spatialSlow<Float>(reduced = true, expressive = true),
+            MotionSpecs.modalEnter<Float>(reduced = true),
             MotionSpecs.modalExit<Float>(reduced = true),
             MotionSpecs.spatial<Float>(reduced = true),
             MotionSpecs.emphasized<Float>(reduced = true),

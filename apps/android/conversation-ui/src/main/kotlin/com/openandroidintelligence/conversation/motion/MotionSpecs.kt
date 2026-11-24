@@ -156,6 +156,16 @@ object MotionSpecs {
         visibilityThreshold = visibilityThreshold,
     )
 
+    /** 全屏模态进场舒展弹簧（M3 Expressive Default）；减少动态时退化为 `snap()`。 */
+    fun <T> modalEnter(
+        reduced: Boolean,
+        visibilityThreshold: T? = null,
+    ): FiniteAnimationSpec<T> = spatialDefault(
+        reduced = reduced,
+        expressive = true,
+        visibilityThreshold = visibilityThreshold,
+    )
+
     /** 全屏模态退场平稳弹簧；减少动态时退化为 `snap()`。 */
     fun <T> modalExit(
         reduced: Boolean,

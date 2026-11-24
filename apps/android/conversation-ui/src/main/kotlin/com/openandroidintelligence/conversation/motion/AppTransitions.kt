@@ -165,9 +165,8 @@ object AppTransitions {
     fun modalEnter(reduced: Boolean): EnterTransition = when {
         reduced -> fadeIn(MotionSpecs.fade(true))
         else -> slideInHorizontally(
-            animationSpec = MotionSpecs.spatialDefault(
+            animationSpec = MotionSpecs.modalEnter(
                 reduced = false,
-                expressive = true,
                 visibilityThreshold = IntOffset.VisibilityThreshold,
             ),
             initialOffsetX = { full -> -full },
