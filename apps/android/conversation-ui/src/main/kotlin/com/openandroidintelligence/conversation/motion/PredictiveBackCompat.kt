@@ -7,6 +7,7 @@ import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
@@ -19,6 +20,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -26,30 +28,42 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.GraphicsLayerScope
+import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.MeasureResult
 import androidx.compose.ui.layout.MeasureScope
 import androidx.compose.ui.node.LayoutModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.PointerInputModifierNode
 import androidx.compose.ui.node.invalidatePlacement
 import androidx.compose.ui.platform.InspectorInfo
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.invisibleToUser
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.zIndex
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.isReduced
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /**
@@ -360,32 +374,46 @@ private class PredictiveBackSlideElement(
 }
 
 private class PredictiveBackSlideNode(
-    var stateProvider: () -> PredictiveBackState,
+    stateProvider: () -> PredictiveBackState,
     var direction: Float?,
     var scaleReduction: Float,
 ) : Modifier.Node(), LayoutModifierNode {
+    private var stateProviderState by mutableStateOf(stateProvider)
+    var stateProvider: () -> PredictiveBackState
+        get() = stateProviderState
+        set(value) {
+            stateProviderState = value
+        }
+    private val needsLayer: State<Boolean> = derivedStateOf { stateProviderState().progress > 0f }
+    private var currentLayoutDirection: LayoutDirection = LayoutDirection.Ltr
+    private val layerBlock: GraphicsLayerScope.() -> Unit = {
+        val latestState = stateProviderState()
+        val latestClamped = latestState.progress.coerceIn(0f, 1f)
+        if (latestClamped <= 0f) {
+            translationX = 0f
+            scaleX = 1f
+            scaleY = 1f
+        } else {
+            val resolvedDirection = direction
+                ?: resolvePredictiveBackDirection(latestState.swipeEdge, currentLayoutDirection)
+            val targetScale = (1f - latestClamped * scaleReduction).coerceIn(0.1f, 1f)
+            translationX = size.width * latestClamped * resolvedDirection
+            scaleX = targetScale
+            scaleY = targetScale
+        }
+    }
+
     override fun MeasureScope.measure(
         measurable: Measurable,
         constraints: Constraints,
     ): MeasureResult {
-        val currentLayoutDirection = layoutDirection
+        currentLayoutDirection = layoutDirection
         val placeable = measurable.measure(constraints)
         return layout(placeable.width, placeable.height) {
-            placeable.placeWithLayer(x = 0, y = 0) {
-                val state = stateProvider()
-                val clamped = state.progress.coerceIn(0f, 1f)
-                if (clamped <= 0f) {
-                    translationX = 0f
-                    scaleX = 1f
-                    scaleY = 1f
-                } else {
-                    val resolvedDirection = direction
-                        ?: resolvePredictiveBackDirection(state.swipeEdge, currentLayoutDirection)
-                    val targetScale = (1f - clamped * scaleReduction).coerceIn(0.1f, 1f)
-                    translationX = size.width * clamped * resolvedDirection
-                    scaleX = targetScale
-                    scaleY = targetScale
-                }
+            if (!needsLayer.value) {
+                placeable.place(0, 0)
+            } else {
+                placeable.placeWithLayer(x = 0, y = 0, layerBlock = layerBlock)
             }
         }
     }
@@ -666,9 +694,11 @@ fun PredictiveBackOverlayBridge(
 /**
  * 全屏侧滑覆盖层的双层视差宿主容器：
  * - `Z = 0`（底层背景页）：在绘制期惰性读取 `openProgress`，叠加 28% 视差位移、`0.96f` 纵深缩放与 Scrim 压暗；
- * - `Z = 1`（顶层覆盖层）：强制实色 `surface` 背景与触控拦截，非减少动态下全程 `alpha = 1f` 不透明，
- *   并在暴露给背景的侧缘绘制 `20.dp` Elevation 渐变阴影。
+ *   当覆盖层静止全开完全遮挡底层时跳过背景内容与遮罩绘制，零过绘；
+ * - `Z = 1`（顶层覆盖层）：强制实色 `surface` 背景与命中阻断（仅拦截向底层穿透，不消费未处理事件以免干扰内层滚动），
+ *   静止全开态移除独立图形层包装，仅在转场/预测返回期间启用图形层并绘制 `20.dp` Elevation 渐变阴影。
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun FullscreenPredictiveSlideOverlay(
     controller: PredictiveOverlayBackController,
@@ -680,28 +710,80 @@ fun FullscreenPredictiveSlideOverlay(
 ) {
     val scrimColor = MaterialTheme.colorScheme.scrim
     val surfaceColor = MaterialTheme.colorScheme.surface
+    // 全开静止态仍保留背景图层：一方面维持预测返回视差基线坐标契约（测试在 openProgress == 1f
+    // 读取背景坐标），另一方面保证返回手势首帧免触发 Placement 重排；真正像素过绘由下方 drawWithContent 跳过。
+    val bgNeedsLayer = remember(controller, reduced) {
+        derivedStateOf { !reduced && controller.openProgress.value > 0f }
+    }
+    val fgNeedsLayer = remember(controller) {
+        derivedStateOf { controller.openProgress.value < 0.999f }
+    }
+    val bgOccluded = remember(controller) {
+        derivedStateOf { controller.overlayMounted && controller.openProgress.value >= 0.999f }
+    }
+    val bgHasFocus = remember { AtomicBoolean(false) }
+    val focusManager = LocalFocusManager.current
+    LaunchedEffect(controller, bgOccluded) {
+        snapshotFlow { bgOccluded.value }
+            .distinctUntilChanged()
+            .collect { occluded ->
+                if (occluded && bgHasFocus.get()) {
+                    focusManager.clearFocus(force = true)
+                }
+            }
+    }
+    val bgLayerBlock = remember(controller, reduced) {
+        { scope: GraphicsLayerScope ->
+            val p = controller.openProgress.value.coerceIn(0f, 1f)
+            if (!reduced && p > 0f) {
+                scope.translationX = -scope.size.width * AppTransitions.ParallaxOffsetFraction * p * controller.exitDirection
+                val scale = 1f - (1f - AppTransitions.BackgroundDepthScale) * p
+                scope.scaleX = scale
+                scope.scaleY = scale
+            } else {
+                scope.translationX = 0f
+                scope.scaleX = 1f
+                scope.scaleY = 1f
+            }
+        }
+    }
+    val fgLayerBlock = remember(controller, reduced) {
+        { scope: GraphicsLayerScope ->
+            val p = controller.openProgress.value.coerceIn(0f, 1f)
+            if (reduced) {
+                scope.translationX = 0f
+                scope.alpha = p
+            } else {
+                scope.translationX = scope.size.width * (1f - p) * controller.exitDirection
+                scope.alpha = 1f
+            }
+        }
+    }
     Box(modifier = modifier.fillMaxSize().clipToBounds()) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(0f)
-                .graphicsLayer {
-                    val p = controller.openProgress.value.coerceIn(0f, 1f)
-                    if (!reduced && p > 0f) {
-                        translationX = -size.width * AppTransitions.ParallaxOffsetFraction * p * controller.exitDirection
-                        val scale = 1f - (1f - AppTransitions.BackgroundDepthScale) * p
-                        scaleX = scale
-                        scaleY = scale
-                    } else {
-                        translationX = 0f
-                        scaleX = 1f
-                        scaleY = 1f
+                .conditionalGraphicsLayer(needsLayer = bgNeedsLayer, layerBlock = bgLayerBlock)
+                .semantics {
+                    if (bgOccluded.value) {
+                        invisibleToUser()
                     }
                 }
+                .onFocusChanged { bgHasFocus.set(it.hasFocus) }
+                .focusProperties {
+                    enter = {
+                        if (bgOccluded.value) FocusRequester.Cancel else FocusRequester.Default
+                    }
+                }
+                .focusGroup()
                 .drawWithContent {
+                    val p = controller.openProgress.value.coerceIn(0f, 1f)
+                    if (controller.overlayMounted && p >= 0.999f) {
+                        return@drawWithContent
+                    }
                     drawContent()
                     if (!reduced) {
-                        val p = controller.openProgress.value.coerceIn(0f, 1f)
                         val scrimAlpha = AppTransitions.BackgroundScrimMaxAlpha * p
                         if (scrimAlpha > 0.001f) {
                             drawRect(color = scrimColor.copy(alpha = scrimAlpha))
@@ -718,44 +800,115 @@ fun FullscreenPredictiveSlideOverlay(
                     .fillMaxSize()
                     .zIndex(1f)
                     .then(if (overlayTestTag != null) Modifier.testTag(overlayTestTag) else Modifier)
-                    .graphicsLayer {
-                        val p = controller.openProgress.value.coerceIn(0f, 1f)
-                        if (reduced) {
-                            translationX = 0f
-                            alpha = p
-                        } else {
-                            translationX = size.width * (1f - p) * controller.exitDirection
-                            alpha = 1f
-                        }
-                    }
-                    .drawWithContent {
-                        drawContent()
+                    .conditionalGraphicsLayer(needsLayer = fgNeedsLayer, layerBlock = fgLayerBlock)
+                    .then(
                         if (!reduced) {
-                            val p = controller.openProgress.value.coerceIn(0f, 1f)
-                            if (p > 0.001f && p < 0.999f) {
-                                drawTransitionEdgeShadow(
-                                    scrimColor = scrimColor,
-                                    factor = p,
-                                    onStartEdge = controller.exitDirection >= 0f,
-                                )
-                            }
-                        }
-                    }
-                    .background(surfaceColor)
-                    .pointerInput(Unit) {
-                        awaitPointerEventScope {
-                            while (true) {
-                                val event = awaitPointerEvent(PointerEventPass.Main)
-                                event.changes.forEach { change ->
-                                    if (!change.isConsumed) change.consume()
+                            Modifier.drawWithContent {
+                                drawContent()
+                                val p = controller.openProgress.value.coerceIn(0f, 1f)
+                                if (p > 0.001f && p < 0.999f) {
+                                    drawTransitionEdgeShadow(
+                                        scrimColor = scrimColor,
+                                        factor = p,
+                                        onStartEdge = controller.exitDirection >= 0f,
+                                    )
                                 }
                             }
-                        }
-                    },
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .background(surfaceColor)
+                    .blockSiblingPointerHits(),
             ) {
                 CompositionLocalProvider(LocalPredictiveOverlayBackController provides controller) {
                     overlayContent()
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 仅借助默认关闭兄弟共享的 `PointerInputModifierNode` 截断向低 Z 序兄弟节点穿透：
+ * 不消费向祖先冒泡的事件，也不启动任何协程。
+ */
+private fun Modifier.blockSiblingPointerHits(): Modifier = this then BlockSiblingPointerHitsElement
+
+private object BlockSiblingPointerHitsElement : ModifierNodeElement<BlockSiblingPointerHitsNode>() {
+    override fun create(): BlockSiblingPointerHitsNode = BlockSiblingPointerHitsNode()
+
+    override fun update(node: BlockSiblingPointerHitsNode) = Unit
+
+    override fun InspectorInfo.inspectableProperties() {
+        name = "blockSiblingPointerHits"
+    }
+
+    override fun equals(other: Any?): Boolean = other === this
+
+    override fun hashCode(): Int = 135792468
+}
+
+private class BlockSiblingPointerHitsNode : Modifier.Node(), PointerInputModifierNode {
+    override fun onPointerEvent(
+        pointerEvent: PointerEvent,
+        pass: PointerEventPass,
+        bounds: IntSize,
+    ) = Unit
+
+    override fun onCancelPointerInput() = Unit
+}
+
+internal fun Modifier.conditionalGraphicsLayer(
+    needsLayer: State<Boolean>,
+    layerBlock: GraphicsLayerScope.() -> Unit,
+): Modifier = this then ConditionalGraphicsLayerElement(needsLayer = needsLayer, layerBlock = layerBlock)
+
+private class ConditionalGraphicsLayerElement(
+    private val needsLayer: State<Boolean>,
+    private val layerBlock: GraphicsLayerScope.() -> Unit,
+) : ModifierNodeElement<ConditionalGraphicsLayerNode>() {
+    override fun create(): ConditionalGraphicsLayerNode = ConditionalGraphicsLayerNode(
+        needsLayer = needsLayer,
+        layerBlock = layerBlock,
+    )
+
+    override fun update(node: ConditionalGraphicsLayerNode) {
+        val changed = node.needsLayer != needsLayer || node.layerBlock != layerBlock
+        node.needsLayer = needsLayer
+        node.layerBlock = layerBlock
+        if (changed) {
+            node.invalidatePlacement()
+        }
+    }
+
+    override fun InspectorInfo.inspectableProperties() {
+        name = "conditionalGraphicsLayer"
+    }
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is ConditionalGraphicsLayerElement) return false
+        return needsLayer == other.needsLayer && layerBlock == other.layerBlock
+    }
+
+    override fun hashCode(): Int = 31 * needsLayer.hashCode() + layerBlock.hashCode()
+}
+
+private class ConditionalGraphicsLayerNode(
+    var needsLayer: State<Boolean>,
+    var layerBlock: GraphicsLayerScope.() -> Unit,
+) : Modifier.Node(), LayoutModifierNode {
+    override fun MeasureScope.measure(
+        measurable: Measurable,
+        constraints: Constraints,
+    ): MeasureResult {
+        val placeable = measurable.measure(constraints)
+        return layout(placeable.width, placeable.height) {
+            if (!needsLayer.value) {
+                placeable.place(0, 0)
+            } else {
+                placeable.placeWithLayer(x = 0, y = 0, layerBlock = layerBlock)
             }
         }
     }

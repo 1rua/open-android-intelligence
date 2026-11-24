@@ -16,11 +16,13 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.conversation.theme.LocalWindowMaxWidth
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.material3.Text
 import androidx.compose.foundation.layout.Spacer
@@ -309,11 +311,12 @@ fun OnboardingFlow(
         if (previous != null) onStageChange(previous) else onExit()
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.surface,
-        ) {
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        CompositionLocalProvider(LocalWindowMaxWidth provides maxWidth) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.surface,
+            ) {
             // 阶段之间用统一的淡入淡出：引导页之间是「同一流程内的连续步骤」，
             // 用位移会让人误以为是层级的跳转；只有最后进入登录才用几何展开。
             AnimatedContent(
@@ -392,6 +395,7 @@ fun OnboardingFlow(
                 // 完整登录表单由宿主在 onFinished 之后接管，此处不做第二份登录实现。
                 RevealLandingMark()
             }
+        }
         }
     }
 }

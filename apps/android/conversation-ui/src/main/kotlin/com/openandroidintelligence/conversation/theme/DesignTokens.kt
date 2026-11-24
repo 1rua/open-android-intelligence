@@ -1,6 +1,11 @@
 package com.openandroidintelligence.conversation.theme
 
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+
+/** 由顶层窗口宿主向下传递的可用最大宽度，避免子宿主重复嵌套 `BoxWithConstraints`。 */
+val LocalWindowMaxWidth = compositionLocalOf<Dp?> { null }
 
 /**
  * 圆角令牌。

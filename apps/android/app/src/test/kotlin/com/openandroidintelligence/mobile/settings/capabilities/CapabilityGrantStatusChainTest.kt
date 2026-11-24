@@ -3,10 +3,14 @@ package com.openandroidintelligence.mobile.settings.capabilities
 import android.app.Application
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.provider.Settings
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -18,6 +22,9 @@ import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.test.core.app.ApplicationProvider
+import com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
+import com.openandroidintelligence.capability.ScreenCapture
+import com.openandroidintelligence.capability.ScreenCaptureSource
 import com.openandroidintelligence.control.ScreenHostRegistry
 import com.openandroidintelligence.core.model.NotificationDeliveryMode
 import com.openandroidintelligence.core.model.NotificationFieldAccess
@@ -540,5 +547,206 @@ class CapabilityGrantStatusChainTest {
             return true
         }
         override fun openSystemListenerSettings(context: Context): Boolean = true
+    }
+
+    /** 刻意沿用 [NotificationBindingPort.observeListenerConnected] 默认冷 flowOf 实现的端口替身。 */
+    private class ColdNotificationBindingPort(
+        @Volatile var systemGranted: Boolean,
+        @Volatile var connected: Boolean,
+    ) : NotificationBindingPort {
+        override fun isListenerBound(): Boolean = systemGranted
+        override fun isListenerConnected(): Boolean = connected
+        override fun openSystemListenerSettings(context: Context): Boolean = true
+    }
+
+    private fun withTestBundledPlugins(
+        app: OpenAndroidIntelligenceApplication,
+        block: () -> Unit,
+    ) {
+        val field = ProductionPluginHost::class.java.getDeclaredField("builtInPackages").apply {
+            isAccessible = true
+        }
+        val previousReader = field.get(app.pluginHost)
+        app.pluginHost.installStore.installRoot.deleteRecursively()
+        field.set(app.pluginHost, BuiltInPackageReader { TestAlpPackages.compiledBundledPackage(it) })
+        app.pluginHost.reload()
+        try {
+            block()
+        } finally {
+            field.set(app.pluginHost, previousReader)
+            app.pluginHost.installStore.installRoot.deleteRecursively()
+            runCatching { app.pluginHost.reload() }
+        }
+    }
+
+    @Test
+    @Config(sdk = [34], application = OpenAndroidIntelligenceApplication::class)
+    fun deviceCapabilitiesRefreshesColdNotificationListenerPortOnResume() {
+        assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
+        val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
+        val previousNotification = KernelPrimitiveRegistry.provider("kernel.notifications.read")
+        val bindingPort = ColdNotificationBindingPort(systemGranted = false, connected = false)
+        val policyPort = InMemoryPolicyPort(granted = false)
+        NotificationControlRegistry.install(policyPort, bindingPort)
+        KernelPrimitiveRegistry.register(object : KernelPrimitiveProvider {
+            override val primitiveId = "kernel.notifications.read"
+            override fun availability(): String? = when {
+                !bindingPort.isListenerBound() -> "NOTIFICATION_ACCESS_REQUIRED"
+                !policyPort.snapshot().granted -> "LOCAL_GRANT_REQUIRED"
+                !bindingPort.isListenerConnected() -> "NOTIFICATION_LISTENER_UNAVAILABLE"
+                else -> null
+            }
+            override suspend fun invoke(context: LocalGrantContext, input: ByteArray): ByteArray = "{}".encodeToByteArray()
+        })
+
+        val owner = TestLifecycleOwner()
+        val env = app.platformSettingsEnvironment()
+        try {
+            withTestBundledPlugins(app) {
+                val entry = app.pluginHost.entries(NOTIFICATION_PLUGIN_ID).first()
+                app.pluginHost.setCapabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key, CapabilityPolicy(enabled = true))
+                compose.setContent {
+                    CompositionLocalProvider(LocalLifecycleOwner provides owner) {
+                        MaterialTheme {
+                            Surface {
+                                DeviceCapabilitiesScreen(
+                                    environment = env,
+                                    runtime = null,
+                                    presentation = SettingsPresentation.SCREEN,
+                                    onBack = {},
+                                    onOpenCapability = { _, _ -> },
+                                    onOpenPlugins = {},
+                                )
+                            }
+                        }
+                    }
+                }
+                compose.waitForIdle()
+                val row = compose.onNodeWithTag("capability-entry:$NOTIFICATION_PLUGIN_ID:${entry.key}")
+                row.performScrollTo().assertTextContains("需授权", substring = true)
+
+                // 系统授权并在回前台 ON_RESUME 时恢复服务连接，冷流端口不得冻结在首次初始值
+                bindingPort.systemGranted = true
+                bindingPort.connected = true
+                policyPort.update(NotificationPolicyUpdate(expectedRevision = policyPort.snapshot().revision, granted = true))
+                compose.runOnIdle { owner.resumeFromBackground() }
+                compose.waitUntil(timeoutMillis = 5_000) {
+                    runCatching {
+                        row.performScrollTo().assertTextContains("已开启", substring = true)
+                    }.isSuccess
+                }
+            }
+        } finally {
+            previousNotification?.let(KernelPrimitiveRegistry::register)
+        }
+    }
+
+    @Test
+    @Config(sdk = [34], application = OpenAndroidIntelligenceApplication::class)
+    fun deviceCapabilitiesReflectsScreenCaptureRevocationWhileStayingOnScreen() {
+        assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
+        val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
+        val sourceField = RemoteScreenCaptureRegistry::class.java.getDeclaredField("source").apply {
+            isAccessible = true
+        }
+        val previousSource = sourceField.get(RemoteScreenCaptureRegistry)
+        var captureAvailable = true
+        val fakeCaptureSource = object : ScreenCaptureSource {
+            override val isAvailable: Boolean get() = captureAvailable
+            override fun createAuthorizationIntent(): Intent? = null
+            override fun onAuthorizationResult(resultCode: Int, resultData: Intent?): Boolean = false
+            override suspend fun capture(): ScreenCapture? = null
+            override fun release() {
+                captureAvailable = false
+            }
+        }
+        sourceField.set(RemoteScreenCaptureRegistry, fakeCaptureSource)
+        RemoteScreenCaptureRegistry.notifyAvailabilityChanged()
+
+        val previousScreenCapture = KernelPrimitiveRegistry.provider("kernel.screen.capture")
+        KernelPrimitiveRegistry.register(object : KernelPrimitiveProvider {
+            override val primitiveId = "kernel.screen.capture"
+            override fun availability(): String? = if (captureAvailable) null else "NOT_AUTHORIZED"
+            override suspend fun invoke(context: LocalGrantContext, input: ByteArray): ByteArray = "{}".encodeToByteArray()
+        })
+
+        val capturePlugin = "org.openandroidintelligence.screen-capture"
+        val env = app.platformSettingsEnvironment()
+        try {
+            withTestBundledPlugins(app) {
+                val entry = app.pluginHost.entries(capturePlugin).first()
+                app.pluginHost.setCapabilityPolicy(capturePlugin, entry.key, CapabilityPolicy(enabled = true))
+                compose.setContent {
+                    MaterialTheme {
+                        Surface {
+                            DeviceCapabilitiesScreen(
+                                environment = env,
+                                runtime = null,
+                                presentation = SettingsPresentation.SCREEN,
+                                onBack = {},
+                                onOpenCapability = { _, _ -> },
+                                onOpenPlugins = {},
+                            )
+                        }
+                    }
+                }
+                compose.waitForIdle()
+                val row = compose.onNodeWithTag("capability-entry:$capturePlugin:${entry.key}")
+                row.performScrollTo().assertTextContains("已开启", substring = true)
+
+                // 停留在设备能力页面期间从通知栏停止投屏：通知可用态变更后应即时变为未授权
+                compose.runOnIdle {
+                    captureAvailable = false
+                    RemoteScreenCaptureRegistry.notifyAvailabilityChanged()
+                }
+                compose.waitForIdle()
+                row.performScrollTo().assertTextContains("需授权", substring = true)
+            }
+        } finally {
+            sourceField.set(RemoteScreenCaptureRegistry, previousSource)
+            RemoteScreenCaptureRegistry.notifyAvailabilityChanged()
+            previousScreenCapture?.let(KernelPrimitiveRegistry::register)
+        }
+    }
+
+    @Test
+    @Config(sdk = [34], application = OpenAndroidIntelligenceApplication::class)
+    fun capabilitySettingsUpdatesBackgroundToggleWhenExternalLocalStateChanges() {
+        assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
+        val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
+        val smsPlugin = "org.openandroidintelligence.sms"
+        val env = app.platformSettingsEnvironment()
+        withTestBundledPlugins(app) {
+            val registration = app.pluginHost.entries(smsPlugin).first { it.id == "org.openandroidintelligence.sms.query" }
+            try {
+                compose.setContent {
+                    MaterialTheme {
+                        Surface {
+                            CapabilitySettingsScreen(
+                                pluginId = smsPlugin,
+                                capability = registration.key,
+                                environment = env,
+                                runtime = null,
+                                presentation = SettingsPresentation.SCREEN,
+                                onBack = {},
+                                onRequestScreenCaptureAuthorization = {},
+                            )
+                        }
+                    }
+                }
+                compose.waitForIdle()
+                val toggle = compose.onNodeWithTag("capability-background-toggle:$smsPlugin")
+                toggle.performScrollTo().assertIsOff()
+
+                // 外部直接写入 PairingGrants（未走 host.setBackgroundEnabled / hostRevision 未自增）时开关应立即更新
+                compose.runOnIdle {
+                    app.pairingGrants.updatePluginBackground(registration.identity, true)
+                }
+                compose.waitForIdle()
+                toggle.performScrollTo().assertIsOn()
+            } finally {
+                app.pairingGrants.updatePluginBackground(registration.identity, false)
+            }
+        }
     }
 }

@@ -14,7 +14,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -27,6 +29,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
 import com.openandroidintelligence.control.ScreenHostRegistry
 import com.openandroidintelligence.conversation.components.SettingsNavigationItem
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
@@ -48,11 +51,33 @@ import com.openandroidintelligence.mobile.screen.probeAccessibilityBinding
 import com.openandroidintelligence.mobile.settings.SectionLabel
 import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
+import com.openandroidintelligence.notification.control.NotificationBindingPort
 import com.openandroidintelligence.notification.control.NotificationControlRegistry
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.withContext
+
+@Immutable
+private data class DeviceCapabilityRowUi(
+    val pluginId: String,
+    val capability: String,
+    val title: String,
+    val state: CapabilityState,
+)
+
+@Immutable
+private data class DeviceCapabilityGroupUi(
+    val group: String,
+    val rows: List<DeviceCapabilityRowUi>,
+)
+
+@Immutable
+private data class DeviceCapabilitiesUiModel(
+    val groups: List<DeviceCapabilityGroupUi>,
+    val loadFailures: Map<String, String>,
+)
 
 internal fun capabilityHost(context: android.content.Context, environment: PlatformSettingsEnvironment): ProductionPluginHost? =
     (context.applicationContext as? OpenAndroidIntelligenceApplication)?.pluginHost
@@ -74,15 +99,18 @@ internal fun DeviceCapabilitiesScreen(
     onOpenPlugins: () -> Unit,
 ) {
     val context = LocalContext.current
-    val observedHost = (context.applicationContext as? OpenAndroidIntelligenceApplication)?.pluginHost
+    val appContext = context.applicationContext
+    val observedHost = (appContext as? OpenAndroidIntelligenceApplication)?.pluginHost
     val hostRevision = observedHost?.revision?.collectAsState()?.value
     val localState by environment.pairingGrants.state.collectAsState()
     val accessibilityConnected by ScreenHostRegistry.accessibilityConnected.collectAsState()
-    val notificationBinding = NotificationControlRegistry.bindingPort()
-    val notificationListenerConnected by notificationBinding.observeListenerConnected()
-        .collectAsState(initial = runCatching { notificationBinding.isListenerConnected() }.getOrDefault(false))
-    val appContext = context.applicationContext
+    val captureAvailabilityRevision by RemoteScreenCaptureRegistry.availabilityRevision.collectAsState()
     var refreshTick by remember { mutableIntStateOf(0) }
+    val notificationBinding = NotificationControlRegistry.bindingPort()
+    val notificationListenerConnected by rememberNotificationListenerConnected(
+        binding = notificationBinding,
+        refreshKey = refreshTick,
+    )
     val lifecycle = LocalLifecycleOwner.current
     // 从系统权限设置返回后必须主动探测绑定态并重新读真实状态，不能沿用离开前的缓存。
     DisposableEffect(lifecycle, appContext) {
@@ -106,19 +134,32 @@ internal fun DeviceCapabilitiesScreen(
         }
         if (reconciled) refreshTick++
     }
-    val entries = remember(observedHost, hostRevision, refreshTick) { observedHost?.verifiedCapabilities().orEmpty() }
-    val catalog = remember(entries) { capabilityCatalog(entries) }
-    val inspector = remember(appContext, observedHost, hostRevision, accessibilityConnected, notificationListenerConnected, refreshTick) {
-        DeviceCapabilityGrantInspector(
+
+    // 运行状态与系统授权检查集中缓存于非组合期计算，避免每次重组重复执行 SHA-256 与系统 Binder 查询。
+    val uiModel = remember(
+        appContext,
+        observedHost,
+        hostRevision,
+        localState,
+        accessibilityConnected,
+        captureAvailabilityRevision,
+        notificationBinding,
+        notificationListenerConnected,
+        refreshTick,
+    ) {
+        val entries = observedHost?.verifiedCapabilities().orEmpty()
+        val catalog = capabilityCatalog(entries)
+        val inspector = DeviceCapabilityGrantInspector(
             context = appContext,
             notificationAccessGranted = ::isNotificationListenerReady,
             accessibilityEnabled = { accessibilityServiceReady(appContext) },
-            captureAuthorized = { runCatching { com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source?.isAvailable == true }.getOrDefault(false) },
+            captureAuthorized = {
+                runCatching { RemoteScreenCaptureRegistry.source?.isAvailable == true }
+                    .getOrDefault(false)
+            },
         )
-    }
-    // 运行状态来自宿主的内存快照：同步读取，避免首帧先显示「需授权」再跳成「已开启」的闪烁。
-    val providerReady = remember(observedHost, hostRevision, accessibilityConnected, notificationListenerConnected, refreshTick) {
-        runCatching {
+        // 运行状态来自宿主的内存快照：同步读取，避免首帧先显示「需授权」再跳成「已开启」的闪烁。
+        val providerReady = runCatching {
             observedHost?.capabilitySnapshot()?.inventory.orEmpty()
                 .mapNotNull { entry ->
                     val pluginId = entry["pluginId"] as? String ?: return@mapNotNull null
@@ -127,34 +168,52 @@ internal fun DeviceCapabilitiesScreen(
                 }
                 .toMap()
         }.getOrDefault(emptyMap())
+        val loadFailures = observedHost?.builtInFailures.orEmpty()
+        val policyReadable = localState?.localError == null
+        val permissionStateCache = mutableMapOf<String, DeviceCapabilityGrantState>()
+        val groups = catalog.groupBy { it.group }.map { (group, items) ->
+            val rows = items.map { item ->
+                val state = capabilityState(
+                    CapabilityFacts(
+                        loadFailed = item.pluginId in loadFailures,
+                        declared = item.verified != null,
+                        policyEnabled = observedHost != null && item.verified != null &&
+                            runCatching { observedHost.capabilityPolicy(item.pluginId, item.capability).enabled }
+                                .getOrDefault(false),
+                        policyReadable = policyReadable,
+                        androidGranted = systemGranted(inspector, item, permissionStateCache),
+                        providerReady = item.verified == null ||
+                            providerReady[item.pluginId + ":" + item.capability.substringBefore('@')] == true,
+                    ),
+                )
+                DeviceCapabilityRowUi(
+                    pluginId = item.pluginId,
+                    capability = item.capability,
+                    title = item.title,
+                    state = state,
+                )
+            }
+            DeviceCapabilityGroupUi(group = group, rows = rows)
+        }
+        DeviceCapabilitiesUiModel(groups = groups, loadFailures = loadFailures)
     }
-    val loadFailures = observedHost?.builtInFailures.orEmpty()
 
     SettingsPageScaffold(title = "设备能力与授权", presentation = presentation, onBack = onBack) { padding ->
         SettingsPageColumn(contentPadding = padding) {
-            catalog.groupBy { it.group }.forEach { (group, items) ->
-                SectionLabel(group)
+            uiModel.groups.forEach { group ->
+                SectionLabel(group.group)
                 SettingsSectionCard {
-                    items.forEachIndexed { index, item ->
+                    group.rows.forEachIndexed { index, item ->
                         if (index > 0) HorizontalRule()
-                        val state = capabilityState(
-                            CapabilityFacts(
-                                loadFailed = item.pluginId in loadFailures,
-                                declared = item.verified != null,
-                                policyEnabled = observedHost != null && item.verified != null &&
-                                    runCatching { observedHost.capabilityPolicy(item.pluginId, item.capability).enabled }.getOrDefault(false),
-                                policyReadable = localState?.localError == null,
-                                androidGranted = systemGranted(inspector, item),
-                                providerReady = item.verified == null ||
-                                    providerReady[item.pluginId + ":" + item.capability.substringBefore('@')] == true,
-                            ),
-                        )
+                        val onRowClick = remember(item.pluginId, item.capability, onOpenCapability) {
+                            { onOpenCapability(item.pluginId, item.capability) }
+                        }
                         SettingsNavigationItem(
                             headline = item.title,
                             icon = capabilityIcon(item.title),
-                            supporting = state.label,
-                            tone = state.tone(),
-                            onClick = { onOpenCapability(item.pluginId, item.capability) },
+                            supporting = item.state.label,
+                            tone = item.state.tone(),
+                            onClick = onRowClick,
                             modifier = Modifier.testTag("capability-entry:${item.pluginId}:${item.capability}"),
                         )
                     }
@@ -171,7 +230,7 @@ internal fun DeviceCapabilitiesScreen(
                 )
             }
             // 失败原因只在这里说一次，且是可执行的说明；正常时不显示任何技术备注。
-            loadFailures.takeIf { it.isNotEmpty() }?.let {
+            uiModel.loadFailures.takeIf { it.isNotEmpty() }?.let {
                 Text(
                     text = "部分内建能力未能加载：" + it.entries.joinToString("；") { (pluginId, code) ->
                         "${builtInDisplayName(pluginId)}（${builtInFailureLabel(code)}）"
@@ -195,12 +254,17 @@ internal fun DeviceCapabilitiesScreen(
  * 屏幕截图按真实可用路径判断：无障碍截图已就绪时，屏幕共享（备用方案）未授权不算阻塞，
  * 否则用户会被主页面推去做一次根本不需要的授权。其余能力逐条检查各自的首选入口。
  */
-private fun systemGranted(inspector: DeviceCapabilityGrantInspector, item: CapabilityCatalogItem): Boolean {
+private fun systemGranted(
+    inspector: DeviceCapabilityGrantInspector,
+    item: CapabilityCatalogItem,
+    stateCache: MutableMap<String, DeviceCapabilityGrantState>,
+): Boolean {
     val primitives = item.verified?.primitives ?: return false
     val requirements = androidPermissionRequirements(primitives, accessibilityScreenshotSupported = accessibilityScreenshotSupported())
     if (requirements.isEmpty()) return true
-    fun stateOf(requirement: AndroidPermissionRequirement) = runCatching { inspector.state(requirement) }
-        .getOrDefault(DeviceCapabilityGrantState.REQUIRES_SETTINGS)
+    fun stateOf(requirement: AndroidPermissionRequirement) = stateCache.getOrPut(requirement.key) {
+        runCatching { inspector.state(requirement) }.getOrDefault(DeviceCapabilityGrantState.REQUIRES_SETTINGS)
+    }
     val primary = requirements.filterNot { it.isFallback }
     if (primary.all { stateOf(it) == DeviceCapabilityGrantState.GRANTED }) return true
     // 首选路径未就绪时，已获系统授权的备用方案同样构成可用。
@@ -235,7 +299,6 @@ private fun capabilityIcon(title: String): ImageVector = when (title) {
 }
 
 /** 状态词的颜色只是辅助；文字本身已经说明了状态。 */
-@Composable
 private fun CapabilityState.tone(): SettingsTone = when (this) {
     CapabilityState.ON -> SettingsTone.PRIMARY
     CapabilityState.NEEDS_AUTH -> SettingsTone.NEUTRAL
@@ -243,9 +306,30 @@ private fun CapabilityState.tone(): SettingsTone = when (this) {
     CapabilityState.OFF -> SettingsTone.NEUTRAL
 }
 
+/**
+ * 订阅系统通知监听服务实时连接状态：
+ * - 若端口提供持久更新的 [StateFlow]，直接缓存流对象避免重组重复订阅；
+ * - 若端口沿用接口默认的冷 `flowOf` 实现（或其它非 [StateFlow] 实现），随 [refreshKey] 刷新重新读取，避免状态永久冻结在首次值。
+ */
+@Composable
+internal fun rememberNotificationListenerConnected(
+    binding: NotificationBindingPort = NotificationControlRegistry.bindingPort(),
+    refreshKey: Any? = Unit,
+): State<Boolean> {
+    val cachedFlow = remember(binding) { binding.observeListenerConnected() }
+    if (cachedFlow is StateFlow<Boolean>) {
+        return cachedFlow.collectAsState()
+    }
+    val listenerFlow = remember(binding, refreshKey) { binding.observeListenerConnected() }
+    val initialConnected = remember(binding, refreshKey) {
+        runCatching { binding.isListenerConnected() }.getOrDefault(false)
+    }
+    return listenerFlow.collectAsState(initial = initialConnected)
+}
+
 @Composable
 private fun HorizontalRule() {
-    androidx.compose.material3.HorizontalDivider(
+    HorizontalDivider(
         color = MaterialTheme.colorScheme.outlineVariant,
         modifier = Modifier.padding(vertical = Dimensions.SpaceSmall),
     )

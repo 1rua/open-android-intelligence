@@ -3,7 +3,6 @@ package com.openandroidintelligence.mobile.settings.appearance
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -14,13 +13,9 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -31,9 +26,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
@@ -48,9 +42,9 @@ import com.openandroidintelligence.mobile.SettingsPresentation
 import com.openandroidintelligence.mobile.SettingsUiState
 import com.openandroidintelligence.mobile.ThemePreference
 import com.openandroidintelligence.mobile.settings.SectionLabel
+import com.openandroidintelligence.mobile.settings.SettingsAdaptiveSingleChoiceSelector
 import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
-import androidx.compose.ui.res.stringResource
 import com.openandroidintelligence.ui.resources.R as UiR
 import kotlinx.coroutines.CancellationException
 
@@ -77,6 +71,7 @@ internal fun AppearanceSettingsScreen(
                 onSetPalette = onSetPalette,
                 onSetReduceMotion = onSetReduceMotion,
                 onStreamingHapticFeedbackChange = onStreamingHapticFeedbackChange,
+                presentation = presentation,
             )
         }
     }
@@ -96,6 +91,7 @@ internal fun AppearanceEditorContent(
     onStreamingHapticFeedbackChange: ((Boolean) -> Unit)? = null,
     showAdvanced: Boolean = true,
     allowPaletteWhileDynamic: Boolean = false,
+    presentation: SettingsPresentation? = null,
 ) {
     require(
         !showAdvanced ||
@@ -112,10 +108,17 @@ internal fun AppearanceEditorContent(
             failures = failures + control
         }
     }
+    val surfaceColor = MaterialTheme.colorScheme.surface
+    val isDark = remember(surfaceColor) { surfaceColor.luminance() < 0.5f }
+
     Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium)) {
         SectionLabel(stringResource(UiR.string.settings_section_theme_mode))
         SettingsSectionCard {
-            ThemeSelector(settings.theme, onboarding = !showAdvanced) { theme -> save("theme") { onSetTheme(theme) } }
+            ThemeSelector(
+                selected = settings.theme,
+                onboarding = !showAdvanced,
+                presentation = presentation,
+            ) { theme -> save("theme") { onSetTheme(theme) } }
             if ("theme" in failures) AppearanceSaveFailure()
         }
         SectionLabel(stringResource(UiR.string.settings_section_theme_color))
@@ -142,6 +145,7 @@ internal fun AppearanceEditorContent(
                 ThemePalette.entries.forEach { palette ->
                     PaletteOption(
                         palette = palette,
+                        isDark = isDark,
                         showIconMatch = !showAdvanced,
                         selected = !settings.dynamicColor && settings.palette == palette,
                         enabled = !settings.dynamicColor || allowPaletteWhileDynamic,
@@ -209,37 +213,20 @@ private fun AppearanceSaveFailure() {
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ThemeSelector(selected: ThemePreference, onboarding: Boolean, onSelect: (ThemePreference) -> Unit) {
-    BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val compact = maxWidth < Dimensions.DrawerWidth * LocalDensity.current.fontScale
-        if (compact) {
-            Column(Modifier.selectableGroup()) {
-                ThemePreference.entries.forEach { option ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth()
-                            .heightIn(min = Dimensions.MinimumTouchTarget)
-                            .selectable(selected = selected == option, role = Role.RadioButton, onClick = { onSelect(option) }),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        RadioButton(selected = selected == option, onClick = null)
-                        Text(themeLabel(option, onboarding), modifier = Modifier.weight(1f))
-                    }
-                }
-            }
-        } else {
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                ThemePreference.entries.forEachIndexed { index, option ->
-                    SegmentedButton(
-                        selected = selected == option,
-                        onClick = { onSelect(option) },
-                        shape = SegmentedButtonDefaults.itemShape(index, ThemePreference.entries.size),
-                    ) { Text(themeLabel(option, onboarding)) }
-                }
-            }
-        }
-    }
+private fun ThemeSelector(
+    selected: ThemePreference,
+    onboarding: Boolean,
+    presentation: SettingsPresentation?,
+    onSelect: (ThemePreference) -> Unit,
+) {
+    SettingsAdaptiveSingleChoiceSelector(
+        options = ThemePreference.entries,
+        selected = selected,
+        labelOf = { themeLabel(it, onboarding) },
+        onSelect = onSelect,
+        presentation = presentation,
+    )
 }
 
 private fun themeLabel(option: ThemePreference, onboarding: Boolean): String = when (option) {
@@ -268,27 +255,26 @@ private fun AppearanceSwitch(headline: String, supporting: String, checked: Bool
 @Composable
 private fun PaletteOption(
     palette: ThemePalette,
+    isDark: Boolean,
     showIconMatch: Boolean,
     selected: Boolean,
     enabled: Boolean,
     onSelect: () -> Unit,
 ) {
-    val light = remember(palette) { palette.lightScheme() }
-    val dark = remember(palette) { palette.darkScheme() }
-    val colors = if (MaterialTheme.colorScheme.surface.luminance() < 0.5f) dark else light
+    val colors = remember(palette, isDark) { if (isDark) palette.darkScheme() else palette.lightScheme() }
     Row(
         modifier = Modifier.fillMaxWidth()
             .heightIn(min = Dimensions.MinimumTouchTarget)
             .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onSelect)
-            .alpha(if (enabled) 1f else 0.6f)
+            .then(if (enabled) Modifier else Modifier.alpha(0.6f))
             .padding(vertical = Dimensions.SpaceSmall),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-            listOf(colors.primary, colors.primaryContainer, colors.tertiary).forEach { color ->
-                Box(Modifier.size(12.dp).clip(CircleShape).background(color))
-            }
+            Box(Modifier.size(12.dp).background(colors.primary, CircleShape))
+            Box(Modifier.size(12.dp).background(colors.primaryContainer, CircleShape))
+            Box(Modifier.size(12.dp).background(colors.tertiary, CircleShape))
         }
         Column(Modifier.weight(1f)) {
             Text(palette.label, style = MaterialTheme.typography.titleSmall)

@@ -39,6 +39,7 @@ import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.components.noticeText
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
+import com.openandroidintelligence.conversation.theme.LocalWindowMaxWidth
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -720,5 +721,51 @@ class WorkbenchLayoutRegressionTest {
         override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
         override fun observeEvents(scope: ConversationScope) = emptyFlow<VerifiedConversationEvent>()
         override suspend fun cancelGeneration(generationId: String, requestId: String) = CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
+    }
+
+    @Test
+    fun workbenchRespectsOwnNarrowConstraintsAndPreservesStateAcrossOverrideToggle() {
+        val controller = sidebarController()
+        var widthOverride by mutableStateOf<androidx.compose.ui.unit.Dp?>(null)
+        compose.setContent {
+            MaterialTheme {
+                // 外层故意提供宽屏 LocalWindowMaxWidth，但自身容器仅 411dp 且未传入 availableWidthOverride
+                CompositionLocalProvider(LocalWindowMaxWidth provides 1000.dp) {
+                    Box(Modifier.size(411.dp, 800.dp)) {
+                        WorkbenchScreen(
+                            controller = controller,
+                            gatewayLabel = "gateway",
+                            onOpenSettings = {},
+                            onPickCamera = {},
+                            onPickGallery = {},
+                            onPickDocument = {},
+                            onVoiceInput = {},
+                            onLogout = {},
+                            settingsOpen = true,
+                            onSettingsOpenChange = {},
+                            settingsPanel = { onClose -> SidebarSettingsFixture(onClose, {}) },
+                            availableWidthOverride = widthOverride,
+                        )
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+        // 未传 override 时应按自身 411dp 渲染手机全屏设置覆盖层，不得被外层 1000.dp 误切为宽屏侧栏
+        compose.onNodeWithTag("phone-fullscreen-settings-container").assertIsDisplayed()
+
+        // 切入设置子页后动态切换 availableWidthOverride，设置子页状态不得重置丢失
+        compose.onNodeWithText("进入设置子页").performClick()
+        compose.onNodeWithText("设置子页状态").assertIsDisplayed()
+
+        compose.runOnIdle { widthOverride = 411.dp }
+        compose.waitForIdle()
+        compose.onNodeWithTag("phone-fullscreen-settings-container").assertIsDisplayed()
+        compose.onNodeWithText("设置子页状态").assertIsDisplayed()
+
+        compose.runOnIdle { widthOverride = null }
+        compose.waitForIdle()
+        compose.onNodeWithTag("phone-fullscreen-settings-container").assertIsDisplayed()
+        compose.onNodeWithText("设置子页状态").assertIsDisplayed()
     }
 }

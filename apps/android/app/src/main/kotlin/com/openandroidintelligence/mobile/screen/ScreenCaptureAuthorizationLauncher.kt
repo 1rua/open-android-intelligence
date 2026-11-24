@@ -81,6 +81,9 @@ internal fun rememberScreenCaptureAuthorization(
                 if (!granted) {
                     com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
                         .stopForeground(activity)
+                } else {
+                    com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
+                        .notifyAvailabilityChanged()
                 }
                 notice(
                     if (granted) activity.getString(UiR.string.perm_screen_screenshot_granted)

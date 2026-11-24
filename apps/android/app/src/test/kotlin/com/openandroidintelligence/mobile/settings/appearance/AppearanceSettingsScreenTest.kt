@@ -2,6 +2,7 @@ package com.openandroidintelligence.mobile.settings.appearance
 
 import android.app.Application
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.CompositionLocalProvider
@@ -11,7 +12,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -25,11 +30,13 @@ import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
+import com.openandroidintelligence.conversation.theme.LocalWindowMaxWidth
 import com.openandroidintelligence.conversation.theme.ThemePalette
 import com.openandroidintelligence.mobile.AppearanceSettings
 import com.openandroidintelligence.mobile.SettingsPresentation
 import com.openandroidintelligence.mobile.SettingsUiState
 import com.openandroidintelligence.mobile.onboarding.screens.AppearanceSetupScreen
+import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -193,6 +200,33 @@ class AppearanceSettingsScreenTest {
                     assertFalse("$label 第 $line 行不应被省略", layout.isLineEllipsized(line))
                 }
             }
+        }
+    }
+
+    @Test
+    fun screenModeDegradesThemeSelectorToRadioButtonsWhenLandscapeSafeInsetsShrinkContent() {
+        compose.setContent {
+            CompositionLocalProvider(LocalWindowMaxWidth provides 420.dp) {
+                MaterialTheme {
+                    SettingsPageColumn(contentPadding = PaddingValues(horizontal = 72.dp)) {
+                        AppearanceEditorContent(
+                            settings = AppearanceSettings(),
+                            onSetTheme = {},
+                            onSetDynamicColor = {},
+                            onSetDynamicIconColor = {},
+                            onSetPalette = {},
+                            onSetReduceMotion = {},
+                            onStreamingHapticFeedbackChange = {},
+                            presentation = SettingsPresentation.SCREEN,
+                        )
+                    }
+                }
+            }
+        }
+        // 420dp 减去两侧共 144dp 横屏安全区及卡片边距后不足 320dp，应降级为单选框列表而非分段按钮
+        listOf("跟随系统", "浅色", "深色").forEach { label ->
+            compose.onNodeWithText(label)
+                .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.RadioButton))
         }
     }
 }

@@ -35,6 +35,7 @@ import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.conversation.theme.LocalWindowMaxWidth
 import com.openandroidintelligence.conversation.voice.*
 import com.openandroidintelligence.conversation.workbench.WorkbenchScreen
 import com.openandroidintelligence.conversation.workbench.WorkspaceConversationGroup
@@ -396,6 +397,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                             onSettingsOpenChange = { settings = it },
                                             settingsPanel = { close -> RemoteSettings(app, requestScreenCaptureAuthorization, presentation, close, hostOpen = workbenchSettingsOpen) },
                                             workspaceMenu = workspaceMenu,
+                                            availableWidthOverride = LocalWindowMaxWidth.current,
                                             header = {
                                                 RemoteWorkbenchNotices(
                                                     offline = offlineBannerVisible,
