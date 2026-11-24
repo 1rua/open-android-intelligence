@@ -16,8 +16,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.openandroidintelligence.conversation.data.remote.RemoteModelSelection
@@ -47,7 +50,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /** 保留现有工作台与系统附件选择器，只把连接入口接到 Remote。 */
-@OptIn(ExperimentalSharedTransitionApi::class)
+@OptIn(ExperimentalSharedTransitionApi::class, ExperimentalComposeUiApi::class)
 @Composable
 internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, sharedAttachments: SharedConversationAttachments,
     pendingReply: MutableState<ReplyNotificationTarget?>, pendingHandoff: MutableState<String?>) {
@@ -238,7 +241,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
     OpenAndroidIntelligenceTheme(darkTheme = dark, dynamicColor = appearance.dynamicColor, palette = appearance.palette,
         reduceMotion = appearance.reduceMotion, streamingHapticFeedback = appearance.streamingHapticFeedback) {
         val reduceMotion = LocalMotionPolicy.current.isReduced
-        AppSharedTransitionHost(Modifier.fillMaxSize()) {
+        AppSharedTransitionHost(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }) {
             Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
                 Box(Modifier.fillMaxSize()) {
                     if (onboarding.shouldShow) {

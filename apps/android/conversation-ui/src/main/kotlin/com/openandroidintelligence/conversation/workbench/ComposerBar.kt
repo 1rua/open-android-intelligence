@@ -45,6 +45,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -311,6 +312,7 @@ fun ComposerBar(
                             icon = Icons.Default.Add,
                             contentDescription = "添加附件",
                             onClick = { showAttachmentsSheet = true },
+                            modifier = Modifier.testTag("chat-composer-attach"),
                         )
 
                         key(editorKey) {
@@ -327,6 +329,7 @@ fun ComposerBar(
                         ComposerIconAction(
                             icon = Icons.Default.Mic,
                             contentDescription = "语音输入",
+                            modifier = Modifier.testTag("chat-composer-voice"),
                             enabled = voiceInputEnabled,
                             onClick = onVoiceInput,
                         )
@@ -337,6 +340,7 @@ fun ComposerBar(
                             enabled = actionEnabled,
                             onSend = submitDraft,
                             onStop = onStop,
+                            modifier = Modifier.testTag("chat-composer-send"),
                         )
                     }
                 }
@@ -489,7 +493,8 @@ private fun ComposerInputField(
             modifier = Modifier
                 .fillMaxWidth()
                 .then(if (onPasteImages != null) Modifier.contentReceiver(receiver) else Modifier)
-                .onFocusChanged { onFocusChange(it.isFocused) },
+                .onFocusChanged { onFocusChange(it.isFocused) }
+                .testTag("chat-composer-input"),
             lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = 1, maxHeightInLines = 4),
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),

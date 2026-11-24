@@ -505,6 +505,7 @@ fun WorkbenchScreen(
             )
 
             Scaffold(
+                modifier = Modifier.testTag("chat-workbench-root"),
                 snackbarHost = {
                     SnackbarHost(snackbar) { data ->
                         Snackbar(
@@ -623,7 +624,10 @@ fun WorkbenchScreen(
                                             ) { openPreview ->
                                             LazyColumn(
                                                 state = listState,
-                                                modifier = Modifier.fillMaxSize().then(firstFrameModifier),
+                                                modifier = Modifier
+                                                    .fillMaxSize()
+                                                    .then(firstFrameModifier)
+                                                    .testTag("chat-timeline"),
                                                 contentPadding = PaddingValues(
                                                     start = Dimensions.TimelineHorizontal,
                                                     end = Dimensions.TimelineHorizontal,
@@ -1068,7 +1072,10 @@ private fun WorkbenchTopBar(
         navigationIcon = {
             // 展开宽度下抽屉常驻在左侧，再给一个开抽屉按钮只会重复。
             if (!expanded) {
-                IconButton(onClick = onOpenDrawer) {
+                IconButton(
+                    onClick = onOpenDrawer,
+                    modifier = Modifier.testTag("chat-open-drawer"),
+                ) {
                     Icon(Icons.Default.Menu, contentDescription = stringResource(UiR.string.conv_workbench_cd_open_drawer))
                 }
             }
@@ -1078,12 +1085,16 @@ private fun WorkbenchTopBar(
                 onClick = onCreateThread,
                 icon = Icons.Default.Add,
                 contentDescription = stringResource(UiR.string.conv_workbench_cd_new_conversation),
+                modifier = Modifier.testTag("chat-new-conversation"),
                 enabled = !creatingThread,
                 colors = M3MorphingButtonDefaults.primaryColors(),
             )
             Spacer(Modifier.width(Dimensions.SpaceSmall))
             Box {
-                IconButton(onClick = { onOverflowExpandedChange(true) }) {
+                IconButton(
+                    onClick = { onOverflowExpandedChange(true) },
+                    modifier = Modifier.testTag("chat-more-actions"),
+                ) {
                     Icon(Icons.Default.MoreVert, contentDescription = stringResource(UiR.string.conv_workbench_cd_more_actions))
                 }
                 DropdownMenu(
@@ -1180,7 +1191,7 @@ private fun ConversationWelcome(
     modifier: Modifier = Modifier,
 ) {
     val commands: List<AgentCommand> = (catalog as? Loadable.Ready)?.value?.commands.orEmpty()
-    Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+    Box(modifier.fillMaxWidth().testTag("chat-welcome-empty"), contentAlignment = Alignment.Center) {
         Column(
             Modifier
                 .widthIn(max = Dimensions.FormWidth)
