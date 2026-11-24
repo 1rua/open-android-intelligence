@@ -927,3 +927,73 @@ def test_runtime_context_construction() -> None:
     ctx = E2ERuntimeContext(driver=driver, wait=wait, evidence=evidence, auth=auth)
     assert ctx.expect_reply == "E2E_PONG"
     assert ctx.report_dir.name == "e2e"
+
+
+def test_snapshot_load_waits_for_adbd_reconnect() -> None:
+    """验证加载黄金快照后 adbd 短暂 offline/断连时 wait_for_device 与 snapshot 模式可自动恢复重连。"""
+    repo_root = resolve_repo_root()
+    driver = AdbAndroidDriver(serial="emulator-5554", repo_root=repo_root, command_timeout=3.0)
+    snapshot_loaded = False
+    post_load_device_probes = 0
+    post_load_boot_probes = 0
+
+    def fake_snapshot_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+        nonlocal snapshot_loaded, post_load_device_probes, post_load_boot_probes
+        if "devices" in cmd:
+            if snapshot_loaded:
+                post_load_device_probes += 1
+                # 模拟 snapshot load 后前两次轮询 adbd 处于 offline/断连窗口，第 3 次起恢复 online
+                if post_load_device_probes == 1:
+                    return subprocess.CompletedProcess(
+                        cmd, 0, stdout="List of devices attached\nemulator-5554\toffline\n", stderr=""
+                    )
+                if post_load_device_probes == 2:
+                    return subprocess.CompletedProcess(
+                        cmd, 0, stdout="List of devices attached\n", stderr=""
+                    )
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="List of devices attached\nemulator-5554\tdevice\n", stderr=""
+            )
+        if "emu" in cmd and "list" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="Id\tTag\n1\toai_authenticated\nOK\n", stderr=""
+            )
+        if "emu" in cmd and "load" in cmd:
+            snapshot_loaded = True
+            return subprocess.CompletedProcess(cmd, 0, stdout="OK\n", stderr="")
+        if "getprop" in cmd and "sys.boot_completed" in cmd:
+            post_load_boot_probes += 1
+            if post_load_boot_probes == 1:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="error: device offline")
+            if post_load_boot_probes == 2:
+                return subprocess.CompletedProcess(cmd, 0, stdout="0\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="1\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    mgr = AuthEnvironmentManager(
+        mode="snapshot",
+        driver=driver,
+        repo_root=repo_root,
+        snapshot_name="oai_authenticated",
+        startup_timeout=2.0,
+    )
+    with patch("subprocess.run", side_effect=fake_snapshot_run), patch("time.sleep"):
+        endpoint = mgr.start()
+        # 紧接着模拟 run.py 调用 ensure_device_connected() 必须直接成功
+        assert driver.ensure_device_connected() == "emulator-5554"
+
+    assert endpoint.mode == "snapshot"
+    assert post_load_device_probes >= 3
+    assert post_load_boot_probes == 3
+
+    # 验证持续离线时 wait_for_device 应在超时后抛出 E2EDeviceError
+    def always_offline_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+        if "devices" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="List of devices attached\nemulator-5554\toffline\n", stderr=""
+            )
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="offline")
+
+    with patch("subprocess.run", side_effect=always_offline_run):
+        with pytest.raises(E2EDeviceError, match="等待设备上线超时"):
+            driver.wait_for_device(timeout=0.05, poll_interval=0.01)

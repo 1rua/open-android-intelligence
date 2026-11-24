@@ -6,6 +6,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -190,6 +191,85 @@ class AdbAndroidDriver:
             )
         self.serial = devices[0]
         return self.serial
+
+    def wait_for_device(
+        self, timeout: float = 30.0, poll_interval: float = 0.4
+    ) -> str:
+        """等待目标设备重连上线并可响应 ADB Shell 指令（如快照恢复后等待 adbd 重建连接）。"""
+        timeout_sec = max(0.01, float(timeout))
+        deadline = time.monotonic() + timeout_sec
+        last_error = "设备尚未出现在 adb devices 在线列表中"
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise E2EDeviceError(
+                    f"等待设备上线超时 ({timeout_sec:.1f}s): {last_error}"
+                )
+            probe_timeout = min(self.command_timeout, max(1.0, remaining))
+            try:
+                devices = self.list_connected_devices()
+                target: str | None = None
+                if self.serial:
+                    if self.serial in devices:
+                        target = self.serial
+                    else:
+                        last_error = (
+                            f"目标设备 {self.serial} 暂不在线，当前在线设备: {devices}"
+                        )
+                elif len(devices) == 1:
+                    target = devices[0]
+                elif len(devices) > 1:
+                    raise E2EDeviceError(
+                        f"检测到多台在线设备 {devices}，请通过 --device 显式指定序列号"
+                    )
+                else:
+                    last_error = "未发现处于 device 状态的在线设备"
+
+                if target is not None:
+                    prev_serial = self.serial
+                    self.serial = target
+                    try:
+                        boot_proc = self._run(
+                            ["shell", "getprop", "sys.boot_completed"],
+                            check=False,
+                            timeout=probe_timeout,
+                        )
+                        boot_val = (boot_proc.stdout or "").strip()
+                        if boot_proc.returncode == 0 and boot_val == "1":
+                            return target
+                        if boot_proc.returncode == 0 and boot_val == "":
+                            ping_proc = self._run(
+                                ["shell", "true"],
+                                check=False,
+                                timeout=probe_timeout,
+                            )
+                            if ping_proc.returncode == 0:
+                                return target
+                            last_error = (
+                                ping_proc.stderr
+                                or ping_proc.stdout
+                                or f"adb shell true 失败 (code={ping_proc.returncode})"
+                            ).strip()
+                        else:
+                            last_error = (
+                                boot_proc.stderr
+                                or f"sys.boot_completed={boot_val!r} (code={boot_proc.returncode})"
+                            ).strip()
+                    except Exception:
+                        self.serial = prev_serial
+                        raise
+            except E2EDeviceError as exc:
+                if "多台在线设备" in str(exc):
+                    raise
+                last_error = str(exc)
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise E2EDeviceError(
+                    f"等待设备上线超时 ({timeout_sec:.1f}s): {last_error}"
+                )
+            time.sleep(min(max(0.01, float(poll_interval)), remaining))
 
     def get_current_user_id(self) -> int | None:
         """查询当前设备前台活动用户的整数 UID（支持多用户隔离场景）。"""
@@ -611,8 +691,10 @@ class AdbAndroidDriver:
             check=False,
             timeout=timeout or self.command_timeout,
         )
-        if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout or "").strip()
+        detail = (proc.stderr or proc.stdout or "").strip()
+        if proc.returncode != 0 or any(
+            line.strip().startswith("KO:") for line in detail.splitlines()
+        ):
             raise E2EDeviceError(
                 f"模拟器指令失败: adb emu {' '.join(args)} -> {detail}"
             )

@@ -255,6 +255,8 @@ class AuthEnvironmentManager:
             self.driver.emu_command(
                 "avd", "snapshot", "load", self.snapshot_name, timeout=max(self.startup_timeout, 25.0)
             )
+            if hasattr(self.driver, "wait_for_device"):
+                self.driver.wait_for_device(timeout=max(self.startup_timeout, 30.0))
         except E2EDeviceError as exc:
             raise E2EAuthEnvironmentError(f"加载黄金快照 {self.snapshot_name!r} 失败: {exc}") from exc
 
