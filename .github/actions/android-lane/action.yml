@@ -108,6 +108,22 @@ runs:
         # 同源码实验只恢复本通道的缓存，禁止回退到运行中其它模块刚发布的快照。
         gradle-home-cache-strict-match: ${{ github.event_name == 'workflow_dispatch' }}
 
+    # Robolectric 默认把 android-all 运行时下载到 user.home/.m2；本仓库各模块把
+    # user.home 重定向到 apps/android/.gradle/robolectric-home，两处路径一并缓存，
+    # 并按 lane 隔离键名避免轻量通道先命中后锁死完整 SDK 缓存。
+    - name: Cache Robolectric runtime jars
+      if: inputs.lane != 'phone-mcp-interop' && inputs.lane != 'app-compile'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.m2/repository/org/robolectric
+          apps/android/.gradle/robolectric-home/.m2/repository/org/robolectric
+        key: robolectric-${{ runner.os }}-${{ inputs.lane }}-${{ hashFiles('apps/android/**/build.gradle.kts', 'apps/android/gradle.properties', 'apps/android/gradle/**') }}
+        restore-keys: |
+          robolectric-${{ runner.os }}-${{ inputs.lane }}-
+          robolectric-${{ runner.os }}-app-pr-
+          robolectric-${{ runner.os }}-
+
     - name: Restore the WASM fixtures
       if: inputs.wasm-artifact != ''
       uses: actions/download-artifact@v8

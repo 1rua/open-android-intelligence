@@ -107,6 +107,7 @@ App 回归集是唯一**不**拆分 job 的 lane：实测两个分片各自的 G
 | 缓存 | 键 | 说明 |
 | --- | --- | --- |
 | Gradle 依赖 + 构建缓存 | `gradle/actions/setup-gradle` 自动 | dev/main 可写，PR 只读 |
+| Robolectric 运行库缓存 | `robolectric-<os>-<lane>-<hash>` | 缓存 `~/.m2/repository/org/robolectric` 与 `.gradle/robolectric-home/.m2/repository/org/robolectric` |
 | Configuration Cache | Gradle 本地 | 已启用；重复调用低于 1 秒完成配置 |
 | Rust 插件 workspace | `plugins/**` 内容哈希 | 仅在 `android-setup` 构建一次 |
 | pip | `oai-core/pyproject.toml` | Core 与 Hermes lane |
@@ -128,14 +129,13 @@ App 回归集是唯一**不**拆分 job 的 lane：实测两个分片各自的 G
 
 | 工作流 | 触发 | 发布前校验 |
 | --- | --- | --- |
-| `dev-release.yml` | push → dev | `release-gate.yml`（`required-workflow: oai-core.yml`） |
+| `dev-release.yml` | push → dev / 手动 | 解耦单测轮询；独立构建校验 WASM 与 APK 后产出 Artifact 并直接发布 Pre-release |
 | `release.yml` | 手动，main | `release-gate.yml`（`required-workflow: ci.yml`） |
-| `android-apk.yml` | 非 dev 分支、手动 | 不发布，只产出可下载调试包 |
+| `android-apk.yml` | push → main / 手动 | 不发布，只产出可下载调试包 |
 
-`release-gate.yml` 与构建**并行**：构建可以立刻开始，但 `publish-*` 依赖它。
-因此不会出现“测试失败但已发布”，也不会把等待时间加到打包关键路径上。
+`release.yml` 的 `release-gate.yml` 与构建**并行**：构建可以立刻开始，但 `publish-stable` 依赖它，不会在正式版门禁失败时发布；`dev-release.yml` 则在插件签名后于 `build-and-publish` 内一次性完成打包、插件与签名校验、上传 `app-full-debug` Artifact 与预发布覆盖，连续推送时通过 `concurrency.cancel-in-progress: true` 取消旧运行。
 
-`android-apk.yml` **不再监听 dev**：dev 推送已由 `dev-release.yml` 构建并发布同一份
+`android-apk.yml` **不再监听 dev 或 PR 分支**：dev 推送已由 `dev-release.yml` 构建并发布同一份
 APK，重复构建会产生不同 `versionCode` 的两份产物。
 
 ## 实测基线（2026-11-08）

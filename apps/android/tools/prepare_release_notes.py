@@ -57,8 +57,8 @@ def prepare_release_notes(
     event = json.loads(event_path.read_text(encoding="utf-8"))
     if expected_branch == "dev" and event_name in {"pull_request", "pull_request_target"}:
         return _merged_pull_request_body(event, expected_branch)
-    if expected_branch == "dev" and event_name == "push":
-        # push 是 dev 预览版的唯一发布入口。
+    if expected_branch == "dev" and event_name in {"push", "workflow_dispatch"}:
+        # push 与手动重跑（workflow_dispatch）均由 dev 预览工作流使用。
         #
         # 合并 PR 产生的 push 提交本身关联着 PR，因此优先用 PR 正文当发布说明
         # （正文比 squash 后的单行提交说明信息量大得多）。查不到关联 PR 的
