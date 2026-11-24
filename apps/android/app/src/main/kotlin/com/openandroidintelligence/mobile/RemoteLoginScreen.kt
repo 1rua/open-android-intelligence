@@ -121,7 +121,7 @@ internal fun RemoteLoginScreen(
         }
     }
 
-    Box(modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).statusBarsPadding().imePadding().navigationBarsPadding(),
+    Box(modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).statusBarsPadding().imePadding().navigationBarsPadding().testTag("remote-login-root"),
         contentAlignment = Alignment.TopCenter) {
         Column(
             Modifier.widthIn(max = Dimensions.FormWidth).fillMaxWidth()
@@ -152,11 +152,15 @@ internal fun RemoteLoginScreen(
                 containerColor = MaterialTheme.colorScheme.surfaceContainer,
                 contentPadding = PaddingValues(Dimensions.SpaceMedium)) {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium)) {
-                    TextButton(enabled = !busy, onClick = {
-                        selfHosted = !selfHosted
-                        password = ""
-                        passwordVisible = false
-                    }) {
+                    TextButton(
+                        enabled = !busy,
+                        modifier = Modifier.testTag("remote-login-toggle-mode"),
+                        onClick = {
+                            selfHosted = !selfHosted
+                            password = ""
+                            passwordVisible = false
+                        },
+                    ) {
                         Text(stringResource(if (selfHosted) UiR.string.remote_login_use_official else UiR.string.remote_login_use_self_hosted))
                     }
                     val hasSharedScope = LocalSharedTransitionScope.current != null && !reduceMotion
@@ -198,14 +202,17 @@ internal fun RemoteLoginScreen(
                                         isError = origin.isNotBlank() && address == null,
                                         supportingText = if (origin.isNotBlank() && address == null) stringResource(UiR.string.conn_server_address_validation_error) else null,
                                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
-                                        onClear = { origin = "" })
+                                        onClear = { origin = "" },
+                                        fieldTestTag = "remote-login-origin-input")
                                     if (address?.scheme.equals("http", ignoreCase = true)) RemotePlaintextConnectionNotice()
                                     RemoteLoginInput(stringResource(UiR.string.remote_login_account), account, { account = it }, busy,
-                                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next), onClear = { account = "" })
+                                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next), onClear = { account = "" },
+                                        fieldTestTag = "remote-login-account-input")
                                     RemoteLoginInput(stringResource(UiR.string.remote_login_credential), password, { password = it }, busy,
                                         passwordVisible = passwordVisible, onTogglePassword = { passwordVisible = !passwordVisible },
                                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-                                        keyboardActions = KeyboardActions(onDone = { login() }))
+                                        keyboardActions = KeyboardActions(onDone = { login() }),
+                                        fieldTestTag = "remote-login-password-input")
                                     RemoteLoginPhase(busy, error, onRetry)
                                     RemoteLoginPrimaryButton(
                                         onClick = { login() },
@@ -213,6 +220,7 @@ internal fun RemoteLoginScreen(
                                         enabled = canLogin,
                                         showSpinner = busy,
                                         label = stringResource(if (busy) UiR.string.conn_status_connecting else UiR.string.remote_login_server),
+                                        modifier = Modifier.testTag("remote-login-submit"),
                                     )
                                 } else {
                                     FilledTonalButton(onClick = onScanPairing, enabled = !busy, shape = MaterialTheme.shapes.medium,
@@ -265,7 +273,10 @@ internal fun RemoteLoginScreen(
                 Text(stringResource(UiR.string.conn_login_keystore_security_hint), style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            TextButton(onClick = onOpenSettings) {
+            TextButton(
+                onClick = onOpenSettings,
+                modifier = Modifier.testTag("remote-login-open-settings"),
+            ) {
                 Text(stringResource(UiR.string.common_action_settings), style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary)
             }
@@ -287,6 +298,7 @@ private fun RemoteLoginInput(
     supportingText: String? = null,
     passwordVisible: Boolean = false,
     onTogglePassword: (() -> Unit)? = null,
+    fieldTestTag: String? = null,
 ) {
     OutlinedTextField(value, onValueChange, enabled = !busy, singleLine = true,
         label = { Text(label, style = MaterialTheme.typography.bodyMedium) },
@@ -304,7 +316,9 @@ private fun RemoteLoginInput(
             else -> null
         },
         shape = MaterialTheme.shapes.medium, keyboardOptions = keyboardOptions, keyboardActions = keyboardActions,
-        modifier = Modifier.fillMaxWidth())
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (fieldTestTag != null) Modifier.testTag(fieldTestTag) else Modifier))
 }
 
 /** 登录页官方/自建共用主操作形变按钮，统一圆角比例、覆盖层层级与加载指示。 */

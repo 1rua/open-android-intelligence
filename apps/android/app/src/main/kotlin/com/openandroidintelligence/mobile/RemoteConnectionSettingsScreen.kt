@@ -103,6 +103,7 @@ private fun RemoteHostAndAgentSections(
             val selected = agentConn.activeAgent?.hostId == host.deviceId
             SettingsListItem(
                 headline = host.name,
+                modifier = Modifier.testTag("remote-host-item:${host.deviceId}"),
                 supporting = stringResource(if (host.online) UiR.string.common_status_online else UiR.string.common_status_offline),
                 selected = selected,
                 icon = if (selected) Icons.Default.Check else Icons.Default.Hub,
@@ -112,6 +113,7 @@ private fun RemoteHostAndAgentSections(
         }
         SettingsListItem(
             headline = stringResource(UiR.string.remote_refresh_hosts),
+            modifier = Modifier.testTag("remote-refresh-hosts"),
             enabled = !agentConn.busy && agentConn.account != null,
             onClick = { runtime.refreshHosts() },
         )
@@ -136,6 +138,7 @@ private fun RemoteHostAndAgentSections(
                 }
                 SettingsListItem(
                     headline = agent.displayName,
+                    modifier = Modifier.testTag("remote-agent-item:${agent.key.backendId.value}"),
                     supporting = statusHint,
                     selected = selected,
                     icon = if (selected) Icons.Default.Check else Icons.Default.Hub,
