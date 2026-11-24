@@ -64,16 +64,16 @@ internal class AccountAvatarPickerState : ViewModel() {
 @Composable
 internal fun rememberRemoteAccountAvatarPicker(runtime: RemoteRuntime): AccountAvatarPicker {
     val context = LocalContext.current.applicationContext
-    val remote by runtime.state.collectAsState()
-    val owner = runtime.connectedProfileId?.let { "$it:${remote.account?.accountId}" }
+    val agentConn by runtime.agentConnection.collectAsState()
+    val owner = runtime.connectedProfileId?.let { "$it:${agentConn.account?.accountId}" }
     val state: AccountAvatarPickerState = viewModel()
     SideEffect { state.currentProfileId = owner }
     DisposableEffect(state) { onDispose { state.currentProfileId = null } }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         state.save(context, uri, runtime::setAccountAvatar)
     }
-    val image by produceState<ImageBitmap?>(null, owner, remote.accountAvatarBase64) {
-        value = withContext(Dispatchers.IO) { decodeAccountAvatar(remote.accountAvatarBase64) }
+    val image by produceState<ImageBitmap?>(null, owner, agentConn.accountAvatarBase64) {
+        value = withContext(Dispatchers.IO) { decodeAccountAvatar(agentConn.accountAvatarBase64) }
     }
     val pick: (() -> Unit)? = if (owner == null) null else ({
         if (!state.saving && state.pendingProfileId == null) {

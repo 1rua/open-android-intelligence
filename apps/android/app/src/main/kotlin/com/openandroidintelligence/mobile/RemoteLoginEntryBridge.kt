@@ -172,7 +172,7 @@ class RemoteLoginEntryBridge(
         mutableState.update { it.copy(scanRequested = false) }
         if (raw == null) { mutableState.value = RemoteLoginEntryState(); return }
         try {
-            check(runtime.state.value.account == null) { "PAIRING_DEVICE_CONFLICT" }
+            check(runtime.agentConnection.value.account == null) { "PAIRING_DEVICE_CONFLICT" }
             val qr = pairing.parseQr(raw)
             mutableState.value = RemoteLoginEntryState(qr = qr, session = qr.session, pairingState = if (qr.session == null) "origin" else "confirm")
         } catch (failure: Exception) { mutableState.value = RemoteLoginEntryState(errorCode = errorCode(failure)) }

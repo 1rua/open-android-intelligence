@@ -2,6 +2,7 @@ package com.openandroidintelligence.mobile
 
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
+import com.openandroidintelligence.conversation.data.remote.RemoteSessionException
 import com.openandroidintelligence.conversation.data.remote.RemoteWorkspace
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
@@ -1086,6 +1087,188 @@ class RemoteConnectionLifecycleTest {
         }
     }
 
+    @Test
+    fun `冷启动CONNECTING宽限期内收到onNetworkAvailable不得打断宽限期重试或提前暴露errorCode`() = runBlocking {
+        seedSavedWorkspaceWithCachedTimeline(cachedText = "冷启动本地缓存回复")
+        val firstConnectGate = CompletableDeferred<Unit>()
+        val graceDelayGate = CompletableDeferred<Unit>()
+        val coldAccount = FakeAccountConnection().apply {
+            connectGate = firstConnectGate
+            connectFailuresBeforeSuccess = 1
+        }
+        val coldRoot = SupervisorJob()
+        val coldScope = CoroutineScope(coldRoot + Dispatchers.Default)
+        val observedErrorCodes = CopyOnWriteArrayList<String?>()
+        val observedPhases = CopyOnWriteArrayList<AgentConnectionPhase>()
+        val coldRuntime = buildRuntime(
+            policy = ConnectionRecoveryPolicy(
+                offlineGracePeriodMillis = 2_000L,
+                graceRetryAttempts = 2,
+                graceRetryDelayMillis = 30L,
+            ),
+            delayFn = { ms ->
+                if (ms == 30L) graceDelayGate.await() else kotlinx.coroutines.delay(ms)
+            },
+            customScope = coldScope,
+            customAccount = coldAccount,
+        )
+        val observer = scope.launch {
+            coldRuntime.agentConnection.collect {
+                observedErrorCodes += it.errorCode
+                observedPhases += it.phase
+            }
+        }
+        try {
+            assertEquals(AgentConnectionPhase.CONNECTING, coldRuntime.agentConnection.value.phase)
+            assertNull(coldRuntime.agentConnection.value.errorCode)
+
+            // 模拟 Android ConnectivityManager 在冷启动注册默认网络回调时立刻触发的 onAvailable()
+            coldRuntime.onNetworkAvailable()
+            firstConnectGate.complete(Unit)
+            eventually { coldAccount.connectCalls >= 1 }
+            coldAccount.connectGate = null
+            delay(30)
+
+            assertEquals(
+                "冷启动宽限期内收到系统 onAvailable 不得劫持为 RECONNECTING/OFFLINE",
+                AgentConnectionPhase.CONNECTING,
+                coldRuntime.agentConnection.value.phase,
+            )
+            assertFalse(coldRuntime.agentConnection.value.offlineConfirmed)
+            assertNull(
+                "初始握手与宽限期完成前严禁向 UI 暴露瞬态 errorCode",
+                coldRuntime.agentConnection.value.errorCode,
+            )
+            assertTrue("宽限期内从未出现过非空 errorCode: $observedErrorCodes", observedErrorCodes.all { it == null })
+            assertFalse("宽限期内不应提前进入 OFFLINE: $observedPhases", AgentConnectionPhase.OFFLINE in observedPhases)
+
+            graceDelayGate.complete(Unit)
+            eventually {
+                coldRuntime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED &&
+                    coldRuntime.controller.value?.state?.value?.isOnline == true
+            }
+            assertNull(coldRuntime.agentConnection.value.errorCode)
+        } finally {
+            firstConnectGate.complete(Unit)
+            graceDelayGate.complete(Unit)
+            observer.cancelAndJoin()
+            coldRuntime.logout().join()
+            coldRoot.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `冷启动与打开新会话期间模型目录读取失败不得污染agentConnection的errorCode`() = runBlocking {
+        seedSavedWorkspaceWithCachedTimeline(cachedText = "冷启动本地缓存回复")
+        val coldAccount = FakeAccountConnection().apply {
+            modelsError = RemoteSessionException("METHOD_NOT_FOUND")
+        }
+        val coldRoot = SupervisorJob()
+        val coldScope = CoroutineScope(coldRoot + Dispatchers.Default)
+        val observedErrors = CopyOnWriteArrayList<String?>()
+        val coldRuntime = buildRuntime(
+            customScope = coldScope,
+            customAccount = coldAccount,
+        )
+        val observer = scope.launch {
+            coldRuntime.agentConnection.collect { observedErrors += it.errorCode }
+        }
+        try {
+            eventually {
+                coldRuntime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED &&
+                    coldRuntime.controller.value?.state?.value?.isOnline == true
+            }
+            // 给冷启动成功后的异步 refreshModels 留出执行时间
+            delay(50)
+            assertNull(
+                "冷启动成功建链后后台刷新模型失败不得误报连接错误: ${coldRuntime.agentConnection.value.errorCode}",
+                coldRuntime.agentConnection.value.errorCode,
+            )
+
+            // 打开/新建会话时同样触发 onActiveThreadChanged -> refreshModels，不得污染 errorCode
+            val controller = requireNotNull(coldRuntime.controller.value)
+            val beforeThread = controller.state.value.activeThreadId
+            controller.createThread()
+            eventually {
+                val st = controller.state.value
+                !st.creatingThread && st.activeThreadId != null && st.activeThreadId != beforeThread
+            }
+            delay(50)
+            assertEquals(AgentConnectionPhase.CONNECTED, coldRuntime.agentConnection.value.phase)
+            assertNull(
+                "打开新会话后不得误报无法连接 Remote: ${coldRuntime.agentConnection.value.errorCode}",
+                coldRuntime.agentConnection.value.errorCode,
+            )
+            assertTrue("全程不应暴露模型刷新导致的连接错误: $observedErrors", observedErrors.all { it == null })
+        } finally {
+            observer.cancelAndJoin()
+            coldRuntime.logout().join()
+            coldRoot.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `工作区就绪重选会话切换与断网重连进入时及时清空滞留的errorCode`() = runBlocking {
+        val failKeyInit = java.util.concurrent.atomic.AtomicBoolean(false)
+        val flakyKeyProvider = object : AesGcmKeyProvider {
+            override fun getOrCreate() = if (failKeyInit.get()) error("KEYSTORE_UNAVAILABLE") else key.getOrCreate()
+            override fun delete() = key.delete()
+        }
+        val testRoot = SupervisorJob()
+        val testScope = CoroutineScope(testRoot + Dispatchers.Default)
+        val testRuntime = buildRuntime(customScope = testScope, customKeyProvider = flakyKeyProvider)
+        try {
+            testRuntime.restoreSessionIfAvailable().join()
+            val agent = AgentKey(RemoteServiceOrigin.fromCanonicalOrigin(origin), accountId, "host-1", BackendId("harness"))
+            testRuntime.selectAgent(agent).join()
+            eventually {
+                testRuntime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED &&
+                    testRuntime.workspaceContext.value.workspaces.size == 2
+            }
+            val wsOne = testRuntime.workspaceContext.value.workspaces.first { it.endpoint.key.workspaceId == "one" }
+            val wsTwo = testRuntime.workspaceContext.value.workspaces.first { it.endpoint.key.workspaceId == "two" }
+            testRuntime.selectWorkspace(wsOne).join()
+            val controller = requireNotNull(testRuntime.controller.value)
+            eventually { controller.state.value.activeThreadId != null }
+
+            // 1) 切工作区失败产生非空 errorCode，随后在当前工作区打开新会话时必须立即清空滞留 errorCode
+            failKeyInit.set(true)
+            testRuntime.selectWorkspace(wsTwo).join()
+            assertEquals("KEYSTORE_UNAVAILABLE", testRuntime.agentConnection.value.errorCode)
+            failKeyInit.set(false)
+
+            controller.createThread()
+            eventually {
+                !controller.state.value.creatingThread &&
+                    controller.state.value.activeThreadId == RemoteLocalIds.encode("s-created-1")
+            }
+            assertNull("打开新会话后滞留 errorCode 必须被清空", testRuntime.agentConnection.value.errorCode)
+
+            // 2) 再次留下 errorCode 后重新选择已在线当前工作区，也必须及时清空
+            failKeyInit.set(true)
+            testRuntime.selectWorkspace(wsTwo).join()
+            assertEquals("KEYSTORE_UNAVAILABLE", testRuntime.agentConnection.value.errorCode)
+            failKeyInit.set(false)
+
+            testRuntime.selectWorkspace(wsOne).join()
+            assertNull("工作区已在线就绪时重选必须清空 errorCode", testRuntime.agentConnection.value.errorCode)
+
+            // 3) 再次留下 errorCode 后触发断网进入宽限期 RECONNECTING，不得携带旧 errorCode 进入重连期
+            failKeyInit.set(true)
+            testRuntime.selectWorkspace(wsTwo).join()
+            assertEquals("KEYSTORE_UNAVAILABLE", testRuntime.agentConnection.value.errorCode)
+            failKeyInit.set(false)
+
+            testRuntime.onNetworkLost()
+            eventually { testRuntime.agentConnection.value.phase == AgentConnectionPhase.RECONNECTING }
+            assertNull("断网进入宽限期 RECONNECTING 时必须清空旧 errorCode", testRuntime.agentConnection.value.errorCode)
+        } finally {
+            failKeyInit.set(false)
+            testRuntime.logout().join()
+            testRoot.cancelAndJoin()
+        }
+    }
+
     private inner class FakeAccountConnection : RemoteAccountConnection {
         override val account = MutableStateFlow<RemoteActiveAccount?>(null)
         override val state = MutableStateFlow(RemoteAccountConnectionState.READY)
@@ -1112,6 +1295,9 @@ class RemoteConnectionLifecycleTest {
         val extraWorkspaceTwoSessions = CopyOnWriteArrayList<Map<String, Any>>()
         @Volatile var harnessWorkspacesOverride: List<Map<String, Any>>? = null
         @Volatile var workspaceFollowHook: (suspend () -> Unit)? = null
+        @Volatile var modelsError: Exception? = null
+        val createdSessionsCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val createdSessions = CopyOnWriteArrayList<Map<String, Any>>()
         val codexThreadPages = linkedMapOf<String?, Pair<List<Map<String, Any>>, String?>>()
         private val peers = mutableMapOf<String, AuthenticatedRemotePeer>()
 
@@ -1248,9 +1434,14 @@ class RemoteConnectionLifecycleTest {
                                 "items" to (listOf(
                                     mapOf("sessionId" to "s1", "title" to "一号会话", "updatedAt" to 100),
                                     mapOf("sessionId" to "s2", "title" to "二号会话", "updatedAt" to 200),
-                                ) + owner.extraWorkspaceTwoSessions)
+                                ) + owner.extraWorkspaceTwoSessions + owner.createdSessions)
                             )
                         )
+                        "session/create" -> {
+                            val newId = "s-created-${owner.createdSessionsCount.incrementAndGet()}"
+                            owner.createdSessions += mapOf("sessionId" to newId, "title" to "新建会话", "updatedAt" to 400)
+                            Json.of(mapOf("sessionId" to newId))
+                        }
                         "session/page" -> {
                             val records = buildList {
                                 add(
@@ -1288,7 +1479,10 @@ class RemoteConnectionLifecycleTest {
                             }
                             Json.of(mapOf("cursor" to records.size, "records" to records, "hasMore" to false))
                         }
-                        "session/models" -> Json.of(mapOf("groups" to emptyList<Any>()))
+                        "session/models" -> {
+                            owner.modelsError?.let { throw it }
+                            Json.of(mapOf("groups" to emptyList<Any>()))
+                        }
                         "commands/list" -> Json.of(mapOf("items" to emptyList<Any>()))
                         else -> Json.of(emptyMap<String, Any>())
                     }

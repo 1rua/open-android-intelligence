@@ -58,7 +58,6 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
     val dark = when (appearance.theme) { ThemePreference.LIGHT -> false; ThemePreference.DARK -> true; ThemePreference.SYSTEM -> isSystemInDarkTheme() }
     val controller by runtime.controller.collectAsState()
     val clientConnection by runtime.accountRuntime.state.collectAsState()
-    val connection by runtime.state.collectAsState()
     val agentConn by runtime.agentConnection.collectAsState()
     val workspaceCtx by runtime.workspaceContext.collectAsState()
     val onboarding by app.onboardingPreferences.state.collectAsState()
@@ -71,9 +70,10 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         runtime.replyNotifications.refreshPermission()
     }
-    LaunchedEffect(connection.account) {
+    val activeAccount = agentConn.account
+    LaunchedEffect(activeAccount) {
         runtime.replyNotifications.refreshPermission()
-        if (connection.account != null && runtime.replyNotifications.enabled.value && runtime.replyNotifications.shouldRequestPermission()) {
+        if (activeAccount != null && runtime.replyNotifications.enabled.value && runtime.replyNotifications.shouldRequestPermission()) {
             runtime.replyNotifications.markPermissionRequested()
             notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -230,7 +230,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
     LaunchedEffect(runtime) { runtime.restoreSessionIfAvailable() }
     ReceivePendingConversationShares(sharedAttachments, controller, picks.receive) { settings = false }
     RemotePendingConversationNavigation(
-        connection.account, controller, pendingReply, pendingHandoff,
+        agentConn.account, controller, pendingReply, pendingHandoff,
         openReply = runtime::openReplyNotification,
         consumeHandoff = runtime::consumeAssistantHandoff,
         onOpened = { settings = false; activity.intent.data = null },
@@ -272,7 +272,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                     },
                                 ) {
                                     RemoteNativePluginSurface(app.pluginHost, activeNative, controller,
-                                        connection.selected?.origin?.value.orEmpty()) { settings = true }
+                                        workspaceCtx.activeWorkspace?.origin?.value.orEmpty()) { settings = true }
                                 }
                             } else AnimatedContent(
                                 targetState = controller != null,
@@ -285,10 +285,9 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                 ProvideSharedVisibilityScope {
                                     val current = controller
                                     if (!onWorkbench || current == null) {
-                                        val loginControllerState = current?.state?.collectAsState()?.value
                                         RemoteLoginSettingsHost(
                                             busy = agentConn.busy || loginEntryState.busy,
-                                            connected = remoteWorkbenchConnected(loginControllerState, clientConnection,
+                                            connected = remoteWorkbenchConnected(null, clientConnection,
                                                 agentConn.busy || loginEntryState.busy),
                                             signedIn = agentConn.account != null && agentConn.phase != AgentConnectionPhase.AUTH_REVOKED,
                                             initialOrigin = runtime.loginOrigin(),
@@ -313,10 +312,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                     } else WorkbenchSettingsHost { presentation ->
                                         val workbenchThreads by remember(current) {
                                             current.state.map { it.threads }.distinctUntilChanged()
-                                        }.collectAsState(initial = current.state.value.threads)
-                                        val workbenchOnline by remember(current) {
-                                            current.state.map { it.isOnline }.distinctUntilChanged()
-                                        }.collectAsState(initial = current.state.value.isOnline)
+                                        }.collectAsState(initial = Loadable.Idle)
                                         val workspacesByMenuKey = remember(workspaceCtx.workspaces) {
                                             workspaceCtx.workspaces.associateBy { runtime.endpointId(it.endpoint.key) }
                                         }
@@ -363,14 +359,24 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                             AgentConnectionPhase.CONNECTING -> StreamHealth.CONNECTING
                                             AgentConnectionPhase.RECONNECTING -> StreamHealth.RECONNECTING
                                             AgentConnectionPhase.OFFLINE, AgentConnectionPhase.AUTH_REVOKED -> StreamHealth.FAILED
-                                            AgentConnectionPhase.CONNECTED -> if (workbenchOnline) StreamHealth.LIVE else StreamHealth.RECONNECTING
-                                            AgentConnectionPhase.DISCONNECTED -> if (!workbenchOnline) StreamHealth.FAILED else null
+                                            AgentConnectionPhase.CONNECTED -> StreamHealth.LIVE
+                                            AgentConnectionPhase.DISCONNECTED -> null
                                         }
                                         val offlineBannerVisible = agentConn.offlineConfirmed &&
                                             (agentConn.phase == AgentConnectionPhase.OFFLINE || agentConn.phase == AgentConnectionPhase.RECONNECTING)
-                                        val bannerError = agentConn.errorCode.takeUnless { dismissedError || offlineBannerVisible }
+                                        val hasWorkspaceSessions = workspaceCtx.activeWorkspace?.let {
+                                            workspaceCtx.sessionsByWorkspace[it] is Loadable.Ready
+                                        } == true
+                                        val sessionReady = workspaceCtx.activeWorkspace != null &&
+                                            (workbenchThreads is Loadable.Ready || hasWorkspaceSessions)
+                                        val bannerError = resolveWorkbenchBannerError(
+                                            agentConn = agentConn,
+                                            offlineBannerVisible = offlineBannerVisible,
+                                            dismissedError = dismissedError,
+                                            sessionReady = sessionReady,
+                                        )
                                         val workbenchSettingsOpen = settings && controller != null && displayedNativeUi == null
-                                        WorkbenchScreen(current, (workspaceCtx.activeWorkspace ?: connection.selected)?.origin?.value.orEmpty(),
+                                        WorkbenchScreen(current, workspaceCtx.activeWorkspace?.origin?.value.orEmpty(),
                                             onOpenSettings = { settings = true }, onPickCamera = picks.camera, onPickGallery = picks.gallery,
                                             onPickDocument = picks.document,
                                             onVoiceInput = startVoiceInput, recording = activeRecording,
@@ -378,7 +384,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                             isDarkTheme = dark,
                                             onToggleTheme = { app.appearancePreferences.setTheme(if (dark) ThemePreference.LIGHT else ThemePreference.DARK) },
                                             onLogout = { runtime.logout() }, onPasteImages = picks.paste,
-                                            accountName = (agentConn.account ?: connection.account)?.accountId.orEmpty(), agentName = runtime.connectedAgentName,
+                                            accountName = agentConn.account?.accountId.orEmpty(), agentName = runtime.connectedAgentName,
                                             accountAvatar = avatar.image, onChangeAvatar = avatar.pick,
                                             connectionHealth = mappedHealth,
                                             pluginCards = { com.openandroidintelligence.mobile.plugins.ProtectedConversationCards(app.pluginHost,
@@ -397,6 +403,8 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                                         runtime.dismissConnectionError()
                                                     },
                                                     reconnecting = agentConn.reconnectingInPlace,
+                                                    phase = agentConn.phase,
+                                                    sessionReady = sessionReady,
                                                 )
                                                 RemoteModelSelector(runtime)
                                             })
@@ -417,12 +425,12 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
 
 @Composable
 private fun RemoteModelSelector(runtime: RemoteRuntime) {
-    val state by runtime.state.collectAsState()
-    val models = state.models ?: return
+    val workspace by runtime.workspaceContext.collectAsState()
+    val models = workspace.models ?: return
     var expanded by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
         Box {
-            TextButton(onClick = { expanded = true }, enabled = !state.modelBusy) {
+            TextButton(onClick = { expanded = true }, enabled = !workspace.modelBusy) {
                 Text(models.models.firstOrNull { it.key == models.selected?.key }?.displayName ?: stringResource(UiR.string.remote_select_model))
             }
             DropdownMenu(expanded, { expanded = false }) {
@@ -435,7 +443,7 @@ private fun RemoteModelSelector(runtime: RemoteRuntime) {
         if (selected != null) {
             var efforts by remember { mutableStateOf(false) }
             Box {
-                TextButton(onClick = { efforts = true }, enabled = !state.modelBusy) { Text(selected.effortId ?: stringResource(UiR.string.remote_select_effort)) }
+                TextButton(onClick = { efforts = true }, enabled = !workspace.modelBusy) { Text(selected.effortId ?: stringResource(UiR.string.remote_select_effort)) }
                 DropdownMenu(efforts, { efforts = false }) {
                     models.efforts[selected.key].orEmpty().forEach { effort -> DropdownMenuItem(text = { Text(effort.displayName) }, onClick = {
                         efforts = false; runtime.selectModel(selected.copy(effortId = effort.id))

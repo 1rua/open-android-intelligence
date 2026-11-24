@@ -179,7 +179,7 @@ class DevicePushComposition(private val app: OpenAndroidIntelligenceApplication,
     fun onVisibilityChanged(visible: Boolean) {
         if (visible && loginObserver == null) {
             loginObserver = scope.launch {
-                app.backgroundRemoteRuntime.state.collectLatest { synchronizeLogin();kick() }
+                app.backgroundRemoteRuntime.agentConnection.collectLatest { synchronizeLogin();kick() }
             }
         }
         visibleJob?.cancel()
