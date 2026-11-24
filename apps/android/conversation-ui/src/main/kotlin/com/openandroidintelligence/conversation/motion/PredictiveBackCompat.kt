@@ -533,6 +533,7 @@ class PredictiveOverlayBackController internal constructor(
                 } else {
                     MotionSpecs.spatialDefault(
                         reduced = false,
+                        expressive = true,
                         visibilityThreshold = AppTransitions.ScaleVisibilityThreshold,
                     )
                 }
@@ -548,7 +549,7 @@ class PredictiveOverlayBackController internal constructor(
                 val spec = if (reduced) {
                     MotionSpecs.reducedFade<Float>()
                 } else {
-                    MotionSpecs.spatialFast(
+                    MotionSpecs.modalExit(
                         reduced = false,
                         visibilityThreshold = AppTransitions.ScaleVisibilityThreshold,
                     )
