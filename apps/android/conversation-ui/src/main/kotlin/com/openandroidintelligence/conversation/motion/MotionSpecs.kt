@@ -95,6 +95,8 @@ object MotionSpecs {
     val MomentumSpring = spring<Float>(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = 400f)
     /** 底部弹层 / 抽屉的过渡。 */
     val SheetSpring = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 400f)
+    /** 全屏模态设置退场平滑平稳弹簧：克制阻尼避免回弹，节奏略快于进场而不致瞬移。 */
+    val ModalExitSpring = spring<Float>(dampingRatio = 0.9f, stiffness = 600f)
     /** 默认空间形变别名，对齐 [SpatialDefaultSpring]。 */
     val SpatialSpring = SpatialDefaultSpring
     /** 容器形变（助理栏 ↔ 停靠球、附件条高度、设置项胶囊）：临界阻尼，绝不回弹。 */
@@ -151,6 +153,16 @@ object MotionSpecs {
     ): FiniteAnimationSpec<T> = springSpecFrom(
         reduced = reduced,
         template = if (expressive) ExpressiveSpatialSlowSpring else SpatialSlowSpring,
+        visibilityThreshold = visibilityThreshold,
+    )
+
+    /** 全屏模态退场平稳弹簧；减少动态时退化为 `snap()`。 */
+    fun <T> modalExit(
+        reduced: Boolean,
+        visibilityThreshold: T? = null,
+    ): FiniteAnimationSpec<T> = springSpecFrom(
+        reduced = reduced,
+        template = ModalExitSpring,
         visibilityThreshold = visibilityThreshold,
     )
 

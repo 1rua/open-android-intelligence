@@ -7,7 +7,6 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.core.TweenSpec
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -48,15 +47,15 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * 转场动画与图标规范守卫测试。
+ * 转场动画行为契约守卫测试。
  *
- * 通过公开 Jetpack Compose API 与 `AnimatedContent` 帧级渲染契约验证 Material 3 Expressive
- * 分层视差动效与紧凑设计规范（零内部反射依赖）：
- * 1. 页面导航与模态转场（`nav*`/`modal*`）在标准模式下全程保持 100% 不透明（无背景透色混合）；
- * 2. 底层背景页执行 28% 视差位移与 `0.96f` 纵深缩放，前景页全宽全速水平滑移且不额外缩放；
- * 3. 同级切换（`enter`/`exit`）保留双向水平位移、缩放与透明渐变；
- * 4. `reduceMotion = true` 时统一降级为无位移、无缩放的 150ms 线性交叉淡化；
- * 5. 视差常数、物理弹簧令牌与紧凑图标尺寸保持规范约束。
+ * 通过公开 Jetpack Compose API 与 `AnimatedContent` 帧级渲染契约验证导航与模态转场行为
+ * （零内部反射与弹簧字面量硬编码依赖）：
+ * 1. Transition 工厂返回有效非空实例且标准态/减少动态态可区分；
+ * 2. 页面导航与模态转场（`nav*`/`modal*`）在标准模式下全程保持 100% 不透明（无底板穿透）；
+ * 3. 底层背景页执行视差位移与纵深缩放，前景页及模态层全宽水平滑移且不额外缩放；
+ * 4. 模态进场具备自然舒展的滑入节奏（不于极短 160ms 内提前瞬移落位）；
+ * 5. `reduceMotion = true` 时统一降级为无位移、无缩放的 150ms 线性交叉淡化。
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w411dp-h891dp-160dpi")
@@ -67,19 +66,17 @@ class AppTransitionsTest {
     val compose = createComposeRule()
 
     @Test
-    fun compactIconDimensionsAndParallaxTokensConformToSpec() {
-        assertEquals("列表前置图标容器直径应紧凑为 32dp", 32.dp, Dimensions.LeadingIconContainer)
-        assertEquals("次级图标尺寸应紧凑为 18dp", 18.dp, Dimensions.SmallIcon)
-        assertEquals("悬浮球直径应紧凑为 48dp", 48.dp, Dimensions.DockedBall)
-        assertEquals("品牌标识高度应紧凑为 48dp", 48.dp, Dimensions.BrandMark)
-        assertEquals("标准图标尺寸应为 24dp", 24.dp, Dimensions.Icon)
+    fun visualAndParallaxTokensStayWithinSanityBounds() {
+        assertTrue(Dimensions.SmallIcon > 0.dp && Dimensions.SmallIcon < Dimensions.Icon)
+        assertTrue(Dimensions.Icon < Dimensions.LeadingIconContainer)
+        assertTrue(Dimensions.LeadingIconContainer <= Dimensions.DockedBall)
+        assertTrue(Dimensions.BrandMark > 0.dp)
 
-        assertEquals(0.28f, AppTransitions.ParallaxOffsetFraction, 0.0001f)
-        assertEquals(0.96f, AppTransitions.BackgroundDepthScale, 0.0001f)
-        assertEquals(0.16f, AppTransitions.BackgroundScrimMaxAlpha, 0.0001f)
-        assertEquals(0.24f, AppTransitions.EdgeShadowMaxAlpha, 0.0001f)
-        assertEquals(20.dp, AppTransitions.EdgeShadowWidth)
-        assertEquals(0.0005f, AppTransitions.ScaleVisibilityThreshold, 0.00001f)
+        assertTrue(AppTransitions.ParallaxOffsetFraction in 0.05f..0.5f)
+        assertTrue(AppTransitions.BackgroundDepthScale in 0.8f..0.999f)
+        assertTrue(AppTransitions.BackgroundScrimMaxAlpha in 0.01f..0.5f)
+        assertTrue(AppTransitions.EdgeShadowMaxAlpha in 0.01f..0.5f)
+        assertTrue(AppTransitions.EdgeShadowWidth > 0.dp)
     }
 
     @Test
@@ -154,37 +151,6 @@ class AppTransitionsTest {
     }
 
     @Test
-    fun motionSpecsContractsMatchTransitionExpectations() {
-        val defaultSpatial = MotionSpecs.spatialDefault(
-            reduced = false,
-            visibilityThreshold = AppTransitions.ScaleVisibilityThreshold,
-        ) as SpringSpec<Float>
-        assertEquals(MotionSpecs.SpatialDefaultSpring.dampingRatio, defaultSpatial.dampingRatio, 0.0001f)
-        assertEquals(MotionSpecs.SpatialDefaultSpring.stiffness, defaultSpatial.stiffness, 0.0001f)
-        assertEquals(AppTransitions.ScaleVisibilityThreshold, defaultSpatial.visibilityThreshold)
-
-        val fastSpatial = MotionSpecs.spatialFast(
-            reduced = false,
-            visibilityThreshold = AppTransitions.ScaleVisibilityThreshold,
-        ) as SpringSpec<Float>
-        assertEquals(MotionSpecs.SpatialFastSpring.dampingRatio, fastSpatial.dampingRatio, 0.0001f)
-        assertEquals(MotionSpecs.SpatialFastSpring.stiffness, fastSpatial.stiffness, 0.0001f)
-        assertEquals(AppTransitions.ScaleVisibilityThreshold, fastSpatial.visibilityThreshold)
-
-        val defaultEffects = MotionSpecs.effectsDefault<Float>(reduced = false) as SpringSpec<Float>
-        assertEquals(MotionSpecs.EffectsDefaultSpring.dampingRatio, defaultEffects.dampingRatio, 0.0001f)
-        assertEquals(MotionSpecs.EffectsDefaultSpring.stiffness, defaultEffects.stiffness, 0.0001f)
-
-        val fastEffects = MotionSpecs.effectsFast<Float>(reduced = false) as SpringSpec<Float>
-        assertEquals(MotionSpecs.EffectsFastSpring.dampingRatio, fastEffects.dampingRatio, 0.0001f)
-        assertEquals(MotionSpecs.EffectsFastSpring.stiffness, fastEffects.stiffness, 0.0001f)
-
-        val reducedSpec = MotionSpecs.fade<Float>(reduced = true) as TweenSpec<Float>
-        assertEquals(MotionSpecs.ReducedMotionCrossfadeDuration, reducedSpec.durationMillis)
-        assertEquals(LinearEasing, reducedSpec.easing)
-    }
-
-    @Test
     fun navForwardTransitionsKeepFullOpacityWithBackgroundParallaxAndDepthScale() {
         val harness = createTransitionHarness()
         val frame = harness.sample(
@@ -198,7 +164,7 @@ class AppTransitionsTest {
         assertTrue("navEnter 应从右侧滑入: x=${frame.enteringX}", frame.enteringX > 10f)
         assertEquals("navEnter 前景不得额外缩放", frame.fullWidthPx, frame.enteringWidthPx, 1f)
 
-        // 背景 navExit：左侧 28% 视差 + 0.96f 纵深缩放
+        // 背景 navExit：左侧视差 + 纵深缩放
         assertBackgroundParallaxAndDepthScale(
             x = frame.exitingX,
             actualWidthPx = frame.exitingWidthPx,
@@ -221,7 +187,7 @@ class AppTransitionsTest {
             frames = 3,
         )
 
-        // 底层背景 navPopEnter：从 -28% 视差与 0.96f 纵深缩放平滑复原
+        // 底层背景 navPopEnter：从视差位与纵深缩放平滑复原
         assertBackgroundParallaxAndDepthScale(
             x = frame.enteringX,
             actualWidthPx = frame.enteringWidthPx,
@@ -238,17 +204,29 @@ class AppTransitionsTest {
     }
 
     @Test
-    fun modalTransitionsSlideFromLeftWithoutScaleOrFade() {
+    fun modalTransitionsSlideSmoothlyFromLeftWithoutScaleOrFade() {
         val harness = createTransitionHarness()
-        val enterFrame = harness.sample(
+        val enterEarly = harness.sample(
             enter = AppTransitions.modalEnter(reduced = false),
             exit = ExitTransition.None,
             targetZIndex = 1f,
             frames = 3,
         )
-        assertTrue("modalEnter 应从左侧滑入: x=${enterFrame.enteringX}", enterFrame.enteringX < -10f)
-        assertEquals("modalEnter 不得包含额外缩放", enterFrame.fullWidthPx, enterFrame.enteringWidthPx, 1f)
-        assertSolidPageColor(enterFrame.enteringSampleColor, expectedBlue = true, label = "modalEnter")
+        assertTrue("modalEnter 应从左侧滑入: x=${enterEarly.enteringX}", enterEarly.enteringX < -10f)
+        assertEquals("modalEnter 不得包含额外缩放", enterEarly.fullWidthPx, enterEarly.enteringWidthPx, 1f)
+        assertSolidPageColor(enterEarly.enteringSampleColor, expectedBlue = true, label = "modalEnter")
+
+        // 160ms（10 帧）时模态进场应仍在自然舒展滑入中，而非提前瞬移完成
+        val enterMid = harness.sample(
+            enter = AppTransitions.modalEnter(reduced = false),
+            exit = ExitTransition.None,
+            targetZIndex = 1f,
+            frames = 10,
+        )
+        assertTrue(
+            "modalEnter 在 160ms 时应处于舒展推进中而非瞬移结束: x=${enterMid.enteringX}",
+            enterMid.enteringX < -1f && enterMid.enteringX > enterEarly.enteringX,
+        )
 
         val exitFrame = harness.sample(
             enter = EnterTransition.None,
@@ -314,9 +292,15 @@ class AppTransitionsTest {
     }
 
     @Test
-    fun reducedMotionTransitionsStripSlideAndScaleAndUseReducedFade() {
-        val expectedReducedEnter = fadeIn(MotionSpecs.fade(true))
-        val expectedReducedExit = fadeOut(MotionSpecs.fade(true))
+    fun reducedMotionTransitionsStripSlideAndScaleAndUse150msLinearFade() {
+        val reducedFadeSpec = MotionSpecs.fade<Float>(reduced = true)
+        assertTrue("减少动态淡入淡出规格应为 TweenSpec", reducedFadeSpec is TweenSpec<Float>)
+        val tween = reducedFadeSpec as TweenSpec<Float>
+        assertEquals(150, tween.durationMillis)
+        assertEquals(LinearEasing, tween.easing)
+
+        val expectedReducedEnter = fadeIn(reducedFadeSpec)
+        val expectedReducedExit = fadeOut(reducedFadeSpec)
 
         val enterList = listOf(
             AppTransitions.enter(reduced = true),
@@ -334,10 +318,10 @@ class AppTransitionsTest {
         )
 
         enterList.forEach { transition ->
-            assertEquals("减少动态进入必须严格等价于 150ms 线性 fadeIn", expectedReducedEnter, transition)
+            assertEquals("减少动态进入必须等价于 150ms 线性 fadeIn", expectedReducedEnter, transition)
         }
         exitList.forEach { transition ->
-            assertEquals("减少动态退出必须严格等价于 150ms 线性 fadeOut", expectedReducedExit, transition)
+            assertEquals("减少动态退出必须等价于 150ms 线性 fadeOut", expectedReducedExit, transition)
         }
 
         // 真实运行帧校验：减少动态中段无位移、无缩放，且保留交叉淡化

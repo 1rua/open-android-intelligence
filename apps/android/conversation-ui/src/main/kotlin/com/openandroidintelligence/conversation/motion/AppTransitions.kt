@@ -41,7 +41,9 @@ enum class NavPageTransitionRole {
  * - 页面导航转场（`navEnter` / `navExit` / `navPopEnter` / `navPopExit` / `modal*`）在非减少动态下
  *   彻底移除全页透明淡化（`fadeIn`/`fadeOut`），通过 **100% 实色背景 + Z-Index 层叠 + 视差位移 +
  *   轻微缩放与 Scrim/边缘阴影** 杜绝下层视图穿透；
- * - 进场位移与缩放使用 [MotionSpecs.spatialDefault]，退场使用更轻快的 [MotionSpecs.spatialFast]，
+ * - 常规路由进场位移与缩放使用 [MotionSpecs.spatialDefault]，退场使用更轻快的 [MotionSpecs.spatialFast]；
+ *   全屏模态设置面板进场使用舒展的 [MotionSpecs.ExpressiveSpatialDefaultSpring]（阻尼 0.8f、刚度 380f），
+ *   退场使用平滑平稳的 [MotionSpecs.ModalExitSpring]（阻尼 0.9f、刚度 600f），
  *   保持离开节奏快于进入并支持 `SeekableTransitionState`（预测性返回）逐帧拖拽同步与随时打断；
  * - 用户开启「减少动态」或系统动画时长缩放为 0 时统一降级为极短的无位移线性交叉淡化。
  */
@@ -156,12 +158,16 @@ object AppTransitions {
 
     /**
      * 模态层/全屏设置面板打开动画：从左向右（+X）100% 不透明全宽滑入。
+     *
+     * 采用 [MotionSpecs.ExpressiveSpatialDefaultSpring]（阻尼 0.8f、刚度 380f），
+     * 使全屏滑入自然舒展至约 350–400ms，消除极速弹簧带来的瞬移感。
      */
     fun modalEnter(reduced: Boolean): EnterTransition = when {
         reduced -> fadeIn(MotionSpecs.fade(true))
         else -> slideInHorizontally(
             animationSpec = MotionSpecs.spatialDefault(
                 reduced = false,
+                expressive = true,
                 visibilityThreshold = IntOffset.VisibilityThreshold,
             ),
             initialOffsetX = { full -> -full },
@@ -170,11 +176,14 @@ object AppTransitions {
 
     /**
      * 模态层/全屏设置面板关闭动画：向左（-X）100% 不透明全宽滑出屏幕。
+     *
+     * 采用 [MotionSpecs.ModalExitSpring] 平稳退场弹簧（刚度 600f），既维持离开快于进入的节奏，
+     * 又保持顺滑自然的视觉收束。
      */
     fun modalExit(reduced: Boolean): ExitTransition = when {
         reduced -> fadeOut(MotionSpecs.fade(true))
         else -> slideOutHorizontally(
-            animationSpec = MotionSpecs.spatialFast(
+            animationSpec = MotionSpecs.modalExit(
                 reduced = false,
                 visibilityThreshold = IntOffset.VisibilityThreshold,
             ),
