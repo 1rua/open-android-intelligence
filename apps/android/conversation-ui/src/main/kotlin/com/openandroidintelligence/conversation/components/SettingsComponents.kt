@@ -136,7 +136,7 @@ fun SettingsListItem(
 ) {
     val morphing = LocalSettingsItemMorphing.current
     val interactive = onClick != null && enabled
-    val interactionSource = if (onClick != null && morphing) {
+    val interactionSource = if (interactive && morphing) {
         remember { MutableInteractionSource() }
     } else {
         null

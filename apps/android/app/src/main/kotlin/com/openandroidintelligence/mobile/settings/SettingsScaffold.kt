@@ -119,7 +119,11 @@ internal fun SettingsPageColumn(
 @Composable
 internal fun isCompactSettingsSelector(
     presentation: SettingsPresentation?,
-    horizontalChrome: Dp = Dimensions.SpaceMedium * 4,
+    horizontalChrome: Dp = if (presentation == null) {
+        Dimensions.ScreenHorizontal * 2 + Dimensions.SpaceMedium * 2
+    } else {
+        Dimensions.SpaceMedium * 4
+    },
 ): Boolean {
     val viewportWidth = LocalWindowMaxWidth.current ?: LocalConfiguration.current.screenWidthDp.dp
     val fontScale = LocalDensity.current.fontScale

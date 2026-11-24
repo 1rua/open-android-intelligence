@@ -693,24 +693,39 @@ fun FullscreenPredictiveSlideOverlay(
     val fgNeedsLayer = remember(controller) {
         derivedStateOf { controller.openProgress.value < 0.999f }
     }
+    val bgLayerBlock = remember(controller, reduced) {
+        { scope: GraphicsLayerScope ->
+            val p = controller.openProgress.value.coerceIn(0f, 1f)
+            if (!reduced && p > 0f) {
+                scope.translationX = -scope.size.width * AppTransitions.ParallaxOffsetFraction * p * controller.exitDirection
+                val scale = 1f - (1f - AppTransitions.BackgroundDepthScale) * p
+                scope.scaleX = scale
+                scope.scaleY = scale
+            } else {
+                scope.translationX = 0f
+                scope.scaleX = 1f
+                scope.scaleY = 1f
+            }
+        }
+    }
+    val fgLayerBlock = remember(controller, reduced) {
+        { scope: GraphicsLayerScope ->
+            val p = controller.openProgress.value.coerceIn(0f, 1f)
+            if (reduced) {
+                scope.translationX = 0f
+                scope.alpha = p
+            } else {
+                scope.translationX = scope.size.width * (1f - p) * controller.exitDirection
+                scope.alpha = 1f
+            }
+        }
+    }
     Box(modifier = modifier.fillMaxSize().clipToBounds()) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(0f)
-                .conditionalGraphicsLayer(needsLayer = bgNeedsLayer) {
-                    val p = controller.openProgress.value.coerceIn(0f, 1f)
-                    if (!reduced && p > 0f) {
-                        translationX = -size.width * AppTransitions.ParallaxOffsetFraction * p * controller.exitDirection
-                        val scale = 1f - (1f - AppTransitions.BackgroundDepthScale) * p
-                        scaleX = scale
-                        scaleY = scale
-                    } else {
-                        translationX = 0f
-                        scaleX = 1f
-                        scaleY = 1f
-                    }
-                }
+                .conditionalGraphicsLayer(needsLayer = bgNeedsLayer, layerBlock = bgLayerBlock)
                 .drawWithContent {
                     val p = controller.openProgress.value.coerceIn(0f, 1f)
                     if (controller.overlayMounted && p >= 0.999f) {
@@ -734,16 +749,7 @@ fun FullscreenPredictiveSlideOverlay(
                     .fillMaxSize()
                     .zIndex(1f)
                     .then(if (overlayTestTag != null) Modifier.testTag(overlayTestTag) else Modifier)
-                    .conditionalGraphicsLayer(needsLayer = fgNeedsLayer) {
-                        val p = controller.openProgress.value.coerceIn(0f, 1f)
-                        if (reduced) {
-                            translationX = 0f
-                            alpha = p
-                        } else {
-                            translationX = size.width * (1f - p) * controller.exitDirection
-                            alpha = 1f
-                        }
-                    }
+                    .conditionalGraphicsLayer(needsLayer = fgNeedsLayer, layerBlock = fgLayerBlock)
                     .then(
                         if (!reduced) {
                             Modifier.drawWithContent {
@@ -762,7 +768,7 @@ fun FullscreenPredictiveSlideOverlay(
                         },
                     )
                     .background(surfaceColor)
-                    .pointerInput(Unit) {},
+                    .blockSiblingPointerHits(),
             ) {
                 CompositionLocalProvider(LocalPredictiveOverlayBackController provides controller) {
                     overlayContent()
@@ -772,7 +778,12 @@ fun FullscreenPredictiveSlideOverlay(
     }
 }
 
-private fun Modifier.conditionalGraphicsLayer(
+/** 仅借助命中测试截断向低 Z 序兄弟节点穿透，不消费事件以免干扰内层滚动与点击手势。 */
+private fun Modifier.blockSiblingPointerHits(): Modifier = pointerInput(Unit) {
+    // 命中测试已阻断兄弟节点穿透，协程挂起结束即可维持拦截节点语义。
+}
+
+internal fun Modifier.conditionalGraphicsLayer(
     needsLayer: State<Boolean>,
     layerBlock: GraphicsLayerScope.() -> Unit,
 ): Modifier = this then ConditionalGraphicsLayerElement(needsLayer = needsLayer, layerBlock = layerBlock)

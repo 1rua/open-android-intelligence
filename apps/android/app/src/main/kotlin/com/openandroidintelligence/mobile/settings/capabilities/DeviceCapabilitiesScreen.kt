@@ -101,11 +101,7 @@ internal fun DeviceCapabilitiesScreen(
     val localState by environment.pairingGrants.state.collectAsState()
     val accessibilityConnected by ScreenHostRegistry.accessibilityConnected.collectAsState()
     val notificationBinding = NotificationControlRegistry.bindingPort()
-    val listenerFlow = remember(notificationBinding) { notificationBinding.observeListenerConnected() }
-    val initialListenerConnected = remember(notificationBinding) {
-        runCatching { notificationBinding.isListenerConnected() }.getOrDefault(false)
-    }
-    val notificationListenerConnected by listenerFlow.collectAsState(initial = initialListenerConnected)
+    val notificationListenerConnected by rememberNotificationListenerConnected(notificationBinding)
     var refreshTick by remember { mutableIntStateOf(0) }
     val lifecycle = LocalLifecycleOwner.current
     // 从系统权限设置返回后必须主动探测绑定态并重新读真实状态，不能沿用离开前的缓存。
@@ -298,6 +294,18 @@ private fun CapabilityState.tone(): SettingsTone = when (this) {
     CapabilityState.NEEDS_AUTH -> SettingsTone.NEUTRAL
     CapabilityState.UNAVAILABLE -> SettingsTone.DANGER
     CapabilityState.OFF -> SettingsTone.NEUTRAL
+}
+
+/** 订阅系统通知监听服务实时连接状态并缓存流与初始值，避免重组重复创建订阅。 */
+@Composable
+internal fun rememberNotificationListenerConnected(
+    binding: com.openandroidintelligence.notification.control.NotificationBindingPort = NotificationControlRegistry.bindingPort(),
+): androidx.compose.runtime.State<Boolean> {
+    val listenerFlow = remember(binding) { binding.observeListenerConnected() }
+    val initialConnected = remember(binding) {
+        runCatching { binding.isListenerConnected() }.getOrDefault(false)
+    }
+    return listenerFlow.collectAsState(initial = initialConnected)
 }
 
 @Composable

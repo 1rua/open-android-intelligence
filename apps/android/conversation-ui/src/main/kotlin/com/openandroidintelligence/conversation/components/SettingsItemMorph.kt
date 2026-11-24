@@ -23,20 +23,14 @@ import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.toRect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.lerp
-import androidx.compose.ui.layout.Measurable
-import androidx.compose.ui.layout.MeasureResult
-import androidx.compose.ui.layout.MeasureScope
-import androidx.compose.ui.node.LayoutModifierNode
-import androidx.compose.ui.node.ModifierNodeElement
-import androidx.compose.ui.node.invalidatePlacement
-import androidx.compose.ui.platform.InspectorInfo
-import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.conversation.motion.conditionalGraphicsLayer
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.Job
@@ -231,22 +225,27 @@ internal fun settingsItemMorphModifier(
 
     val progressState = progress.asState()
     val scaleState = scale.asState()
-    val needsLayerState = remember(progressState, scaleState) {
-        derivedStateOf { progressState.value > 0f || scaleState.value != 1f }
+    val needsLayerState = remember(highlighted, progressState, scaleState) {
+        derivedStateOf { highlighted || progressState.value > 0f || scaleState.value != 1f }
     }
     val corners = MaterialTheme.shapes.medium
     val secondaryContainer = MaterialTheme.colorScheme.secondaryContainer
     val indication = LocalIndication.current
+    val layerBlock = remember(corners, highlighted, progressState, scaleState) {
+        { scope: GraphicsLayerScope ->
+            val fraction = progressState.value.coerceIn(0f, 1f)
+            val currentScale = scaleState.value
+            scope.scaleX = currentScale
+            scope.scaleY = currentScale
+            scope.shape = SettingsMorphShape(corners, fraction)
+            scope.clip = fraction > 0f || highlighted
+        }
+    }
 
     return Modifier
-        .then(
-            SettingsMorphLayerElement(
-                resting = corners,
-                highlighted = highlighted,
-                progressState = progressState,
-                scaleState = scaleState,
-                needsLayerProvider = { needsLayerState.value },
-            ),
+        .conditionalGraphicsLayer(
+            needsLayer = needsLayerState,
+            layerBlock = layerBlock,
         )
         .drawBehind {
             val fraction = progressState.value.coerceIn(0f, 1f)
@@ -261,91 +260,6 @@ internal fun settingsItemMorphModifier(
                 Modifier
             },
         )
-}
-
-private class SettingsMorphLayerElement(
-    private val resting: CornerBasedShape,
-    private val highlighted: Boolean,
-    private val progressState: State<Float>,
-    private val scaleState: State<Float>,
-    private val needsLayerProvider: () -> Boolean,
-) : ModifierNodeElement<SettingsMorphLayerNode>() {
-    override fun create(): SettingsMorphLayerNode = SettingsMorphLayerNode(
-        resting = resting,
-        highlighted = highlighted,
-        progressState = progressState,
-        scaleState = scaleState,
-        needsLayerProvider = needsLayerProvider,
-    )
-
-    override fun update(node: SettingsMorphLayerNode) {
-        val changed = node.resting != resting ||
-            node.highlighted != highlighted ||
-            node.progressState != progressState ||
-            node.scaleState != scaleState ||
-            node.needsLayerProvider != needsLayerProvider
-        node.resting = resting
-        node.highlighted = highlighted
-        node.progressState = progressState
-        node.scaleState = scaleState
-        node.needsLayerProvider = needsLayerProvider
-        if (changed) {
-            node.invalidatePlacement()
-        }
-    }
-
-    override fun InspectorInfo.inspectableProperties() {
-        name = "settingsItemMorphLayer"
-        properties["highlighted"] = highlighted
-    }
-
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is SettingsMorphLayerElement) return false
-        return resting == other.resting &&
-            highlighted == other.highlighted &&
-            progressState == other.progressState &&
-            scaleState == other.scaleState &&
-            needsLayerProvider == other.needsLayerProvider
-    }
-
-    override fun hashCode(): Int {
-        var result = resting.hashCode()
-        result = 31 * result + highlighted.hashCode()
-        result = 31 * result + progressState.hashCode()
-        result = 31 * result + scaleState.hashCode()
-        result = 31 * result + needsLayerProvider.hashCode()
-        return result
-    }
-}
-
-private class SettingsMorphLayerNode(
-    var resting: CornerBasedShape,
-    var highlighted: Boolean,
-    var progressState: State<Float>,
-    var scaleState: State<Float>,
-    var needsLayerProvider: () -> Boolean,
-) : Modifier.Node(), LayoutModifierNode {
-    override fun MeasureScope.measure(
-        measurable: Measurable,
-        constraints: Constraints,
-    ): MeasureResult {
-        val placeable = measurable.measure(constraints)
-        return layout(placeable.width, placeable.height) {
-            if (!highlighted && !needsLayerProvider()) {
-                placeable.place(0, 0)
-            } else {
-                placeable.placeWithLayer(0, 0) {
-                    val fraction = progressState.value.coerceIn(0f, 1f)
-                    val scale = scaleState.value
-                    scaleX = scale
-                    scaleY = scale
-                    shape = SettingsMorphShape(resting, fraction)
-                    clip = fraction > 0f || highlighted
-                }
-            }
-        }
-    }
 }
 
 /** 在绘制尺寸确定后解析主题圆角并向短边一半插值，确保胶囊端点与布局方向一致。 */

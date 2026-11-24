@@ -198,11 +198,7 @@ private fun CapabilityDetailContent(
     var saveError by remember { mutableStateOf<String?>(null) }
     val accessibilityConnected by ScreenHostRegistry.accessibilityConnected.collectAsState()
     val notificationBinding = NotificationControlRegistry.bindingPort()
-    val listenerFlow = remember(notificationBinding) { notificationBinding.observeListenerConnected() }
-    val initialListenerConnected = remember(notificationBinding) {
-        runCatching { notificationBinding.isListenerConnected() }.getOrDefault(false)
-    }
-    val notificationListenerConnected by listenerFlow.collectAsState(initial = initialListenerConnected)
+    val notificationListenerConnected by rememberNotificationListenerConnected(notificationBinding)
     val lifecycle = LocalLifecycleOwner.current
     fun refresh() {
         probeAccessibilityBinding(context)
@@ -344,7 +340,7 @@ private fun CapabilityDetailContent(
     // 过滤键必须是授权作用域自身的键（`policyKey`，含身份/Schema/风险/原语摘要），
     // 不能是 `entry.key`（`id@version`）：`approveRequest()` 存的是前者，两者永不相等，
     // 用后者会让真实批准全部被过滤掉、撤销入口随之消失。
-    val approvalScopeKeys = remember(pluginId, hostRevision, entries) {
+    val approvalScopeKeys = remember(host, pluginId, hostRevision, entries) {
         val owned = capabilityRows.map { it.draftIdentity }
         val siblingScopes = if (capabilityId == SMS_QUERY_ID) {
             // 短信详情统一管理四项能力，它们的批准也必须能在这里看到并撤销。
