@@ -759,22 +759,60 @@ def test_artifact_consumers_cannot_outlive_their_producer():
             )
 
 
-def test_release_workflows_wait_for_verified_ci():
+def test_release_workflows_decouple_dev_preview_and_keep_stable_gate():
     import yaml
 
-    for name, expected in (
-        ("dev-release.yml", "remote-client.yml"),
-        ("release.yml", "ci.yml"),
-    ):
-        jobs = yaml.safe_load(
-            (REPO_ROOT / f".github/workflows/{name}").read_text(encoding="utf-8")
-        )["jobs"]
-        verify = jobs["verify-ci"]
-        # The gate must be a separate job so the build can proceed in parallel.
-        assert verify["uses"].endswith("release-gate.yml")
-        assert verify["with"]["required-workflow"] == expected
-        publish = next(job for job_name, job in jobs.items() if job_name.startswith("publish"))
-        assert "verify-ci" in publish["needs"], name
+    dev_workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/dev-release.yml").read_text(encoding="utf-8")
+    )
+    dev_jobs = dev_workflow["jobs"]
+    assert "verify-ci" not in dev_jobs
+    assert dev_workflow["concurrency"] == {
+        "group": "dev-release",
+        "cancel-in-progress": True,
+    }
+    assert "sign-plugin-packages" in dev_jobs
+    assert "build-and-publish" in dev_jobs
+    assert "verify-ci" not in (dev_jobs["build-and-publish"].get("needs") or [])
+
+    stable_jobs = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    )["jobs"]
+    verify = stable_jobs["verify-ci"]
+    # The gate must be a separate job so the build can proceed in parallel.
+    assert verify["uses"].endswith("release-gate.yml")
+    assert verify["with"]["required-workflow"] == "ci.yml"
+    publish = next(job for job_name, job in stable_jobs.items() if job_name.startswith("publish"))
+    assert "verify-ci" in publish["needs"]
+
+
+def test_android_ci_caches_robolectric_runtime_jars():
+    import yaml
+
+    action = yaml.safe_load(
+        (REPO_ROOT / ".github/actions/android-lane/action.yml").read_text(encoding="utf-8")
+    )
+    lane_cache_steps = [
+        step for step in action["runs"]["steps"]
+        if step.get("uses", "").startswith("actions/cache@")
+        and "~/.m2/repository/org/robolectric" in ((step.get("with") or {}).get("path") or "")
+    ]
+    assert len(lane_cache_steps) == 1
+    cache_with = lane_cache_steps[0]["with"]
+    assert "apps/android/.gradle/robolectric-home/.m2/repository/org/robolectric" in cache_with["path"]
+    assert "robolectric-${{ runner.os }}-${{ inputs.lane }}-" in cache_with["key"]
+    assert "apps/android/**/build.gradle.kts" in cache_with["key"]
+
+    ci_workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    )
+    ci_cache_steps = [
+        step for step in ci_workflow["jobs"]["android"]["steps"]
+        if step.get("uses", "").startswith("actions/cache@")
+        and "~/.m2/repository/org/robolectric" in ((step.get("with") or {}).get("path") or "")
+    ]
+    assert len(ci_cache_steps) == 1
+    assert "apps/android/.gradle/robolectric-home/.m2/repository/org/robolectric" in ci_cache_steps[0]["with"]["path"]
 
 
 def test_ci_workflow_keeps_configuration_cache_and_parallel_forks():

@@ -100,6 +100,18 @@ jobs:
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' && github.event_name != 'workflow_dispatch' }}
 
+      - name: Cache Robolectric runtime jars
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.m2/repository/org/robolectric
+            apps/android/.gradle/robolectric-home/.m2/repository/org/robolectric
+          key: robolectric-${{ runner.os }}-ci-${{ hashFiles('apps/android/**/build.gradle.kts', 'apps/android/gradle.properties', 'apps/android/gradle/**') }}
+          restore-keys: |
+            robolectric-${{ runner.os }}-ci-
+            robolectric-${{ runner.os }}-app-pr-
+            robolectric-${{ runner.os }}-
+
       # 编译产物是多个 app 测试的输入；缓存 workspace 避免每次全量重编。
       - name: Cache the Rust plugin workspace
         uses: actions/cache@v4
