@@ -283,6 +283,106 @@ def test_start_app_resolves_active_launcher_alias_and_fallbacks() -> None:
     assert any(arg.endswith("/.MainActivity") for arg in fallback_cmds[1])
 
 
+def test_driver_multiuser_propagation_and_pm_clear_failure(tmp_path: Path) -> None:
+    """验证多用户环境下（如 User 10）各 pm/am 命令均自动携带 `--user 10` 及清理失败报错。"""
+    repo_root = resolve_repo_root()
+    driver = AdbAndroidDriver(serial="emulator-5554", repo_root=repo_root, command_timeout=3.0)
+    recorded_cmds: list[list[str]] = []
+
+    def fake_user10_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+        recorded_cmds.append(cmd)
+        if "devices" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="List of devices attached\nemulator-5554\tdevice\n", stderr=""
+            )
+        if "get-current-user" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="10\n", stderr="")
+        if "pm" in cmd and "path" in cmd:
+            if "--user" in cmd and "10" in cmd:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="package:/data/app/mock/base.apk\n", stderr=""
+                )
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+        if "pm" in cmd and "clear" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="Success\n", stderr="")
+        if "resolve-activity" in cmd:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="com.openandroidintelligence.mobile/.MainActivityThemed\n",
+                stderr="",
+            )
+        if "am" in cmd and "start" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="Status: ok\nComplete\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_user10_run):
+        assert driver.get_current_user_id() == 10
+        assert driver.is_package_installed() is True
+        driver.start_app(clear_data=True)
+        driver.start_app(cold=True, clear_data=False)
+
+    assert any(cmd[-4:] == ["path", "--user", "10", "com.openandroidintelligence.mobile"] for cmd in recorded_cmds)
+    assert any(cmd[-4:] == ["clear", "--user", "10", "com.openandroidintelligence.mobile"] for cmd in recorded_cmds)
+    assert any(cmd[-4:] == ["force-stop", "--user", "10", "com.openandroidintelligence.mobile"] for cmd in recorded_cmds)
+    resolve_cmds = [cmd for cmd in recorded_cmds if "resolve-activity" in cmd]
+    assert resolve_cmds and all("--user" in c and "10" in c for c in resolve_cmds)
+    start_cmds = [cmd for cmd in recorded_cmds if "am" in cmd and "start" in cmd]
+    assert len(start_cmds) == 2 and all("--user" in c and "10" in c for c in start_cmds)
+
+    # 验证若某用户尚未启用设备上已安装 APK，install_apk_if_needed 会调用 pm install-existing --user 10
+    existing_calls: list[list[str]] = []
+    fake_apk = tmp_path / "dummy.apk"
+    fake_apk.write_bytes(b"PK\x03\x04dummy")
+    user10_installed = False
+
+    def fake_install_existing_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+        nonlocal user10_installed
+        existing_calls.append(cmd)
+        if "devices" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="List of devices attached\nemulator-5554\tdevice\n", stderr=""
+            )
+        if "get-current-user" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="10\n", stderr="")
+        if "pm" in cmd and "path" in cmd:
+            if "--user" in cmd and "10" in cmd and not user10_installed:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="package:/data/app/mock/base.apk\n", stderr=""
+            )
+        if "install-existing" in cmd:
+            user10_installed = True
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="Package com.openandroidintelligence.mobile installed for user: 10\n", stderr=""
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="Success\n", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_install_existing_run):
+        assert driver.install_apk_if_needed(apk_path=fake_apk) is True
+    assert any("install-existing" in c and "--user" in c and "10" in c for c in existing_calls)
+
+    # 验证 pm clear --user 10 输出 Failed 时明确抛出 E2EDeviceError
+    def fake_clear_failed_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+        if "devices" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="List of devices attached\nemulator-5554\tdevice\n", stderr=""
+            )
+        if "get-current-user" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="10\n", stderr="")
+        if "pm" in cmd and "clear" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="Failed\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_clear_failed_run):
+        with pytest.raises(E2EDeviceError, match="清理应用数据失败"):
+            driver.start_app(clear_data=True)
+
+    trash_dir = resolve_repo_root() / ".worktrees" / "trash"
+    trash_dir.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(fake_apk), str(trash_dir / f"ut-dummy-apk-{int(time.time() * 1000)}.apk"))
+
+
 # ---------------------------------------------------------------------------
 # 3. SmartWait 防抖与超时测试
 # ---------------------------------------------------------------------------

@@ -191,38 +191,102 @@ class AdbAndroidDriver:
         self.serial = devices[0]
         return self.serial
 
-    def is_package_installed(self, package: str = DEFAULT_APP_PACKAGE) -> bool:
-        """检查目标设备上是否已安装指定包名。"""
+    def get_current_user_id(self) -> int | None:
+        """查询当前设备前台活动用户的整数 UID（支持多用户隔离场景）。"""
+        self.ensure_device_connected()
         proc = self._run(
-            ["shell", "pm", "path", package], check=False, timeout=self.command_timeout
+            ["shell", "am", "get-current-user"],
+            check=False,
+            timeout=self.command_timeout,
         )
+        if proc.returncode != 0:
+            return None
+        for raw_line in (proc.stdout or "").splitlines():
+            line = raw_line.strip()
+            if line and line.isascii() and line.isdigit():
+                return int(line)
+        return None
+
+    def _is_package_installed_for_user(
+        self, package: str, user_id: int | None
+    ) -> bool:
+        """检查指定用户下是否已安装目标包。"""
+        cmd = ["shell", "pm", "path"]
+        if user_id is not None:
+            cmd.extend(["--user", str(user_id)])
+        cmd.append(package)
+        proc = self._run(cmd, check=False, timeout=self.command_timeout)
         return proc.returncode == 0 and "package:" in (proc.stdout or "")
+
+    def _install_existing_for_user(self, package: str, user_id: int) -> None:
+        """为指定活动用户启用设备上已安装的应用包。"""
+        cmd = ["shell", "pm", "install-existing", "--user", str(user_id), package]
+        proc = self._run(
+            cmd,
+            check=False,
+            timeout=max(self.command_timeout, 30.0),
+        )
+        combined = f"{proc.stdout or ''}\n{proc.stderr or ''}".strip()
+        lowered = combined.lower()
+        if (
+            proc.returncode != 0
+            or "failed" in lowered
+            or "exception" in lowered
+            or "doesn't exist" in lowered
+            or "error:" in lowered
+        ):
+            raise E2EDeviceError(
+                f"为用户 {user_id} 启用已安装应用失败 ({' '.join(cmd)}): {combined or f'code={proc.returncode}'}"
+            )
+
+    def is_package_installed(
+        self, package: str = DEFAULT_APP_PACKAGE, user_id: int | None = None
+    ) -> bool:
+        """检查当前活动用户（或显式指定用户）下是否已安装指定包名。"""
+        self.ensure_device_connected()
+        target_user = self.get_current_user_id() if user_id is None else user_id
+        return self._is_package_installed_for_user(package, target_user)
 
     def install_apk_if_needed(
         self,
         apk_path: Path | str | None = None,
         package: str = DEFAULT_APP_PACKAGE,
         force: bool = False,
+        user_id: int | None = None,
     ) -> bool:
-        """按需将调试 APK 安装到设备；返回 True 表示实际执行了安装。"""
+        """按需将调试 APK 安装到当前活动用户；返回 True 表示实际执行了安装。"""
         self.ensure_device_connected()
+        target_user = self.get_current_user_id() if user_id is None else user_id
         target_apk = (
             Path(apk_path) if apk_path is not None else self.repo_root / DEFAULT_APK_REL_PATH
         )
         if not target_apk.is_absolute():
             target_apk = (self.repo_root / target_apk).resolve()
 
-        already_installed = self.is_package_installed(package)
+        already_installed = self._is_package_installed_for_user(package, target_user)
         if already_installed and not force:
             return False
 
         if not target_apk.is_file():
+            # 若本地无 APK 构建产物但设备主用户已安装，尝试为当前多用户直接启用现有包
+            if (
+                not force
+                and target_user is not None
+                and self._is_package_installed_for_user(package, None)
+            ):
+                self._install_existing_for_user(package, target_user)
+                if self._is_package_installed_for_user(package, target_user):
+                    return True
             raise E2EDeviceError(f"未找到待安装 APK 文件: {target_apk}")
 
         install_timeout = max(self.command_timeout, 90.0)
         self._run(
             ["install", "-r", "-d", str(target_apk)], timeout=install_timeout
         )
+        if target_user is not None and not self._is_package_installed_for_user(
+            package, target_user
+        ):
+            self._install_existing_for_user(package, target_user)
         return True
 
     def dump_semantics(self) -> list[SemanticNode]:
@@ -319,35 +383,40 @@ class AdbAndroidDriver:
         """规范化拼接 `package/activity` 组件名。"""
         return activity if "/" in activity else f"{package}/{activity}"
 
-    def resolve_launcher_activity(
-        self, package: str = DEFAULT_APP_PACKAGE
+    def _resolve_launcher_activity_for_user(
+        self, package: str, user_id: int | None
     ) -> str | None:
-        """通过 PackageManager 解析当前实际启用的 LAUNCHER 主入口组件名。"""
-        proc = self._run(
+        """按指定用户通过 PackageManager 解析当前启用的 LAUNCHER 主入口组件名。"""
+        cmd = ["shell", "cmd", "package", "resolve-activity", "--brief"]
+        if user_id is not None:
+            cmd.extend(["--user", str(user_id)])
+        cmd.extend(
             [
-                "shell",
-                "cmd",
-                "package",
-                "resolve-activity",
-                "--brief",
                 "-a",
                 "android.intent.action.MAIN",
                 "-c",
                 "android.intent.category.LAUNCHER",
                 package,
-            ],
-            check=False,
-            timeout=self.command_timeout,
+            ]
         )
+        proc = self._run(cmd, check=False, timeout=self.command_timeout)
         if proc.returncode != 0:
             return None
         for raw_line in reversed((proc.stdout or "").splitlines()):
             line = raw_line.strip()
             if not line or line.startswith("No activity"):
                 continue
-            if "/" in line and not line.startswith("priority="):
+            if "/" in line and " " not in line and not line.startswith("priority="):
                 return line
         return None
+
+    def resolve_launcher_activity(
+        self, package: str = DEFAULT_APP_PACKAGE, user_id: int | None = None
+    ) -> str | None:
+        """通过 PackageManager 解析当前活动用户实际启用的 LAUNCHER 主入口组件名。"""
+        self.ensure_device_connected()
+        target_user = self.get_current_user_id() if user_id is None else user_id
+        return self._resolve_launcher_activity_for_user(package, target_user)
 
     def start_app(
         self,
@@ -355,15 +424,36 @@ class AdbAndroidDriver:
         activity: str | None = DEFAULT_APP_ACTIVITY,
         cold: bool = True,
         clear_data: bool = False,
+        user_id: int | None = None,
     ) -> None:
-        """启动目标 Android 应用（自动兼容切换桌面图标别名导致的入口变更）。"""
+        """启动目标 Android 应用（自动兼容多用户隔离与切换桌面图标别名导致的入口变更）。"""
         self.ensure_device_connected()
-        if clear_data:
-            self._run(["shell", "pm", "clear", package], timeout=self.command_timeout)
-        elif cold:
-            self._run(["shell", "am", "force-stop", package], timeout=self.command_timeout)
+        target_user = self.get_current_user_id() if user_id is None else user_id
+        user_args = ["--user", str(target_user)] if target_user is not None else []
 
-        resolved = self.resolve_launcher_activity(package)
+        if clear_data:
+            clear_cmd = ["shell", "pm", "clear", *user_args, package]
+            clear_proc = self._run(
+                clear_cmd, check=False, timeout=self.command_timeout
+            )
+            clear_out = f"{clear_proc.stdout or ''}\n{clear_proc.stderr or ''}".strip()
+            lowered_clear = clear_out.lower()
+            if (
+                clear_proc.returncode != 0
+                or "failed" in lowered_clear
+                or "exception" in lowered_clear
+                or "error:" in lowered_clear
+            ):
+                raise E2EDeviceError(
+                    f"清理应用数据失败 ({' '.join(clear_cmd)}): {clear_out or f'code={clear_proc.returncode}'}"
+                )
+        elif cold:
+            self._run(
+                ["shell", "am", "force-stop", *user_args, package],
+                timeout=self.command_timeout,
+            )
+
+        resolved = self._resolve_launcher_activity_for_user(package, target_user)
         candidates: list[str] = []
         if not activity or activity == DEFAULT_APP_ACTIVITY:
             if resolved:
@@ -380,9 +470,10 @@ class AdbAndroidDriver:
         start_timeout = max(self.command_timeout, 25.0)
         errors: list[str] = []
         for component in candidates:
-            flags = ["-W", "-n", component]
+            flags: list[str] = []
             if cold:
-                flags.insert(0, "-S")
+                flags.append("-S")
+            flags.extend([*user_args, "-W", "-n", component])
             proc = self._run(
                 ["shell", "am", "start", *flags],
                 check=False,
