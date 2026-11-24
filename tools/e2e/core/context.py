@@ -31,5 +31,5 @@ class E2ERuntimeContext:
     expect_reply: str = "E2E_PONG"
     clear_app_state: bool = False
     package_name: str = DEFAULT_APP_PACKAGE
-    activity_name: str = DEFAULT_APP_ACTIVITY
+    activity_name: str | None = DEFAULT_APP_ACTIVITY
     verbose: bool = False

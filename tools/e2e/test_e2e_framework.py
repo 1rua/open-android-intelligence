@@ -226,6 +226,63 @@ def test_resolve_roots_and_driver_fallbacks(tmp_path: Path, monkeypatch: pytest.
             driver.tap_point(10, 20)
 
 
+def test_start_app_resolves_active_launcher_alias_and_fallbacks() -> None:
+    """验证 MainActivityThemed 被禁用时 start_app 自动解析并拉起活跃 LAUNCHER 组件及兜底回退。"""
+    repo_root = resolve_repo_root()
+    driver = AdbAndroidDriver(serial="emulator-5554", repo_root=repo_root, command_timeout=3.0)
+    started_components: list[list[str]] = []
+
+    def fake_classic_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+        if "devices" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="List of devices attached\nemulator-5554\tdevice\n", stderr=""
+            )
+        if "resolve-activity" in cmd:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\ncom.openandroidintelligence.mobile/.MainActivityClassic\n",
+                stderr="",
+            )
+        if "am" in cmd and "start" in cmd:
+            started_components.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="Status: ok\nComplete\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_classic_run):
+        driver.start_app(clear_data=True)
+    assert len(started_components) == 1
+    assert "com.openandroidintelligence.mobile/.MainActivityClassic" in started_components[0]
+
+    # 场景 2：resolve-activity 失败且 .MainActivityThemed 报 Error type 3 时，应回退到 .MainActivity
+    fallback_cmds: list[list[str]] = []
+
+    def fake_fallback_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+        if "devices" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="List of devices attached\nemulator-5554\tdevice\n", stderr=""
+            )
+        if "resolve-activity" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="No activity found\n", stderr="")
+        if "am" in cmd and "start" in cmd:
+            fallback_cmds.append(cmd)
+            if any("MainActivityThemed" in arg for arg in cmd):
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout="Error type 3\nError: Activity class {com.openandroidintelligence.mobile/com.openandroidintelligence.mobile.MainActivityThemed} does not exist.\n",
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(cmd, 0, stdout="Status: ok\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_fallback_run):
+        driver.start_app(cold=True, clear_data=False)
+    assert len(fallback_cmds) == 2
+    assert any("MainActivityThemed" in arg for arg in fallback_cmds[0])
+    assert any(arg.endswith("/.MainActivity") for arg in fallback_cmds[1])
+
+
 # ---------------------------------------------------------------------------
 # 3. SmartWait 防抖与超时测试
 # ---------------------------------------------------------------------------

@@ -314,44 +314,109 @@ class AdbAndroidDriver:
             )
         return raw
 
+    @staticmethod
+    def _format_component(package: str, activity: str) -> str:
+        """规范化拼接 `package/activity` 组件名。"""
+        return activity if "/" in activity else f"{package}/{activity}"
+
+    def resolve_launcher_activity(
+        self, package: str = DEFAULT_APP_PACKAGE
+    ) -> str | None:
+        """通过 PackageManager 解析当前实际启用的 LAUNCHER 主入口组件名。"""
+        proc = self._run(
+            [
+                "shell",
+                "cmd",
+                "package",
+                "resolve-activity",
+                "--brief",
+                "-a",
+                "android.intent.action.MAIN",
+                "-c",
+                "android.intent.category.LAUNCHER",
+                package,
+            ],
+            check=False,
+            timeout=self.command_timeout,
+        )
+        if proc.returncode != 0:
+            return None
+        for raw_line in reversed((proc.stdout or "").splitlines()):
+            line = raw_line.strip()
+            if not line or line.startswith("No activity"):
+                continue
+            if "/" in line and not line.startswith("priority="):
+                return line
+        return None
+
     def start_app(
         self,
         package: str = DEFAULT_APP_PACKAGE,
-        activity: str = DEFAULT_APP_ACTIVITY,
+        activity: str | None = DEFAULT_APP_ACTIVITY,
         cold: bool = True,
         clear_data: bool = False,
     ) -> None:
-        """启动目标 Android 应用（支持冷启动及清理应用本地数据）。"""
+        """启动目标 Android 应用（自动兼容切换桌面图标别名导致的入口变更）。"""
         self.ensure_device_connected()
         if clear_data:
             self._run(["shell", "pm", "clear", package], timeout=self.command_timeout)
         elif cold:
             self._run(["shell", "am", "force-stop", package], timeout=self.command_timeout)
 
-        if activity:
-            component = (
-                f"{package}/{activity}" if "/" not in activity else activity
-            )
+        resolved = self.resolve_launcher_activity(package)
+        candidates: list[str] = []
+        if not activity or activity == DEFAULT_APP_ACTIVITY:
+            if resolved:
+                candidates.append(resolved)
+            if activity:
+                candidates.append(self._format_component(package, activity))
+        else:
+            candidates.append(self._format_component(package, activity))
+            if resolved:
+                candidates.append(resolved)
+        candidates.append(self._format_component(package, ".MainActivity"))
+        candidates = list(dict.fromkeys(candidates))
+
+        start_timeout = max(self.command_timeout, 25.0)
+        errors: list[str] = []
+        for component in candidates:
             flags = ["-W", "-n", component]
             if cold:
                 flags.insert(0, "-S")
-            self._run(
+            proc = self._run(
                 ["shell", "am", "start", *flags],
-                timeout=max(self.command_timeout, 25.0),
+                check=False,
+                timeout=start_timeout,
             )
-        else:
-            self._run(
-                [
-                    "shell",
-                    "monkey",
-                    "-p",
-                    package,
-                    "-c",
-                    "android.intent.category.LAUNCHER",
-                    "1",
-                ],
-                timeout=max(self.command_timeout, 25.0),
+            combined = f"{proc.stdout or ''}\n{proc.stderr or ''}".strip()
+            has_am_error = (
+                proc.returncode != 0
+                or "does not exist" in combined
+                or "Error type " in combined
+                or "\nError:" in f"\n{combined}"
             )
+            if not has_am_error:
+                return
+            errors.append(f"{component}: {combined or f'code={proc.returncode}'}")
+
+        monkey_proc = self._run(
+            [
+                "shell",
+                "monkey",
+                "-p",
+                package,
+                "-c",
+                "android.intent.category.LAUNCHER",
+                "1",
+            ],
+            check=False,
+            timeout=start_timeout,
+        )
+        if monkey_proc.returncode == 0:
+            return
+        monkey_err = (monkey_proc.stderr or monkey_proc.stdout or "").strip()
+        errors.append(f"monkey: {monkey_err or f'code={monkey_proc.returncode}'}")
+        raise E2EDeviceError(f"无法启动应用 {package}: {'; '.join(errors)}")
 
     def tap_point(self, x: int, y: int) -> None:
         """点击屏幕指定坐标像素点。"""
