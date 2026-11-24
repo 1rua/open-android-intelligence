@@ -143,7 +143,6 @@ class BasePage:
         after_png = self.ctx.driver.capture_screenshot_bytes()
 
         duration_ms = (time.monotonic() - started) * 1000.0
-        masked_value = "******" if secret else value
         self.ctx.evidence.record_action(
             step_name,
             before_png=before_png,
@@ -151,7 +150,7 @@ class BasePage:
             target=node,
             tap_point=tap_point,
             target_desc=checked.describe(),
-            input_value=masked_value,
+            input_value=value,
             secret=secret,
             duration_ms=duration_ms,
         )

@@ -17,8 +17,8 @@ def run(ctx: E2ERuntimeContext) -> None:
     """执行端到端对话冒烟场景。"""
     from tools.e2e.pages import ChatScreen, HomeScreen, OnboardingScreen
 
-    # local-sim 模式下默认清理旧应用状态保证纯净起跑；snapshot 模式下保留黄金快照登录态
-    clear_data = bool(ctx.clear_app_state) or ctx.auth.mode != "snapshot"
+    # 清理策略完全遵循上下文中的 clear_app_state 标志（由 run.py 默认策略或 --no-clear-app-state 决定）
+    clear_data = bool(ctx.clear_app_state)
     ctx.driver.start_app(
         ctx.package_name,
         ctx.activity_name,

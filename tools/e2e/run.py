@@ -190,6 +190,7 @@ def _run_single_scenario(
                 passed,
                 evidence.steps,
                 metadata=metadata,
+                secrets=evidence.secrets,
             )
         except Exception as report_exc:
             if failure_exc is None:

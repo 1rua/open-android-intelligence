@@ -18,7 +18,7 @@ def run(ctx: E2ERuntimeContext) -> None:
     from tools.e2e.core import BySemantics
     from tools.e2e.pages import BasePage
 
-    clear_data = bool(ctx.clear_app_state) or ctx.auth.mode != "snapshot"
+    clear_data = bool(ctx.clear_app_state)
     ctx.driver.start_app(
         ctx.package_name,
         ctx.activity_name,
