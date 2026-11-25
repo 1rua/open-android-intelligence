@@ -220,6 +220,65 @@ class SyncReleaseTagTest(unittest.TestCase):
             sync_tag.sync_release_tag("1rua/open-android-intelligence", "v2.2.1-dev", "not-a-sha", token=TEST_TOKEN)
         with self.assertRaisesRegex(ValueError, "GH_TOKEN"):
             sync_tag.sync_release_tag("1rua/open-android-intelligence", "v2.2.1-dev", TARGET_SHA, token="")
+        with self.assertRaisesRegex(ValueError, "max_attempts"):
+            sync_tag.sync_release_tag("1rua/open-android-intelligence", "v2.2.1-dev", TARGET_SHA, token=TEST_TOKEN, max_attempts=0)
+
+    def test_git_fallback_retries_transient_error_and_does_not_misclassify_sha_digits(self):
+        sha_with_status_digits = "4014030000000000000000000000000000000403"
+        calls: list[list[str]] = []
+        git_push_attempts = [
+            subprocess.CompletedProcess(
+                ["git"], 1, stdout="", stderr="fatal: unable to access: The requested URL returned error: 502 Bad Gateway"
+            ),
+            subprocess.CompletedProcess(
+                ["git"], 0, stdout="", stderr=f" + {OLD_SHA[:7]}...{sha_with_status_digits[:7]} -> v2.2.1-dev"
+            ),
+        ]
+
+        def fake_run(args, *, env=None):
+            calls.append(args)
+            if args[0] == "gh":
+                return subprocess.CompletedProcess(args, 1, stdout="", stderr="unexpected end of JSON input")
+            if args[0] == "git" and "push" in args:
+                return git_push_attempts.pop(0)
+            if args[0] == "git" and "ls-remote" in args:
+                return subprocess.CompletedProcess(args, 0, stdout=f"{sha_with_status_digits}\trefs/tags/v2.2.1-dev\n", stderr="")
+            raise AssertionError(f"unexpected command: {args}")
+
+        slept: list[float] = []
+        with patch.object(sync_tag, "run_command", side_effect=fake_run), redirect_stdout(io.StringIO()):
+            sync_tag.sync_release_tag(
+                "1rua/open-android-intelligence",
+                "v2.2.1-dev",
+                sha_with_status_digits,
+                token=TEST_TOKEN,
+                max_attempts=2,
+                retry_delay=1.0,
+                sleep_fn=slept.append,
+            )
+
+        self.assertEqual([cmd[0] for cmd in calls], ["gh", "gh", "git", "git", "git"])
+        self.assertEqual(slept, [1.0, 1.0])
+
+        # 当 git push 因非策略错误失败且错误输出包含 401/403 的 SHA 字符串时，不得误判为 PolicyRejectionError。
+        def fake_non_policy_failure(args, *, env=None):
+            if args[0] == "gh":
+                return subprocess.CompletedProcess(args, 1, stdout="", stderr="unexpected end of JSON input")
+            return subprocess.CompletedProcess(
+                args, 1, stdout="", stderr=f"fatal: invalid object {sha_with_status_digits} in packfile"
+            )
+
+        with patch.object(sync_tag, "run_command", side_effect=fake_non_policy_failure), redirect_stdout(io.StringIO()):
+            with self.assertRaises(sync_tag.TagSyncError) as ctx:
+                sync_tag.sync_release_tag(
+                    "1rua/open-android-intelligence",
+                    "v2.2.1-dev",
+                    sha_with_status_digits,
+                    token=TEST_TOKEN,
+                    max_attempts=1,
+                    retry_delay=0.0,
+                )
+            self.assertNotIsInstance(ctx.exception, sync_tag.PolicyRejectionError)
 
 
 if __name__ == "__main__":

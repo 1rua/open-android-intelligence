@@ -516,6 +516,10 @@ def classify_android(
                 break
         return True
 
+    if rest in {"tools/sync_release_tag.py", "tools/test_sync_release_tag.py"}:
+        lanes["fast"] = True
+        return True
+
     if rest.startswith(("tools/", "keystore/")):
         # Release tooling is exercised by the release workflows, not the PR gate.
         return True

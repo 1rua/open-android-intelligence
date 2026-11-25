@@ -1273,3 +1273,14 @@ def test_ci_skips_draft_prs_and_robolectric_cache_persists_on_failure():
     ]
     assert len(lane_cache_steps) == 1
     assert lane_cache_steps[0]["with"].get("save-always") is True
+
+
+def test_sync_release_tag_changes_route_to_fast_gate(impact):
+    for path in (
+        "apps/android/tools/sync_release_tag.py",
+        "apps/android/tools/test_sync_release_tag.py",
+    ):
+        result = impact.classify([("M", path)])
+        assert result["lanes"]["fast"]
+        assert not result["unknown"]
+        assert not result["full_required"]
