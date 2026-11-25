@@ -16,6 +16,9 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+    # 明确监听 ready_for_review：Draft PR（如暂不合并的 dev -> main 集成 PR）跳过全量构建，
+    # 转为 Ready 时自动触发完整 main 级回归。
+    types: [ opened, synchronize, reopened, ready_for_review ]
   # Lets a failed run be reproduced on demand instead of waiting for the next
   # push, which matters when a failure only reproduces in CI.
   workflow_dispatch:
@@ -28,6 +31,7 @@ jobs:
   gateway-and-protocol:
     # 与 main 分支规则集的必需检查名保持一致；改名前必须同步更新规则集。
     name: Node.js & Gateway Conformance
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -71,6 +75,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s apps/android/tools -p 'test_extract_package_version.py'
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s apps/android/tools -p 'test_prepare_release_notes.py'
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s apps/android/tools -p 'test_bundled_plugins.py'
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s apps/android/tools -p 'test_sync_release_tag.py'
 
       - name: 固定服务端与手机 MCP 回归
         run: |
@@ -81,6 +86,7 @@ jobs:
 
   android:
     name: Android Build & Check
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -111,6 +117,7 @@ jobs:
             robolectric-${{ runner.os }}-ci-
             robolectric-${{ runner.os }}-app-pr-
             robolectric-${{ runner.os }}-
+          save-always: true
 
       # 编译产物是多个 app 测试的输入；缓存 workspace 避免每次全量重编。
       - name: Cache the Rust plugin workspace

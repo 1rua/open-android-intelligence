@@ -901,7 +901,8 @@ def test_full_ci_preserves_android_release_tool_regressions():
     jobs = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
     commands = "\n".join(step.get("run", "") for job in jobs.values() for step in job.get("steps", []))
     for filename in ("test_app_release_metadata.py", "test_extract_package_version.py",
-                     "test_prepare_release_notes.py", "test_bundled_plugins.py"):
+                     "test_prepare_release_notes.py", "test_bundled_plugins.py",
+                     "test_sync_release_tag.py"):
         assert f"unittest discover -s apps/android/tools -p '{filename}'" in commands
 
 
@@ -1239,3 +1240,36 @@ def test_android_apk_workflow_does_not_duplicate_pr_branch_compilations():
     assert triggers["push"] == {"branches": ["main"]}
     assert "workflow_dispatch" in triggers
     assert workflow["concurrency"]["cancel-in-progress"] == "${{ github.ref != 'refs/heads/main' }}"
+
+
+def test_ci_skips_draft_prs_and_robolectric_cache_persists_on_failure():
+    """Draft PR 跳过 main 级全量 ci.yml（转 Ready 时自动触发），且 Robolectric 缓存开启 save-always。"""
+    import yaml
+
+    ci_workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    )
+    triggers = ci_workflow[True] if True in ci_workflow else ci_workflow["on"]
+    assert "ready_for_review" in set(triggers["pull_request"]["types"])
+    for job_id in ("gateway-and-protocol", "android"):
+        cond = ci_workflow["jobs"][job_id].get("if") or ""
+        assert "github.event.pull_request.draft" in cond
+
+    ci_cache_steps = [
+        step for step in ci_workflow["jobs"]["android"]["steps"]
+        if step.get("uses", "").startswith("actions/cache@")
+        and "~/.m2/repository/org/robolectric" in ((step.get("with") or {}).get("path") or "")
+    ]
+    assert len(ci_cache_steps) == 1
+    assert ci_cache_steps[0]["with"].get("save-always") is True
+
+    action = yaml.safe_load(
+        (REPO_ROOT / ".github/actions/android-lane/action.yml").read_text(encoding="utf-8")
+    )
+    lane_cache_steps = [
+        step for step in action["runs"]["steps"]
+        if step.get("uses", "").startswith("actions/cache@")
+        and "~/.m2/repository/org/robolectric" in ((step.get("with") or {}).get("path") or "")
+    ]
+    assert len(lane_cache_steps) == 1
+    assert lane_cache_steps[0]["with"].get("save-always") is True

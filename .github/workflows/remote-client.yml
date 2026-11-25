@@ -176,11 +176,12 @@ jobs:
           npm run typecheck
 
       - name: CI planning helpers
-        run: >-
-          python3 -m pytest -q -p no:cacheprovider tools/test_ci_planning.py tools/test_smart_test.py
-          tools/test_android_jvm_reuse.py tools/test_android_app_performance.py
-          tools/test_check_hardcoded_chinese.py tools/test_test_string_resources_integrity.py
-          tools/test_verify_pr_source.py
+        run: |
+          python3 -m pytest -q -p no:cacheprovider tools/test_ci_planning.py tools/test_smart_test.py \
+            tools/test_android_jvm_reuse.py tools/test_android_app_performance.py \
+            tools/test_check_hardcoded_chinese.py tools/test_test_string_resources_integrity.py \
+            tools/test_verify_pr_source.py
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s apps/android/tools -p 'test_sync_release_tag.py'
 
   remote-sources:
     name: Remote Fixed Source Integrity

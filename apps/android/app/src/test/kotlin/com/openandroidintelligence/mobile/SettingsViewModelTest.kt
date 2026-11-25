@@ -249,6 +249,27 @@ class SettingsViewModelTest {
         assertTrue(failingKernel.isEmergencyStopped())
         assertFalse(failingTrust.isEnabled())
         assertTrue(model.uiState.value.localError?.contains("未能保存") == true)
+        assertEquals(model.uiState.value.localError, model.localError.value)
+    }
+
+    @Test
+    fun localErrorFlowTracksAndClearsErrorsWithoutFullUiStateSubscription() = runBlocking {
+        val viewModel = SettingsViewModel(
+            environment = environment,
+            localSettingsRuntime = null,
+            externalScope = testScope,
+        )
+        assertNull(viewModel.localError.value)
+        assertNull(viewModel.uiState.value.localError)
+
+        assertFalse(viewModel.setNotificationsGrant(true))
+        val emitted = viewModel.localError.value
+        assertNotNull(emitted)
+        assertEquals(emitted, viewModel.uiState.value.localError)
+
+        viewModel.dismissLocalError()
+        assertNull(viewModel.localError.value)
+        assertNull(viewModel.uiState.value.localError)
     }
 
     @Test

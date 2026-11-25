@@ -262,6 +262,9 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertIn("name: app-full-debug", build_and_publish_job)
         self.assertIn("v${{ steps.package-version.outputs.version }}-dev", dev_workflow)
         self.assertIn("Move dev tag to published commit", dev_workflow)
+        move_dev_tag_section = dev_workflow.split("Move dev tag to published commit", 1)[1]
+        self.assertIn("apps/android/tools/sync_release_tag.py", move_dev_tag_section)
+        self.assertNotIn(">/dev/null", move_dev_tag_section)
         self.assertIn("prerelease: true", dev_workflow)
         self.assertIn('make_latest: "false"', dev_workflow)
         self.assertIn("overwrite_files: true", dev_workflow)

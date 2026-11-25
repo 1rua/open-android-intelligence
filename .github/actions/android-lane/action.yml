@@ -123,6 +123,8 @@ runs:
           robolectric-${{ runner.os }}-${{ inputs.lane }}-
           robolectric-${{ runner.os }}-app-pr-
           robolectric-${{ runner.os }}-
+        # 即使单条测试失败也保留已下载的 Robolectric 运行时依赖，避免下次重跑反复冲击 Maven Central 触发 429。
+        save-always: true
 
     - name: Restore the WASM fixtures
       if: inputs.wasm-artifact != ''
