@@ -76,8 +76,6 @@ import com.openandroidintelligence.mobile.settings.security.AuditSettingsScreen
 import com.openandroidintelligence.mobile.updates.AppUpdateRoute
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.isReduced
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 
 private val OverviewCardPadding = PaddingValues()
 
@@ -92,9 +90,7 @@ internal fun SettingsNavHost(
     remoteRuntime: com.openandroidintelligence.mobile.RemoteRuntime? = null,
     hostOpen: Boolean = true,
 ) {
-    val localError by remember(viewModel) {
-        viewModel.uiState.map { it.localError }.distinctUntilChanged()
-    }.collectAsStateWithLifecycle(initialValue = viewModel.uiState.value.localError)
+    val localError by viewModel.localError.collectAsStateWithLifecycle()
     val localRuntime = viewModel.localSettingsRuntime
     val nav = rememberNavController()
     val entry by nav.currentBackStackEntryAsState()

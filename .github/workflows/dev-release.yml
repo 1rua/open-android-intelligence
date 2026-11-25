@@ -280,11 +280,7 @@ jobs:
           TARGET_SHA: ${{ github.sha }}
         run: |
           RELEASE_TAG="v${PACKAGE_VERSION}-dev"
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
-            CURRENT_TAG_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')
-            if [ "$CURRENT_TAG_SHA" != "$TARGET_SHA" ]; then
-              gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" -f sha="$TARGET_SHA" -F force=true >/dev/null
-            fi
-          else
-            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$TARGET_SHA" >/dev/null
-          fi
+          python3 apps/android/tools/sync_release_tag.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --release-tag "$RELEASE_TAG" \
+            --sha "$TARGET_SHA"

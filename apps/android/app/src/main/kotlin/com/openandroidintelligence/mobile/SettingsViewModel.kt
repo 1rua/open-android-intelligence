@@ -39,6 +39,8 @@ class SettingsViewModel(
     internal val settingsEnvironment get() = environment
     private val scope = externalScope ?: viewModelScope
     private val _localError = MutableStateFlow<String?>(null)
+    /** 独立暴露本地保存错误流，供设置宿主轻量订阅 Snackbar 而不触发全量 uiState 重组。 */
+    val localError: StateFlow<String?> = _localError.asStateFlow()
     private val _trustModeEnabled = MutableStateFlow(environment.trustMode.isEnabled())
     private val _emergencyStopped = MutableStateFlow(environment.kernel.isEmergencyStopped())
     private val _stoppedCount = MutableStateFlow(environment.emergencyStoppedCount.value)
