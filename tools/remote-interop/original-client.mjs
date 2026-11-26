@@ -72,6 +72,7 @@ const { generateKeyPair } = modules.get('packages/crypto/src/index.ts').namespac
 const { RemoteSessionTools } = modules.get('packages/plugin/src/remote-session-tools.ts').namespace;
 const { readRemoteWorkspaceBaseline } = modules.get('packages/plugin/src/client-workspace-queries.ts').namespace;
 const { remoteDiscoveryTools } = modules.get('packages/plugin/src/remote-tools.ts').namespace;
+
 const installedRuntimeEntry = process.env.OAI_DSH_REMOTE_ENTRY;
 const requireInstalledDiscovery = process.env.OAI_REQUIRE_INSTALLED_DISCOVERY === '1';
 const installedRuntime = installedRuntimeEntry === undefined ? undefined : await (async () => {
@@ -84,7 +85,148 @@ const installedRuntime = installedRuntimeEntry === undefined ? undefined : await
   assert.equal(typeof runtime.ClientServerApi, 'function', '已安装包缺少原生 ClientServerApi');
   return runtime;
 })();
+// 固定版本验证器：直接运行已安装 v0.6.5 的真实 ClientModeRuntime 方法。
+// 以下 Client/Host 连接事实全部是隔离替身，只证明入口、作用域和 RPC 选路，不冒充 Noise、真实 Host 或 Android 门面。
 if (requireInstalledDiscovery) assert.ok(installedRuntime, '本次验收要求运行已安装的 0.6.5 官方发现函数');
+async function createVerifierClientRuntime(runtime, target, client, features) {
+  const config = runtime.resolveConfig({ role: 'client', serverUrl: 'http://127.0.0.1:9', hostControl: { enabled: false } });
+  const store = {
+    async load() { return undefined; }, async save(value) { return value; }, async clear() {},
+    async pairingHostOnly() { return false; }, async restrictPairingHostOnly() {}, async withRefreshLock(operation) { return operation(); },
+  };
+  const server = new runtime.ClientServerApi(config.serverUrl, store, fetch, ['127.0.0.1:9']);
+  const localGateway = {
+    async invoke() { throw new Error('运行时验证不应调用本地 Gateway'); },
+    async dispatchRpc() { throw new Error('运行时验证不应调用本地 Gateway'); },
+    async openWireStream() { throw new Error('运行时验证不应打开本地流'); },
+    failure() { return { code: 'internal', message: '', details: {} }; },
+  };
+  const logger = { debug() {}, info() {}, warn() {}, error() {} };
+  const host = { localHarnessVersion: () => '0.2.2-rc.1', hostStatus: () => ({ pairingHostOnly: false, deviceId: 'isolated-host' }) };
+  const instance = new runtime.ClientModeRuntime(config,
+    { async loadOrCreate() { return { deviceId: 'isolated-client', name: 'isolated-client' }; } }, server, localGateway, logger, host);
+  instance.connected = { target, client, transport: {}, features, progressRunId: 0 };
+  await instance.gatewaySwitch.install();
+  return instance;
+}
+
+async function verifyWorkspaceOpenAndSessionCreate(runtime, instance, targetDeviceId, trace, signal, opPrefix, label) {
+  const openTraceStart = trace.length;
+  const first = await runtime.ClientModeRuntime.prototype.handleControl.call(instance, 'workspace.open',
+    { targetDeviceId, path: 'phone-capabilities' }, signal);
+  const second = await runtime.ClientModeRuntime.prototype.handleControl.call(instance, 'workspace.open',
+    { targetDeviceId, path: 'phone-capabilities' }, signal);
+  assert.equal(first.ok, true, `${label} workspace.open 失败：${JSON.stringify(first)}`);
+  assert.equal(second.ok, true, `${label}重复 workspace.open 失败：${JSON.stringify(second)}`);
+  assert.deepEqual(first.value.workspace, second.value.workspace, `${label}重复打开同一工作区必须返回同一记录`);
+  assert.equal(first.value.workspace.workspace.workspaceId, 'phone-capabilities');
+  assert.equal(first.value.workspace.created, false, `${label}打开已有虚拟工作区必须返回 created:false`);
+  const openCalls = trace.slice(openTraceStart);
+  assert.equal(openCalls.filter(item => item.endpoint === 'workspace/create').length, 2, `${label} workspace.open 必须两次调用 workspace/create`);
+  assert.equal(openCalls.filter(item => item.endpoint === 'session/create').length, 0, `${label}打开工作区不得创建任务`);
+
+  const wrong = await runtime.ClientModeRuntime.prototype.handleControl.call(instance, 'workspace.open',
+    { targetDeviceId, path: 'other-workspace' }, signal);
+  assert.equal(wrong.ok, false, `${label}错误工作区路径必须拒绝`);
+  assert.equal(wrong.error.details.remoteCode, 'CONTROL_WORKSPACE_NOT_FOUND');
+
+  const workspace = { hostId: targetDeviceId, backend: 'harness', workspaceId: 'phone-capabilities' };
+  const createTraceStart = trace.length;
+  const firstCreate = await instance.runSessionTool('remote_create_session', { ...workspace, operationId: `${opPrefix}-create-000001` }, signal);
+  const secondCreate = await instance.runSessionTool('remote_create_session', { ...workspace, operationId: `${opPrefix}-create-000002` }, signal);
+  assert.equal(firstCreate.status, 'accepted');
+  assert.equal(secondCreate.status, 'accepted');
+  assert.notEqual(firstCreate.sessionId, secondCreate.sessionId, `${label}独立 session/create 必须返回不同任务 ID`);
+  const sessionCreateCalls = trace.slice(createTraceStart).filter(item => item.endpoint === 'session/create').length;
+  assert.equal(sessionCreateCalls, 2, `${label}两次独立创建必须各自调用 session/create`);
+
+  const scopeTraceStart = trace.length;
+  await assert.rejects(instance.runSessionTool('remote_create_session',
+    { ...workspace, workspaceId: 'other-workspace', operationId: `${opPrefix}-scope-0000001` }, signal), /REMOTE_PREFLIGHT_FAILED/u);
+  assert.ok(trace.slice(scopeTraceStart).every(item => item.endpoint !== 'session/create'), `${label}错误工作区不得进入 session/create`);
+  return { sessionCreateCalls };
+}
+
+async function installedRuntimeVerifier(runtime) {
+  const source = runtime.ClientModeRuntime.prototype.handleControl.toString();
+  assert.match(source, /this\.control\.handleControl\(endpoint, payload, signal\)/u, '已安装 ClientModeRuntime.handleControl 必须委托真实 ClientControl');
+  assert.equal(typeof runtime.resolveConfig, 'function', '已安装包缺少 resolveConfig');
+  assert.equal(typeof runtime.ClientServerApi, 'function', '已安装包缺少 ClientServerApi');
+
+  const events = new Set();
+  const trace = [];
+  let createCount = 0;
+  const client = {
+    getStats() { return { mode: 'Relay', connected: true }; },
+    onEvent(handler) { events.add(handler); return () => events.delete(handler); },
+    onClose() { return () => {}; },
+    async close() {},
+    async rpc(route, payload) {
+      trace.push({ route, endpoint: payload?.endpoint });
+      if (route === 'harness.transport.describe') return { capabilities: ['harness.remote.v3'] };
+      if (route === 'harness.remote.stream.open') {
+        setImmediate(() => {
+          for (const handler of events) handler({
+            event: 'harness.remote.frame',
+            data: { streamId: payload.streamId, hasValue: true, value: { type: 'baseline', cursor: 0,
+              value: { items: [{ workspaceId: 'phone-capabilities', path: 'phone-capabilities', title: '隔离手机', sessionIds: ['control-bus'] }] } } },
+          });
+        });
+        return {};
+      }
+      if (route === 'harness.remote.stream.close') return {};
+      if (route === 'harness.remote.call') {
+        if (payload.endpoint === 'workspace/create') {
+          if (payload.payload?.args?.request?.path !== 'phone-capabilities') {
+            return { ok: false, error: { code: 'CONTROL_WORKSPACE_NOT_FOUND', message: '隔离范围拒绝', details: {} } };
+          }
+          return { ok: true, value: { workspace: { workspaceId: 'phone-capabilities', path: 'phone-capabilities', title: '隔离手机', sessionIds: ['control-bus'] }, created: false } };
+        }
+        if (payload.endpoint === 'session/create') {
+          createCount++;
+          return { ok: true, value: { sessionId: `isolated-task-${createCount}` } };
+        }
+      }
+      throw new Error(`隔离客户端收到未登记请求：${route}/${payload?.endpoint ?? ''}`);
+    },
+  };
+  const instance = await createVerifierClientRuntime(runtime, {
+    deviceId: 'phone', name: '隔离手机', platform: 'linux', publicKey: 'isolated-key',
+    fingerprint: 'isolated-fingerprint', trustedAt: 0, membershipId: 'isolated-membership',
+  }, client, {
+    commandList: true, fileViewer: false, terminal: false, remoteGateway: true, sessionFormat: 3,
+    codex: false, cursor: false, antigravity: false, opencode: false, pluginRoute: false,
+  });
+  const signal = AbortSignal.timeout(2_000);
+  const { sessionCreateCalls } = await verifyWorkspaceOpenAndSessionCreate(runtime, instance, 'phone', trace, signal, 'verify', '固定');
+  await runtime.ClientModeRuntime.prototype.handleControl.call(instance, 'mode.set', { mode: 'local' }, signal);
+  return { workspacePath: 'workspace/open->workspace/create', workspaceOpenCalls: 2, sessionCreateCalls,
+    workspaceScopeRejected: true, distinctSessions: true, isolatedConnectionFacts: true };
+}
+
+const installedRuntimeVerification = installedRuntime === undefined ? undefined : await installedRuntimeVerifier(installedRuntime);
+
+// 完整联测中的同一入口验证：固定 v0.6.5 运行时直接连接真实隔离 Server/Android Host，
+// 只追踪调用，不改写原 Client、Noise、门面或响应。
+async function installedRuntimeFullChainVerifier(runtime, baseClient, baseTarget, features, trace) {
+  const runtimeClient = {
+    getStats: () => baseClient.getStats(),
+    onEvent: handler => baseClient.onEvent(handler),
+    onClose: handler => baseClient.onClose(handler),
+    close: async () => {},
+    // baseClient.rpc 已在主链路记账到 rpcTrace，这里只透传，避免双记账。
+    rpc: async (route, payload, signal, options) => baseClient.rpc(route, payload, signal, options),
+  };
+  const instance = await createVerifierClientRuntime(runtime, baseTarget, runtimeClient, features);
+  await verifyWorkspaceOpenAndSessionCreate(runtime, instance, baseTarget.deviceId, trace, AbortSignal.timeout(10_000), 'real', '真实');
+  return { workspaceOpenCalls: 2, workspaceCreateRpc: 2, openedBeforeSessionCreate: true, scopeRejected: true,
+    distinctSessionCreate: true, realAndroidFacade: true };
+}
+if (process.env.OAI_RUNTIME_VERIFY_ONLY === '1') {
+  assert.ok(installedRuntimeVerification, '验证模式必须提供已安装的 0.6.5 运行时');
+  await new Promise(resolve => process.stdout.write(`${JSON.stringify({ status: 'PASS', runtime: '0.6.5', runtimeVerification: installedRuntimeVerification })}\n`, resolve));
+  process.exit(0);
+}
 const harnessRoot = new URL('./harness-fixtures/', import.meta.url);
 const harnessSource = JSON.parse(await readFile(new URL('source.json', harnessRoot), 'utf8'));
 for (const entry of harnessSource.files) {
@@ -273,6 +415,9 @@ try {
     assert.ok(parsed.value.projections['control-bus']);
   } finally { await controlIterator.return?.(); }
   const remote = { client, features };
+  stage = '已安装0.6.5运行时全链路验证';
+  const fullChainRuntimeVerification = installedRuntime === undefined ? undefined : await installedRuntimeFullChainVerifier(
+    installedRuntime, client, target, features, rpcTrace);
   let discoveryClient;
   if (installedRuntime !== undefined) {
     discoveryServerApi = new installedRuntime.ClientServerApi(origin, {
@@ -362,17 +507,36 @@ try {
   const tools = new RemoteSessionTools(async (_host, signal, query) => query(remote, signal));
   const signal = AbortSignal.timeout(10_000);
   const workspace = { hostId, backend: 'harness', workspaceId: 'phone-capabilities' };
+  stage = 'Typert幂等打开手机虚拟工作区';
+  const openTraceStart = rpcTrace.length;
+  const openedFirst = await gateway.invoke({ namespace: 'workspace', method: 'create', args: { request: { path: 'phone-capabilities' } }, signal });
+  const openedSecond = await gateway.invoke({ namespace: 'workspace', method: 'create', args: { request: { path: 'phone-capabilities' } }, signal });
+  assert.equal(openedFirst?.created, false, 'workspace/create 幂等打开手机虚拟工作区必须返回 created:false');
+  assert.equal(openedFirst?.workspace?.workspaceId, 'phone-capabilities');
+  assert.equal(openedFirst?.workspace?.path, 'phone-capabilities');
+  assert.deepEqual(openedFirst, openedSecond, '重复 workspace/create 必须返回同一共享手机工作区记录');
+  const openTrace = rpcTrace.slice(openTraceStart);
+  assert.equal(openTrace.filter(item => item.endpoint === 'workspace/create').length, 2);
+  assert.equal(openTrace.filter(item => item.endpoint === 'session/create').length, 0, 'workspace/create 不得隐式创建任务');
+  const rejectedOpen = await gateway.dispatch('workspace/create', { args: { request: { path: 'other-workspace' } } }, signal);
+  assert.equal(rejectedOpen.ok, false, '非手机虚拟路径必须被 workspace/create 拒绝');
+  assert.equal(rejectedOpen.error?.code, 'CONTROL_WORKSPACE_NOT_FOUND');
   stage = 'Typert工作区与会话目录';
   const listing = await tools.run('remote_list_sessions', workspace, signal);
   assert.ok(listing.sessions.some(item => item.sessionId === 'control-bus'));
   stage = 'Typert创建任务与能力请求';
   const createTraceStart = rpcTrace.length;
   const created = await tools.run('remote_create_session', { ...workspace, operationId: 'interop-create-00000001' }, signal);
+  const secondCreated = await tools.run('remote_create_session', { ...workspace, operationId: 'interop-create-00000002' }, signal);
   const createTrace = rpcTrace.slice(createTraceStart);
   assert.ok(createTrace.some(item => item.endpoint === 'workspace/follow'), 'remote_create_session 应先验证 workspace/follow 基线');
-  assert.ok(createTrace.some(item => item.endpoint === 'session/create'), 'remote_create_session 必须调用 session/create');
+  assert.equal(createTrace.filter(item => item.endpoint === 'session/create').length, 2, '两次独立 remote_create_session 必须各自调用 session/create');
   assertNoFileWorkspaceRpc(createTrace, 'remote_create_session');
   assert.equal(created.status, 'accepted');
+  assert.equal(secondCreated.status, 'accepted');
+  assert.notEqual(created.sessionId, secondCreated.sessionId, '独立任务创建必须返回不同 sessionId');
+  assert.notEqual(created.sessionId, 'control-bus');
+  assert.notEqual(secondCreated.sessionId, 'control-bus');
   await waitEvent(item => item.name === 'api-session/added' && item.args[0]?.sessionId === created.sessionId);
   const requestId = 'interop-capabilities-00000001';
   const sent = await tools.run('remote_send_message', { ...workspace, sessionId: created.sessionId, operationId: requestId,
@@ -393,6 +557,9 @@ try {
     sessionFormat: features.sessionFormat,
     capabilities: features.capabilities,
   });
+  const desktopOpened = await desktop.workspaceCreate('phone-capabilities');
+  assert.equal(desktopOpened.created, false, 'HarnessAlphaClient.workspaceCreate 必须返回 created:false');
+  assert.equal(desktopOpened.workspace.workspaceId, 'phone-capabilities');
   const timeZoneRequest = 'interop-timezone-0000001';
   await desktop.sessionPrompt(created.sessionId, JSON.stringify({ request_id: timeZoneRequest,
     op: 'phone.capabilities', args: {} }), timeZoneRequest);
@@ -418,6 +585,21 @@ try {
   assert.equal(runningTerminal?.state, 'completed');
   assert.equal(runningTerminal?.execution?.status, 'succeeded');
   assert.equal(connection.state.getSnapshot(), 'connected');
+  stage = 'Typert经control-bus核验原请求回执';
+  const statusQueryId = 'interop-status-00000001';
+  const statusSent = await tools.run('remote_send_message', { ...workspace, sessionId: 'control-bus', operationId: statusQueryId,
+    message: JSON.stringify({ request_id: statusQueryId, op: 'request.status', args: { targetRequestId: runningRequest, targetTaskSessionId: created.sessionId } }) }, signal);
+  assert.equal(statusSent.status, 'accepted');
+  const busHistory = await tools.run('remote_read_session', { ...workspace, sessionId: 'control-bus' }, signal);
+  const statusTerminal = businessTerminal(busHistory.records, statusQueryId);
+  assert.equal(statusTerminal?.request_id, statusQueryId);
+  assert.equal(statusTerminal?.taskSessionId, 'control-bus');
+  assert.equal(statusTerminal?.state, 'completed');
+  assert.equal(statusTerminal?.result?.request_id, runningRequest);
+  assert.equal(statusTerminal?.result?.taskSessionId, created.sessionId);
+  assert.equal(statusTerminal?.result?.state, 'completed');
+  assert.equal(statusTerminal?.result?.execution?.status, 'succeeded');
+  assert.equal(statusTerminal?.result?.resultAvailable, true);
   stage = '真实事件回答与订阅关闭';
   const answered = await gateway.dispatch('$events/result', { args: { clientId: eventsClientId, eventId: 'unknown',
     outcome: { kind: 'rejected', error: { name: 'Error', message: '', code: '' } } } }, signal);
@@ -429,7 +611,7 @@ try {
   console.log(JSON.stringify({ status: 'PASS', upstream: 'ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7', release: 'eef232d2c43b0c9d04998a18db98cbc9e673e488',
     transport: client.getStats().mode, sessionFormat: features.sessionFormat, workspace: workspace.workspaceId,
     capabilities: features.capabilities, harnessVersion: descriptor.harnessVersion ?? null,
-    discoveryRuntime: installedRuntime === undefined ? 'fixed-source-adapter' : 'installed-0.6.5',
+    discoveryRuntime: installedRuntime === undefined ? 'fixed-source-adapter' : 'installed-0.6.5', runtimeVerification: installedRuntimeVerification ?? null, fullChainRuntimeVerification: fullChainRuntimeVerification ?? null,
     desktopHosts: discoveredHosts.hosts.length, desktopWorkspaces: discoveredWorkspaces.workspaces.length,
     workspaceDiscoveryRpc: 'workspace/follow', createSessionRpc: 'session/create', forbiddenFileWorkspaceRpcs: [],
     directoryDiscovered: true, presenceOnline: presence.online, clientTimeZone: expectedClientTimeZone }));

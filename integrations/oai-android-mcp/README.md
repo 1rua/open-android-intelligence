@@ -4,9 +4,15 @@
 `harness / phone-capabilities`。不会选择电脑工作区，不提供跨 Agent 委派或任意 RPC。
 协议基准为 `liguobao/ds-harness-remote@ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7`。
 
-将该目录作为 DSH Cordis 插件安装，配置 `privateConfigPath` 指向用户私有的 MCP 配置文件。
-插件通过 DSH 注入的 `dshRemoteClient`、`connection`、`webServer` 注册已有本机服务的
-`/oai-android-mcp/v1` 路由；生成目录权限为 `0700`、配置权限为 `0600`。
+## 安装
+
+将该目录作为 DSH Bundle 安装，或在插件管理中选择“从本地目录安装”。Bundle 内的宿主条目默认
+`disabled: true`，安装本身不会启用手机桥；需要用户在自己的隔离 profile 的
+`cordis.patch.yml` 中为条目 `oai-android-mcp` 填写**非空且绝对**的
+`privateConfigPath`，并把 `disabled` 改为 `false`。模板中的空字符串只是必填槽位，不包含
+仓库路径或任何用户绝对路径。启用后，插件通过 DSH 注入的 `dshRemoteClient`、`connection`、
+`webServer` 注册已有本机服务的 `/oai-android-mcp/v1` 路由；生成目录权限为 `0700`、配置权限为 `0600`。
+
 把生成的 `mcpServers.oai-android` 放入外部 Agent 的原生 MCP 配置。Stdio 只访问该桥，
 不用复制 Remote token 或私钥。注销、切服务及卸载后需要重新生成配置。
 面向智能体的调用工作流与参数约束见 [OAI Phone Control Skill](../skills/oai-phone-control/SKILL.md)。
