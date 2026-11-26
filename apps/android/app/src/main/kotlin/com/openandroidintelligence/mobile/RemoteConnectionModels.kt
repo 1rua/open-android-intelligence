@@ -97,8 +97,9 @@ data class ConnectionRecoveryPolicy(
     val offlineGracePeriodMillis: Long = 6_000L,
     val graceRetryAttempts: Int = 2,
     val graceRetryDelayMillis: Long = 1_500L,
-    val backgroundReconnectInitialDelayMillis: Long = 5_000L,
+    val backgroundReconnectInitialDelayMillis: Long = 1_000L,
     val backgroundReconnectMaxDelayMillis: Long = 30_000L,
+    val backgroundReconnectJitterRatio: Double = 0.2,
 )
 
 private val AUTH_REVOKED_ERROR_CODES = setOf(

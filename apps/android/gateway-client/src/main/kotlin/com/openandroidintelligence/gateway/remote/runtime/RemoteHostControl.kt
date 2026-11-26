@@ -8,7 +8,7 @@ import com.openandroidintelligence.gateway.remote.identity.RemoteRoleCredential
 import com.openandroidintelligence.gateway.remote.network.RemoteSignalService
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
+import kotlin.random.Random
 
 /** 诊断仅记录故障阶段和固定错误码。 */
 enum class RemoteHostFailureStage { REGISTRATION, CREDENTIAL, CONTROL }
@@ -22,15 +22,19 @@ internal class RemoteHostControl(
     private val connect: (RemoteRoleCredential, (String) -> Unit) -> RemoteSignalService,
     private val onTerminal: (RemoteHostFailure, Boolean) -> RemoteTerminalPersistence,
     private val publish: (RemoteHostConnectionState, RemoteHostFailure?) -> Unit,
+    private val reconnectPolicy: RemoteReconnectPolicy = RemoteReconnectPolicy(),
+    private val reconnectRandom: () -> Double = { Random.nextDouble() },
 ) {
-    private val retryNow = Channel<Unit>(Channel.CONFLATED)
+    private val retryNow = RemoteReconnectSignal()
+    private val supervisor = SupervisorJob(scope.coroutineContext[Job])
+    private val worker = CoroutineScope(scope.coroutineContext + supervisor)
     private val lock = Any()
     private var socket: RemoteSignalService? = null
     private var stopped = false
-    private val job = scope.launch(start = CoroutineStart.LAZY) { maintain() }
+    private val job = worker.launch(start = CoroutineStart.LAZY) { maintain() }
 
     fun start() { job.start() }
-    fun wake() { retryNow.trySend(Unit) }
+    fun wake() { retryNow.wake() }
     fun credentialRejected(code: String) = synchronized(lock) { socket }?.credentialRejected(code)
     fun stop() {
         val closing = synchronized(lock) {
@@ -38,11 +42,13 @@ internal class RemoteHostControl(
             socket.also { socket = null }
         }
         job.cancel()
-        closing?.close()
+        retryNow.close()
+        supervisor.cancel()
+        runCatching { closing?.close() }
     }
 
     private suspend fun maintain() {
-        var retryMs = 1_000L
+        var retryAttempt = 0
         var rejectedToken: String? = null
         var refreshedAfterRejection = false
         while (currentCoroutineContext().isActive) {
@@ -66,7 +72,8 @@ internal class RemoteHostControl(
                 current.startHost()
                 if (current.connected) {
                     publish(RemoteHostConnectionState.ONLINE, null)
-                    retryMs = 1_000L
+                    retryAttempt = 0
+                    retryNow.clear()
                     refreshedAfterRejection = false
                 }
                 RemoteHostFailure(stage, safeRoleErrorCode(ended.await(), "CONTROL_CONNECTION_FAILED"))
@@ -82,12 +89,15 @@ internal class RemoteHostControl(
                 RemoteHostFailure(stage, code)
             } finally {
                 synchronized(lock) { if (socket === service) socket = null }
-                try { service?.close() } catch (_: RemoteRpcException) { Log.w(TAG, "CONNECTION_CLEANUP_FAILED") }
+                withContext(NonCancellable) {
+                    // 旧 WS/Relay/Noise 清理失败只记录固定分类，不能杀死 Host 保持循环。
+                    runCatching { service?.close() }.onFailure { Log.w(TAG, "CONNECTION_CLEANUP_FAILED") }
+                }
             }
             // 服务端可先于本机时钟判票失效。只轮换本轮使用过的票一次，连续拒绝交回本机登录处理。
             if (stage == RemoteHostFailureStage.CONTROL && failure.code in setOf("TOKEN_EXPIRED", "AUTH_INVALID") && !refreshedAfterRejection) {
                 rejectedToken = usedToken
-            } else if (failure.code !in retryableCodes) {
+            } else if (failure.code in remoteTerminalControlCodes) {
                 val persistence = try { onTerminal(failure, failure.code in authorizationStops) } catch (_: Exception) {
                     RemoteTerminalPersistence.FAILED_CLOSED
                 }
@@ -98,8 +108,7 @@ internal class RemoteHostControl(
                 return
             }
             publish(RemoteHostConnectionState.FAILED, failure)
-            withTimeoutOrNull(retryMs) { retryNow.receive() }
-            retryMs = (retryMs * 2).coerceAtMost(30_000L)
+            retryNow.await(reconnectPolicy.delayMs(retryAttempt++, reconnectRandom))
         }
     }
 
@@ -107,7 +116,5 @@ internal class RemoteHostControl(
         const val TAG = "OAI-Virtual-Host"
         private val authorizationStops = setOf("CONNECTION_REPLACED", "DEVICE_REVOKED", "TOKEN_REUSED", "TOKEN_EXPIRED", "AUTH_INVALID",
             "REMOTE_CREDENTIAL_PERSISTENCE_FAILED", "REMOTE_REFRESH_PERSISTENCE_FAILED")
-        private val retryableCodes = setOf("TRANSPORT_CLOSED", "CONNECTION_FAILED", "HEARTBEAT_TIMEOUT", "HELLO_TIMEOUT",
-            "SERVER_SHUTDOWN", "RATE_LIMITED", "INTERNAL_ERROR", "REMOTE_REFRESH_FAILED", "REMOTE_REFRESH_CONFLICT", "REMOTE_IDENTITY_LOCKED")
     }
 }

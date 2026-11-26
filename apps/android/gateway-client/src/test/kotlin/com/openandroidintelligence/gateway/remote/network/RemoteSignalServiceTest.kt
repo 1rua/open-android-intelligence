@@ -14,6 +14,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import okhttp3.*
 import okhttp3.mockwebserver.*
 import org.junit.Assert.*
@@ -75,6 +77,65 @@ class RemoteSignalServiceTest {
             assertEquals(JsonValue.JString("actual-result"), channel.invoke("harness.transport.describe", obj(), "request", 3000))
             channel.close(); assertEquals(listOf("harness.transport.describe"), requests)
         } finally { service.close(); parent.cancel(); server.shutdown(); secure.close() }
+    }
+
+    @Test fun 退役取消时旧隧道不能回退创建Relay() = verifyRetiredTunnel(forceClose = true)
+
+    @Test fun 退出控制代际后旧隧道不能回退创建Relay() = verifyRetiredTunnel(forceClose = false)
+
+    private fun verifyRetiredTunnel(forceClose: Boolean): Unit = runBlocking {
+        val scheduler = TestCoroutineScheduler()
+        val worker = CoroutineScope(SupervisorJob() + StandardTestDispatcher(scheduler))
+        val client = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
+        val host = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
+        val peer = RemoteAuthorizedPeer(RemoteHostDevice(host.deviceId.value, "电脑", "linux", "member", true), RemoteRole.HOST, host.publicKey)
+        val iceRequested = CompletableDeferred<Unit>()
+        val releaseIce = CompletableDeferred<Unit>()
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    when (RemoteControlCodec.decode(text.encodeToByteArray()).type) {
+                        "hello" -> webSocket.send(text(control("hello.ack", obj("protocol" to 1, "serverVersion" to "fixture",
+                            "connectionSessionId" to "session", "heartbeatIntervalMs" to 25_000, "maxControlFrameBytes" to 65536,
+                            "maxRelayFrameBytes" to 1048576, "capabilities" to listOf("transport.p2p", "transport.relay")))))
+                        "connect.request" -> webSocket.send(text(control("connect.accepted", obj("connectionId" to "retiring",
+                            "relayEndpoint" to server.url("/relay").toString().replaceFirst("http", "ws"), "relayTicket" to "fixture"))))
+                    }
+                }
+            }))
+            val api = RemoteServerApi(server.url("/").toString().removeSuffix("/"))
+            val service = RemoteSignalService(context, worker, api, RemoteIdentityScope(api.origin, "owner", RemoteRole.CLIENT),
+                RemoteRoleCredential(client, token()), {}, { _, _ -> peer }, iceServers = {
+                    iceRequested.complete(Unit)
+                    releaseIce.await()
+                    emptyList()
+                })
+            val connecting = worker.async { runCatching { service.connect(peer) } }
+            try {
+                withTimeout(5_000) {
+                    while (!iceRequested.isCompleted) {
+                        scheduler.runCurrent()
+                        if (!iceRequested.isCompleted) yield()
+                    }
+                }
+                // 保留旧隧道引用，退役后直接确认是否还分配了 Relay WS。
+                val tunnels = RemoteSignalService::class.java.getDeclaredField("tunnels").apply { isAccessible = true }
+                val tunnel = requireNotNull((tunnels.get(service) as Map<*, *>)["retiring"])
+                val relay = tunnel.javaClass.getDeclaredField("relaySocket").apply { isAccessible = true }
+                if (forceClose) service.close() else {
+                    service.stopTransportCreation()
+                    releaseIce.complete(Unit)
+                }
+                scheduler.runCurrent()
+                assertNull("已终止的旧隧道不能创建 Relay WS", relay.get(tunnel))
+                val failure = withTimeout(5_000) { connecting.await() }.exceptionOrNull() as RemoteRpcException
+                assertEquals(if (forceClose) "CLIENT_CLOSED" else "CONNECTION_FAILED", failure.code)
+            } finally {
+                service.close()
+                worker.cancel()
+                scheduler.runCurrent()
+            }
+        }
     }
 
     @Test fun Host认证入站后先登记执行器再回应Noise并只使用可信连接主体() = runBlocking {
@@ -177,7 +238,7 @@ class RemoteSignalServiceTest {
             override fun events(scope: RemoteRpcConnectionScope) = emptyFlow<RemoteRpcEvent>()
         }
         val service = RemoteSignalService(context, parent, api, RemoteIdentityScope(api.origin, "owner", RemoteRole.HOST), RemoteRoleCredential(host, token()), {}, { id, _ -> peers.getValue(id) }, handler,
-            onPeerClosed = { throw java.io.IOException("模拟关闭登记失败") }, onClosed = { serviceClosed = true })
+            onPeerClosed = { _, _ -> throw java.io.IOException("模拟关闭登记失败") }, onClosed = { serviceClosed = true })
         try {
             service.startHost()
             assertEquals("good", withTimeout(3000) { result.await() }.objectValue().value("payload").objectValue().requiredText("requestId"))

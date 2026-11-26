@@ -222,11 +222,14 @@ class OpenAndroidIntelligenceApplication : Application(), RemoteStandbyOwner {
             object : DefaultLifecycleObserver {
                 override fun onStart(owner: LifecycleOwner) {
                     gatewayNetworkMonitor.start()
-                    backgroundRemoteRuntime.onAppForegrounded()
                     devicePush?.onVisibilityChanged(true)
                     remoteScope.launch(Dispatchers.IO) {
                         runCatching { pluginHost.reconcileNotificationPolicyGrant() }
                     }
+                }
+                override fun onResume(owner: LifecycleOwner) {
+                    // 连接恢复必须在用户真正可见时触发；onStart 只负责注册网络监控和可见性。
+                    backgroundRemoteRuntime.onAppForegrounded()
                 }
                 override fun onStop(owner: LifecycleOwner) {
                     backgroundRemoteRuntime.onAppBackgrounded()

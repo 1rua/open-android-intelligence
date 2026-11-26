@@ -47,11 +47,19 @@ internal class RemoteSocket(
             throw RemoteRpcException(requireNotNull(terminal.get()))
         }
     }
+    /** 主动关闭与网络回调争用同一个原子终态，并沿用先确定的原因。 */
+    fun claimCloseReason(code: String): String {
+        terminal.compareAndSet(null, code)
+        return checkNotNull(terminal.get())
+    }
     fun close() {
-        if (!terminal.compareAndSet(null, "CLIENT_CLOSED")) return
-        opened.completeExceptionally(RemoteRpcException("CLIENT_CLOSED"))
-        frames.close()
-        socket.cancel()
+        val code = claimCloseReason("CLIENT_CLOSED")
+        try {
+            opened.completeExceptionally(RemoteRpcException(code))
+            frames.close()
+        } finally {
+            socket.cancel()
+        }
     }
     private fun fail(code: String, closeTransport: () -> Unit) {
         if (!terminal.compareAndSet(null, code)) return

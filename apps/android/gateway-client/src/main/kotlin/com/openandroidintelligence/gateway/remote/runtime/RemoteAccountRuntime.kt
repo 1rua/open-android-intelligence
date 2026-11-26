@@ -9,19 +9,19 @@ import com.openandroidintelligence.gateway.remote.rpc.*
 import com.openandroidintelligence.gateway.schema.JsonValue
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.random.Random
 
 enum class RemoteAccountConnectionState { SIGNED_OUT, READY, CONNECTING, CONNECTED, DISCONNECTED }
 enum class RemoteHostConnectionState { STOPPED, CONNECTING, ONLINE, FAILED }
 
 private val clientReauthorizationCodes = setOf("TOKEN_EXPIRED", "AUTH_INVALID")
-private val clientRetryableCodes = setOf("TRANSPORT_CLOSED", "CONNECTION_FAILED", "HEARTBEAT_TIMEOUT", "HELLO_TIMEOUT",
-    "SERVER_SHUTDOWN", "RATE_LIMITED", "INTERNAL_ERROR", "REMOTE_REFRESH_FAILED", "REMOTE_REFRESH_CONFLICT",
-    "REMOTE_REFRESH_PERSISTENCE_FAILED", "REMOTE_CREDENTIAL_PERSISTENCE_FAILED", "REMOTE_IDENTITY_LOCKED", "CLIENT_CLOSED")
 private fun safeClientErrorCode(code: String, fallback: String) =
     if (code == "CLIENT_CLOSED") code else safeRoleErrorCode(code, fallback)
 
@@ -33,6 +33,8 @@ class RemoteAccountRuntime(
     private val vault: RemoteCredentialVault = RemoteCredentialVault(context),
     private val protector: RemoteIdentityProtector = AndroidRemoteIdentityProtector(),
     private val apiFactory: ((String) -> RemoteServerApi)? = null,
+    private val reconnectPolicy: RemoteReconnectPolicy = RemoteReconnectPolicy(),
+    private val reconnectRandom: () -> Double = { Random.nextDouble() },
 ) {
     private val installation = vault.installationIdentityStore { RemoteInstallationIdentityStore.defaultDeviceName(context) }
     private fun server(origin: String) = apiFactory?.invoke(origin) ?: RemoteServerApi(origin, deviceNameProvider = installation::deviceName)
@@ -41,9 +43,16 @@ class RemoteAccountRuntime(
     private val mutableState = MutableStateFlow(RemoteAccountConnectionState.SIGNED_OUT)
     val state: StateFlow<RemoteAccountConnectionState> = mutableState
     private val mutableHosts = MutableStateFlow<List<RemoteHostDevice>>(emptyList())
-    private val mutableClientFailure = MutableStateFlow<String?>(null)
-    val clientFailure = mutableClientFailure.asStateFlow()
+    private val mutableClientFailure = MutableStateFlow<RemoteClientFailure?>(null)
+    val clientFailureSnapshot: StateFlow<RemoteClientFailure?> = mutableClientFailure.asStateFlow()
     val hosts: StateFlow<List<RemoteHostDevice>> = mutableHosts.asStateFlow()
+    private val mutableClientControlGeneration = MutableStateFlow(0L)
+    val clientControlGeneration: StateFlow<Long> = mutableClientControlGeneration.asStateFlow()
+    private val mutableDataConnectionClosures = MutableSharedFlow<RemoteDataConnectionClosure>(
+        extraBufferCapacity = 16,
+        replay = 1,
+    )
+    val dataConnectionClosures = mutableDataConnectionClosures.asSharedFlow()
     private val store = RemoteIdentityStore(vault, protector)
     private val lifecycle = Mutex()
     private val mutableHostStandby = MutableStateFlow(false)
@@ -57,6 +66,10 @@ class RemoteAccountRuntime(
     private var host: RemoteHostControl? = null
     @Volatile private var client: RemoteSignalService? = null
     @Volatile private var clientJob: Job? = null
+    @Volatile private var clientControlRestartJob: Job? = null
+    @Volatile private var clientSupervisor: CompletableJob? = null
+    @Volatile private var clientWorker: CoroutineScope? = null
+    @Volatile private var clientWake = RemoteReconnectSignal()
     @Volatile private var standbyAwaitingForeground: RemoteActiveAccount? = null
     private var clientAvailable = CompletableDeferred<RemoteSignalService>()
     private val presenceRefresh = Mutex()
@@ -254,19 +267,39 @@ class RemoteAccountRuntime(
     } catch (_: RemoteIdentityLockedException) { null to "REMOTE_IDENTITY_LOCKED" }
       catch (_: RemoteIdentityCorruptedException) { null to "REMOTE_IDENTITY_CORRUPTED" }
 
-    private fun startClientRole(active: RemoteActiveAccount, error: String?) {
-        mutableClientFailure.value = error
+    private fun startClientRole(active: RemoteActiveAccount, error: String?) = synchronized(selectionLock) {
+        requireActive(active)
+        mutableClientFailure.value = error?.let { RemoteClientFailure(active, it) }
         if (error != null) android.util.Log.w("RemoteAccountRuntime", "CLIENT_UNAVAILABLE $error")
         mutableState.value = if (error == null) RemoteAccountConnectionState.READY else RemoteAccountConnectionState.DISCONNECTED
         if (error == null) startClient(active)
     }
-    suspend fun listHosts(): List<RemoteHostDevice> = presenceRefresh.withLock {
+    suspend fun listHosts(): List<RemoteHostDevice> {
         val active = current()
-        if (mutableClientFailure.value != null) return@withLock emptyList()
+        while (true) {
+            val devices = presenceRefresh.withLock {
+                val generation = clientControlGeneration.value
+                listHostsLocked(active) { clientControlGeneration.value == generation }
+            }
+            // 旧代际应答不发布也不返回，重新读取当前控制代际的目录。
+            if (devices != null) return devices
+        }
+    }
+
+    private suspend fun listHostsLocked(active: RemoteActiveAccount, canPublish: () -> Boolean): List<RemoteHostDevice>? {
+        requireActive(active)
+        if (mutableClientFailure.value != null) return emptyList()
         val localHost = readStoredRole(active, RemoteRole.HOST).first?.identity?.deviceId?.value
         val installationHost = installation.loadOrCreate().host.deviceId.value
-        withReadCredential(active, RemoteRole.CLIENT) { server, token -> server.listHosts(token) }.filter { it.deviceId != localHost && it.deviceId != installationHost }.also { devices ->
-            synchronized(selectionLock) { requireActive(active); mutableHosts.value = devices }
+        val devices = withReadCredential(active, RemoteRole.CLIENT) { server, token -> server.listHosts(token) }
+            .filter { it.deviceId != localHost && it.deviceId != installationHost }
+        return synchronized(selectionLock) {
+            requireActive(active)
+            when {
+                !canPublish() -> null
+                mutableClientFailure.value != null -> emptyList()
+                else -> devices.also { mutableHosts.value = it }
+            }
         }
     }
     suspend fun connect(hostDeviceId: String): RemoteRpcChannel {
@@ -274,10 +307,13 @@ class RemoteAccountRuntime(
         val selection: Long
         val operation: Deferred<RemoteRpcChannel>
         synchronized(selectionLock) {
+            requireActive(active)
             selection = selectionGeneration.incrementAndGet()
             pendingConnect?.cancel()
             client?.cancelPendingSelection()
-            if (client?.connected != true && clientAvailable.isCompleted) clientAvailable = CompletableDeferred()
+            if (client?.connected != true && clientAvailable.isCompleted && mutableClientFailure.value == null) {
+                clientAvailable = CompletableDeferred()
+            }
             operation = scope.async(start = CoroutineStart.LAZY) { connectSelected(active, hostDeviceId, selection) }
             pendingConnect = operation
             operation.start()
@@ -295,7 +331,9 @@ class RemoteAccountRuntime(
         currentCoroutineContext().ensureActive(); requireSelection(active, selection)
         val peer = authorize(active, RemoteRole.CLIENT, hostDeviceId, RemoteRole.HOST)
         currentCoroutineContext().ensureActive(); requireSelection(active, selection)
-        val service = withTimeout(30_000) { synchronized(selectionLock) { requireActive(active); clientAvailable }.await() }
+        val service = withTimeout(30_000) {
+            synchronized(selectionLock) { requireSelection(active, selection); clientAvailable }.await()
+        }
         currentCoroutineContext().ensureActive(); requireSelection(active, selection)
         var channel: RemoteRpcChannel? = null
         return try {
@@ -307,7 +345,11 @@ class RemoteAccountRuntime(
                 override val capabilities = profile.capabilities
                 override val workspaceTypes = profile.workspaceTypes
                 override suspend fun close() {
-                    opened.close(); peerClosed(opened.scope)
+                    try {
+                        opened.close()
+                    } finally {
+                        peerClosed(opened.scope, "CLIENT_CLOSED")
+                    }
                 }
             }
         } catch (failure: Exception) {
@@ -315,8 +357,9 @@ class RemoteAccountRuntime(
             throw failure
         }
     }
-    private fun peerClosed(connection: RemoteRpcConnectionScope) {
+    private fun peerClosed(connection: RemoteRpcConnectionScope, code: String) {
         peers.computeIfPresent(connection.connectionId) { _, peer -> peer.takeUnless { it.scope == connection } }
+        mutableDataConnectionClosures.tryEmit(RemoteDataConnectionClosure(connection, safeRoleErrorCode(code, "TRANSPORT_CLOSED")))
         hostHandler?.connectionClosed(connection)
     }
     fun authenticatedPeer(connectionId: String): AuthenticatedRemotePeer = peers[connectionId] ?: throw RemoteRpcException("CONNECTION_BINDING_MISMATCH")
@@ -336,10 +379,10 @@ class RemoteAccountRuntime(
             host.also { host = null }
         }
         val closingClient = synchronized(selectionLock) {
-            clientJob?.cancel(); clientJob = null
+            val closingSupervisor = detachClientControlLocked()
             clientAvailable.completeExceptionally(RemoteRpcException("CLIENT_CLOSED"))
             clientAvailable = CompletableDeferred()
-            client.also { client = null }
+            client.also { client = null } to closingSupervisor
         }
         mutableHosts.value = emptyList()
         val closingPeers = peers.values.toList()
@@ -364,8 +407,9 @@ class RemoteAccountRuntime(
         try {
             closeRemoteConnectionResources(
                 { closingHost?.stop(); Unit },
-                { closingClient?.close(); Unit },
-                *closingPeers.map { peer -> { peerClosed(peer.scope) } }.toTypedArray(),
+                { closingClient?.first?.close(); Unit },
+                { closingClient?.second?.cancel(); Unit },
+                *closingPeers.map { peer -> { peerClosed(peer.scope, "CLIENT_CLOSED") } }.toTypedArray(),
                 { if (!revocationFailed && identityPreserved) old?.let { store.clearAccount(it.origin, it.accountId) } },
             )
         } catch (_: Exception) { cleanupFailed = true }
@@ -373,92 +417,147 @@ class RemoteAccountRuntime(
         mutableState.value = RemoteAccountConnectionState.SIGNED_OUT
     }
     /** 账号控制面与 Host 业务隧道分别拥有生命周期；登录后不等待选工作区才上线。 */
-    private fun startClient(active: RemoteActiveAccount) = synchronized(selectionLock) {
-        if (clientJob?.isActive == true || mutableClientFailure.value != null) return@synchronized
+    private fun startClient(active: RemoteActiveAccount): Unit = synchronized(selectionLock) {
+        if (clientJob?.isCompleted == false || mutableClientFailure.value != null) {
+            return@synchronized
+        }
         requireActive(active)
-        clientJob = scope.launch(start = CoroutineStart.LAZY) {
-            var retry = 1_000L
+        val worker = clientWorker?.takeIf { clientSupervisor?.isActive == true } ?: run {
+            val supervisor = SupervisorJob(scope.coroutineContext[Job])
+            clientSupervisor = supervisor
+            clientWake = RemoteReconnectSignal()
+            CoroutineScope(scope.coroutineContext + supervisor).also { clientWorker = it }
+        }
+        val retiring = clientControlRestartJob
+        val wake = clientWake
+        val job = worker.launch(start = CoroutineStart.LAZY) {
+            var retryAttempt = 0
             var rejectedToken: String? = null
             var refreshedAfterRejection = false
-            val runningJob = currentCoroutineContext()[Job]
+            val runningJob = coroutineContext.job
+            fun ownsControl() = clientJob === runningJob && mutableAccount.value == active
             try {
-                while (isActive && mutableAccount.value == active) {
+                // 强刷中重新登录也沿用退役屏障，等上一代控制 WS 和任务退出后才握手。
+                retiring?.join()
+                while (isActive && ownsControl() && mutableClientFailure.value == null) {
                     var service: RemoteSignalService? = null
                     var usedToken: String? = null
-                    val failure = try {
+                    var failureCode: String? = null
+                    var refreshRejected = false
+                    try {
                         val server = api ?: throw RemoteRpcException("ACCOUNT_AUTH_REQUIRED")
                         val credential = credential(active, RemoteRole.CLIENT, rejectedToken)
                         usedToken = credential.tokens.accessToken
                         if (rejectedToken != null) refreshedAfterRejection = true
                         rejectedToken = null
                         val ended = CompletableDeferred<String>()
-                        val current = RemoteSignalService(context, scope, server,
+                        val requireCurrentControl = {
+                            if (!ownsControl() || client !== service) throw RemoteRpcException("CLIENT_CLOSED")
+                            requireActive(active)
+                        }
+                        val current = RemoteSignalService(context, worker, server,
                             RemoteIdentityScope(active.origin, active.accountId, RemoteRole.CLIENT), credential,
-                            { requireActive(active) }, { id, role -> authorize(active, RemoteRole.CLIENT, id, role) },
+                            requireCurrentControl, { id, role -> authorize(active, RemoteRole.CLIENT, id, role) },
                             onAuthenticatedPeer = { authenticated -> synchronized(selectionLock) {
-                                requireActive(active); peers[authenticated.scope.connectionId] = authenticated
+                                requireCurrentControl(); peers[authenticated.scope.connectionId] = authenticated
                             } }, onPeerClosed = ::peerClosed,
                             onClosed = { ended.complete(it) },
-                            onHeartbeat = { scope.launch { refreshPresence(active) } },
+                            onHeartbeat = { service?.let { source -> worker.launch { refreshPresence(active, source) } } },
                             iceServers = { id -> withReadCredential(active, RemoteRole.CLIENT) { api, token -> api.iceServers(token, id) } })
                         service = current
                         synchronized(selectionLock) {
+                            if (!ownsControl()) return@launch
                             requireActive(active); client = current
                             mutableState.value = RemoteAccountConnectionState.CONNECTING
                         }
                         current.startClient()
                         val online = synchronized(selectionLock) {
-                            requireActive(active)
-                            val connected = current.connected
-                            if (connected) {
-                                mutableState.value = RemoteAccountConnectionState.CONNECTED
-                                clientAvailable.complete(current)
-                            }
-                            connected
+                            requireCurrentControl()
+                            if (!current.connected || mutableClientFailure.value != null) return@synchronized false
+                            mutableState.value = RemoteAccountConnectionState.CONNECTED
+                            if (!ownsControl()) return@synchronized false
+                            clientAvailable.complete(current)
+                            if (!ownsControl()) return@synchronized false
+                            mutableClientControlGeneration.value += 1
+                            true
                         }
                         if (online) {
-                            retry = 1_000L
+                            retryAttempt = 0
+                            wake.clear()
                             refreshedAfterRejection = false
-                            scope.launch { refreshPresence(active) }
+                            worker.launch { refreshPresence(active, current) }
                         }
                         // 握手确认后也可能立即被接管，是否重连由该连接的首次关闭原因决定。
-                        RemoteRpcException(safeClientErrorCode(ended.await(), "TRANSPORT_CLOSED"))
-                    } catch (cancelled: CancellationException) { throw cancelled }
-                    catch (error: Exception) {
+                        failureCode = safeClientErrorCode(ended.await(), "TRANSPORT_CLOSED")
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Throwable) {
                         // 只重建认证与传输，绝不重放旧隧道上的业务写入。
-                        if (mutableAccount.value != active) return@launch
-                        when (error) {
-                            is RemoteIdentityLockedException -> RemoteRpcException("REMOTE_IDENTITY_LOCKED")
-                            is RemoteIdentityCorruptedException -> RemoteRpcException("REMOTE_IDENTITY_CORRUPTED")
-                            is RemoteRpcException -> RemoteRpcException(safeClientErrorCode(error.code, "CONTROL_CONNECTION_FAILED"))
-                            else -> RemoteRpcException("CONTROL_CONNECTION_FAILED")
+                        failureCode = when (error) {
+                            is RemoteIdentityLockedException -> "REMOTE_IDENTITY_LOCKED"
+                            is RemoteIdentityCorruptedException -> "REMOTE_IDENTITY_CORRUPTED"
+                            is RemoteRpcException -> safeClientErrorCode(error.code, "CONTROL_CONNECTION_FAILED")
+                            else -> "CONTROL_CONNECTION_FAILED"
                         }
                     } finally {
-                        service?.close()
-                        synchronized(selectionLock) {
-                            if (mutableAccount.value == active) {
-                                if (client === service) client = null
-                                if (clientAvailable.isCompleted) clientAvailable = CompletableDeferred()
-                                mutableState.value = RemoteAccountConnectionState.DISCONNECTED
+                        withContext(NonCancellable) {
+                            // 清理失败只记录固定分类，不能从 finally 逃逸并杀死重连循环。
+                            runCatching { service?.closeAndAwaitCleanup() }.onFailure {
+                                android.util.Log.w("RemoteAccountRuntime", "CLIENT_CONNECTION_CLEANUP_FAILED")
+                            }
+                            // 取消可能抢在 ended.await 恢复前到达，仍保留该 WS 已确定的服务端终态。
+                            val code = service?.closeCode?.takeUnless { it == "CLIENT_CLOSED" }
+                                ?.let { safeClientErrorCode(it, "TRANSPORT_CLOSED") } ?: failureCode
+                            refreshRejected = code in clientReauthorizationCodes && !refreshedAfterRejection && usedToken != null
+                            if (code != null && code in remoteTerminalControlCodes && !refreshRejected && mutableClientFailure.value == null) {
+                                persistClientTerminal(active, code)
+                            }
+                            synchronized(selectionLock) {
+                                if (ownsControl()) {
+                                    if (client === service) client = null
+                                    if (mutableClientFailure.value == null) {
+                                        if (clientAvailable.isCompleted) clientAvailable = CompletableDeferred()
+                                        mutableState.value = RemoteAccountConnectionState.DISCONNECTED
+                                    }
+                                }
                             }
                         }
                     }
-                    if (mutableAccount.value != active) return@launch
-                    val refreshRejected = failure.code in clientReauthorizationCodes && !refreshedAfterRejection && usedToken != null
+                    if (!ownsControl() || mutableClientFailure.value != null) return@launch
                     if (refreshRejected) rejectedToken = usedToken
-                    else if (failure.code in clientReauthorizationCodes || failure.code !in clientRetryableCodes) {
-                        persistClientTerminal(active, failure.code)
-                        return@launch
+                    wake.await(nextClientRetryDelay(retryAttempt++))
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Throwable) {
+                // 非预期循环异常仍由独立 supervisor 隔离；账号有效时重新拉起保持器。
+                android.util.Log.e("RemoteAccountRuntime", "CLIENT_RECONNECT_LOOP_RECOVERED")
+                synchronized(selectionLock) {
+                    if (ownsControl() && mutableClientFailure.value == null) {
+                        clientJob = null
+                        startClient(active)
                     }
-                    delay(retry)
-                    retry = (retry * 2).coerceAtMost(30_000L)
                 }
             } finally {
                 synchronized(selectionLock) {
                     if (clientJob === runningJob) clientJob = null
                 }
             }
-        }.also { it.start() }
+        }
+        clientJob = job
+        job.start()
+        Unit
+    }
+
+    /** 带 ±20% 对称抖动的 1、2、4…30 秒退避；随机源可注入以保证测试确定性。 */
+    private fun nextClientRetryDelay(attempt: Int): Long {
+        return reconnectPolicy.delayMs(attempt, reconnectRandom)
+    }
+
+    private fun wakeClientReconnect(forceImmediate: Boolean) {
+        if (forceImmediate || mutableState.value != RemoteAccountConnectionState.CONNECTED) {
+            clientWake.wake()
+        }
     }
     private fun persistClientTerminal(active: RemoteActiveAccount, code: String) {
         if (mutableAccount.value != active) return
@@ -466,7 +565,7 @@ class RemoteAccountRuntime(
             vault.stopClientUntilLogin(active, code)
             synchronized(selectionLock) {
                 if (mutableAccount.value == active) {
-                    mutableClientFailure.value = code
+                    mutableClientFailure.value = RemoteClientFailure(active, code)
                     mutableState.value = RemoteAccountConnectionState.DISCONNECTED
                     if (clientAvailable.isCompleted) clientAvailable = CompletableDeferred()
                     clientAvailable.completeExceptionally(RemoteRpcException(code))
@@ -481,14 +580,14 @@ class RemoteAccountRuntime(
         runCatching { vault.failClosed(active) }
         var closingHost: RemoteHostControl? = null
         var closingClient: RemoteSignalService? = null
-        var closingJob: Job? = null
+        var closingClientSupervisor: CompletableJob? = null
         var closingPeers: List<AuthenticatedRemotePeer> = emptyList()
         synchronized(selectionLock) {
             if (mutableAccount.value == active) {
                 selectionGeneration.incrementAndGet()
                 pendingConnect?.cancel(); pendingConnect = null
                 mutableAccount.value = null
-                mutableClientFailure.value = "REMOTE_CREDENTIAL_PERSISTENCE_FAILED"
+                mutableClientFailure.value = RemoteClientFailure(active, "REMOTE_CREDENTIAL_PERSISTENCE_FAILED")
                 mutableState.value = RemoteAccountConnectionState.SIGNED_OUT
                 mutableHosts.value = emptyList()
                 mutableHostStandby.value = false
@@ -496,7 +595,7 @@ class RemoteAccountRuntime(
                     RemoteHostFailure(RemoteHostFailureStage.CONTROL, "REMOTE_CREDENTIAL_PERSISTENCE_FAILED"))
                 closingHost = host.also { host = null }
                 closingClient = client.also { client = null }
-                closingJob = clientJob.also { clientJob = null }
+                closingClientSupervisor = detachClientControlLocked()
                 if (clientAvailable.isCompleted) clientAvailable = CompletableDeferred()
                 clientAvailable.completeExceptionally(RemoteRpcException("REMOTE_CREDENTIAL_PERSISTENCE_FAILED"))
                 closingPeers = peers.values.toList()
@@ -505,21 +604,42 @@ class RemoteAccountRuntime(
         }
         runCatching {
             closeRemoteConnectionResources(
-                { closingJob?.cancel(); Unit },
+                { closingClientSupervisor?.cancel(); Unit },
                 { closingHost?.stop(); Unit },
                 { closingClient?.close(); Unit },
-                *closingPeers.map { peer -> { peerClosed(peer.scope) } }.toTypedArray(),
+                *closingPeers.map { peer -> { peerClosed(peer.scope, "CLIENT_CLOSED") } }.toTypedArray(),
             )
         }
     }
-    private suspend fun refreshPresence(active: RemoteActiveAccount) {
-        if (mutableAccount.value != active || presenceRefresh.isLocked) return
-        try { listHosts() }
+
+    /** 必须在 selectionLock 内调用；返回的 supervisor 由调用方在锁外取消。 */
+    private fun detachClientControlLocked(): CompletableJob? {
+        clientJob = null
+        clientWake.close()
+        val closing = clientSupervisor
+        clientSupervisor = null
+        clientWorker = null
+        return closing
+    }
+    private suspend fun refreshPresence(active: RemoteActiveAccount, source: RemoteSignalService? = null) {
+        val generation = mutableClientControlGeneration.value
+        // 普通重连会复用同一个保持任务，目录结果必须核对发起查询的那条控制连接。
+        fun isCurrent() = mutableAccount.value == active && mutableClientControlGeneration.value == generation &&
+            (source == null || client === source && source.connected)
+        if (!isCurrent()) return
+        try {
+            // 排队而不是在锁占用时丢弃；新控制连接的成功刷新不能被旧请求吞掉。
+            presenceRefresh.withLock {
+                if (isCurrent()) listHostsLocked(active, ::isCurrent)
+            }
+        }
         catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) {
             android.util.Log.w("RemoteAccountRuntime", "PRESENCE_REFRESH_FAILED:${safeRoleErrorCode((failure as? RemoteRpcException)?.code.orEmpty(), "CONNECTION_FAILED")}")
             synchronized(selectionLock) {
-                if (mutableAccount.value == active) mutableHosts.value = mutableHosts.value.map { it.copy(online = false) }
+                if (isCurrent()) {
+                    mutableHosts.value = mutableHosts.value.map { it.copy(online = false) }
+                }
             }
         }
     }
@@ -537,32 +657,84 @@ class RemoteAccountRuntime(
                 refreshClient = true
             }
         }
+        if (refreshClient) wakeClientReconnect(forceImmediate = false)
         if (refreshClient) scope.launch { refreshPresence(active) }
+    }
+
+    /** 手动刷新只重启 Client 控制角色；Virtual Host 继续独立在线，避免影响远端控机。 */
+    fun forceClientControlReconnect() {
+        val restart = synchronized(selectionLock) {
+            val active = mutableAccount.value ?: return
+            if (mutableClientFailure.value != null || standbyAwaitingForeground == active || clientControlRestartJob != null) return
+            val closing = client
+            val supervisor = clientSupervisor
+            val job = scope.launch(start = CoroutineStart.LAZY) {
+                val runningJob = coroutineContext.job
+                try {
+                    withContext(NonCancellable) {
+                        supervisor?.cancelAndJoin()
+                        runCatching { closing?.closeAndAwaitCleanup() }.onFailure {
+                            android.util.Log.w("RemoteAccountRuntime", "CLIENT_FORCED_RECONNECT_CLOSE_FAILED")
+                        }
+                    }
+                    synchronized(selectionLock) {
+                        if (clientControlRestartJob === runningJob) {
+                            clientControlRestartJob = null
+                            if (mutableAccount.value == active) startClient(active)
+                        }
+                    }
+                } finally {
+                    synchronized(selectionLock) {
+                        if (clientControlRestartJob === runningJob) clientControlRestartJob = null
+                    }
+                }
+            }
+            // LAZY 任务在 start 前已占位，状态订阅者重入也不能再安排一次重启。
+            clientControlRestartJob = job
+            closing?.stopTransportCreation()
+            selectionGeneration.incrementAndGet()
+            val previousAvailability = clientAvailable
+            clientAvailable = CompletableDeferred()
+            client = null
+            detachClientControlLocked()
+            mutableState.value = RemoteAccountConnectionState.CONNECTING
+            previousAvailability.completeExceptionally(RemoteRpcException("CONNECTION_REPLACED", RemoteDeliveryOutcome.NOT_SENT))
+            job
+        }
+        restart.start()
     }
     private fun startHost(active: RemoteActiveAccount, server: RemoteServerApi) {
         val handler = hostHandler ?: return
-        val owner = RemoteHostControl(scope, { rejected -> credential(active, RemoteRole.HOST, rejected) }, { ticket, closed ->
-            RemoteSignalService(context, scope, server, RemoteIdentityScope(active.origin, active.accountId, RemoteRole.HOST),
-                ticket, { requireActive(active) }, { id, role -> authorize(active, RemoteRole.HOST, id, role) }, handler,
-                onAuthenticatedPeer = { peer -> synchronized(selectionLock) {
-                    requireActive(active)
-                    peers[peer.scope.connectionId] = peer
-                } }, onPeerClosed = ::peerClosed, onClosed = closed,
-                iceServers = { id -> withReadCredential(active, RemoteRole.HOST) { api, token -> api.iceServers(token, id) } })
-        }, { failure, requiresLogin ->
-            synchronized(selectionLock) {
-                if (mutableAccount.value == active) mutableHostStandby.value = false
-            }
-            if (!requiresLogin) RemoteTerminalPersistence.PERSISTED else try {
-                vault.stopHostUntilLogin(active, failure)
-                RemoteTerminalPersistence.PERSISTED
-            } catch (_: Exception) {
-                failClosedActive(active)
-                RemoteTerminalPersistence.FAILED_CLOSED
-            }
-        }) { state, failure -> synchronized(selectionLock) {
-            if (mutableAccount.value == active) publishHost(state, failure)
-        } }
+        val owner = RemoteHostControl(
+            scope = scope,
+            credential = { rejected -> credential(active, RemoteRole.HOST, rejected) },
+            connect = { ticket, closed ->
+                RemoteSignalService(context, scope, server, RemoteIdentityScope(active.origin, active.accountId, RemoteRole.HOST),
+                    ticket, { requireActive(active) }, { id, role -> authorize(active, RemoteRole.HOST, id, role) }, handler,
+                    onAuthenticatedPeer = { peer -> synchronized(selectionLock) {
+                        requireActive(active)
+                        peers[peer.scope.connectionId] = peer
+                    } }, onPeerClosed = ::peerClosed, onClosed = closed,
+                    iceServers = { id -> withReadCredential(active, RemoteRole.HOST) { api, token -> api.iceServers(token, id) } })
+            },
+            onTerminal = { failure, requiresLogin ->
+                synchronized(selectionLock) {
+                    if (mutableAccount.value == active) mutableHostStandby.value = false
+                }
+                if (!requiresLogin) RemoteTerminalPersistence.PERSISTED else try {
+                    vault.stopHostUntilLogin(active, failure)
+                    RemoteTerminalPersistence.PERSISTED
+                } catch (_: Exception) {
+                    failClosedActive(active)
+                    RemoteTerminalPersistence.FAILED_CLOSED
+                }
+            },
+            publish = { state, failure -> synchronized(selectionLock) {
+                if (mutableAccount.value == active) publishHost(state, failure)
+            } },
+            reconnectPolicy = reconnectPolicy,
+            reconnectRandom = reconnectRandom,
+        )
         synchronized(selectionLock) {
             requireActive(active)
             host = owner

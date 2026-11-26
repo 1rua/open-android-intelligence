@@ -18,6 +18,9 @@ import com.openandroidintelligence.gateway.remote.identity.RemoteRole
 import com.openandroidintelligence.gateway.remote.network.AuthenticatedRemotePeer
 import com.openandroidintelligence.gateway.remote.network.RemoteHostDevice
 import com.openandroidintelligence.gateway.remote.rpc.*
+import com.openandroidintelligence.gateway.remote.runtime.RemoteClientFailure
+import com.openandroidintelligence.gateway.remote.runtime.RemoteDataConnectionClosure
+import com.openandroidintelligence.gateway.remote.runtime.RemoteReconnectPolicy
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
@@ -36,6 +39,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.random.Random
 
 data class RemoteWorkspaceState(
     val account: RemoteActiveAccount? = null,
@@ -62,6 +66,7 @@ class RemoteRuntime(
     private val recoveryPolicy: ConnectionRecoveryPolicy = ConnectionRecoveryPolicy(),
     private val clock: () -> Long = System::currentTimeMillis,
     private val delayFn: suspend (Long) -> Unit = { delay(it) },
+    private val reconnectRandom: () -> Double = { Random.nextDouble() },
     private val coldStartOnInit: Boolean = true,
 ) {
     private val stateLock = Any()
@@ -80,14 +85,28 @@ class RemoteRuntime(
     val deviceCapabilityState = MutableStateFlow(DeviceCapabilitySyncState())
 
     private val selection = Mutex()
+    private val selectionRequestLock = Any()
     private val switchGeneration = AtomicLong(0L)
     private val hydrationGeneration = AtomicLong(0L)
     private val hydrationControlLock = Any()
     private val workspaceCachePersistenceLock = Any()
-    private var activeOperationJob: Job? = null
+    @Volatile private var activeOperationJob: Job? = null
+    private var userSelectionJob: Job? = null
+    private var forcedReconnectJob: Job? = null
     @Volatile
     private var startupRecoveryJob: Job? = null
     private var reconnectLoopJob: Job? = null
+    private val reconnectWorkerLock = Any()
+    @Volatile private var reconnectSupervisor: CompletableJob? = null
+    @Volatile private var reconnectWorker: CoroutineScope? = null
+    private val backgroundReconnectPolicy by lazy {
+        val initial = recoveryPolicy.backgroundReconnectInitialDelayMillis.coerceAtLeast(1L)
+        RemoteReconnectPolicy(
+            initialDelayMs = initial,
+            maxDelayMs = recoveryPolicy.backgroundReconnectMaxDelayMillis.coerceAtLeast(initial),
+            jitterRatio = recoveryPolicy.backgroundReconnectJitterRatio,
+        )
+    }
     private val hydrationJob = AtomicReference<Job?>(null)
     @Volatile
     private var coldStartBootstrapped = false
@@ -193,9 +212,32 @@ class RemoteRuntime(
         scope.launch {
             accountRuntime.hosts.collect { devices ->
                 if (agentConnection.value.account == accountRuntime.account.value) {
-                    updateLayerStates(agentTransform = { it.copy(hosts = devices) })
+                    val previousHosts = agentConnection.value.hosts.associateBy { it.deviceId }
+                    updateLayerStates(agentTransform = { it.withHostDirectory(devices) })
+                    val activeHostId = agentConnection.value.activeAgent?.hostId
+                    if (activeHostId != null && devices.firstOrNull { it.deviceId == activeHostId }?.online == true &&
+                        previousHosts[activeHostId]?.online != true
+                    ) {
+                        requestImmediateDataReconnect()
+                    }
                 }
             }
+        }
+        scope.launch {
+            accountRuntime.clientControlGeneration.collect { requestImmediateDataReconnect() }
+        }
+        scope.launch {
+            accountRuntime.clientFailureSnapshot.collect { failure ->
+                if (failure == null) return@collect
+                selection.withLock {
+                    if (currentWorkspaceClientFailure() == failure && workspaceContext.value.activeWorkspace != null) {
+                        handleAuthRevoked(failure.code)
+                    }
+                }
+            }
+        }
+        scope.launch {
+            accountRuntime.dataConnectionClosures.collect(::handleDataConnectionClosure)
         }
         scope.launch {
             combine(
@@ -540,10 +582,12 @@ class RemoteRuntime(
                     AttemptResult.SUCCESS
                 } catch (failure: Exception) {
                     if (failure.isTrueCancellation()) throw failure
+                    if (switchGeneration.get() != ticket) return@withLock AttemptResult.CANCELLED
                     val code = errorCodeOf(failure)
                     lastErrorCode = code
-                    if (isAuthRevokedError(code)) {
-                        handleAuthRevoked(code)
+                    val terminal = workspaceAuthorizationFailure(code)
+                    if (terminal != null) {
+                        handleAuthRevoked(terminal)
                         AttemptResult.AUTH_REVOKED
                     } else {
                         AttemptResult.FAILED
@@ -1015,28 +1059,36 @@ class RemoteRuntime(
 
     private suspend fun refreshHostsInternal() {
         val active = accountRuntime.account.value ?: return
+        val generation = accountRuntime.clientControlGeneration.value
         val devices = accountRuntime.listHosts()
         if (accountRuntime.account.value == active && agentConnection.value.account == active) {
-            val hostOnlineById = devices.associate { it.deviceId to it.online }
             updateLayerStates(
                 agentTransform = { current ->
-                    val updatedAgents = current.agents.map { agent ->
-                        agent.copy(hostOnline = hostOnlineById[agent.key.hostId] ?: agent.hostOnline)
+                    if (accountRuntime.clientControlGeneration.value != generation || current.account != active) {
+                        return@updateLayerStates current
                     }
-                    current.copy(hosts = devices, agents = updatedAgents, errorCode = null)
+                    current.withHostDirectory(devices).copy(errorCode = null)
                 },
             )
         }
     }
 
+    private fun AgentConnectionState.withHostDirectory(devices: List<RemoteHostDevice>): AgentConnectionState {
+        val onlineById = devices.associate { it.deviceId to it.online }
+        return copy(hosts = devices, agents = agents.map { agent ->
+            agent.copy(hostOnline = onlineById[agent.key.hostId] ?: agent.hostOnline)
+        })
+    }
+
     /** 发现目标 Host 上的所有可用 Agent 与工作区；跨 Host 时不影响既有控制器停留会话页。 */
-    fun discover(host: RemoteHostDevice): Job {
+    fun discover(host: RemoteHostDevice): Job = synchronized(selectionRequestLock) {
         val ticket = switchGeneration.incrementAndGet()
         val lossEpochAtStart = networkLossEpoch.get()
-        reconnectLoopJob?.cancel()
+        val previousLoop = reconnectLoopJob
         val previousJob = activeOperationJob
-        return scope.launch {
+        scope.launch(start = CoroutineStart.LAZY) {
             try {
+                previousLoop?.cancel()
                 previousJob?.cancel()
                 selection.withLock {
                     if (switchGeneration.get() != ticket) return@withLock
@@ -1168,7 +1220,7 @@ class RemoteRuntime(
                                         workspaceContext.value.activeWorkspace == previousWorkspace.endpoint.key
                                     if (borrowed == null && stillSameTarget && scope.isActive && switchGeneration.get() == ticket) {
                                         val restoredOnline = runCatching {
-                                            connectAndUpgradeCurrentWorkspaceLocked(currentAccount!!, previousWorkspace!!)
+                                            connectAndUpgradeCurrentWorkspaceLocked(currentAccount!!, previousWorkspace!!, forceFreshChannel = true)
                                         }.onFailure {
                                             if (it.isTrueCancellation()) throw it
                                         }.isSuccess
@@ -1214,8 +1266,11 @@ class RemoteRuntime(
                     }
                 }
             }
-        }.also { activeOperationJob = it }
-    }
+        }.also {
+            activeOperationJob = it
+            userSelectionJob = it
+        }
+    }.also { it.start() }
 
     /** 切换选定 Agent：跨 Host 与同 Host 跨 Backend 均可随时即时生效，绝不先清空 controller 踢回登录页。 */
     fun selectAgent(
@@ -1228,18 +1283,24 @@ class RemoteRuntime(
         agent: AgentKey,
         preferredWorkspace: RemoteWorkspace? = null,
         initialThreadId: String? = null,
-    ): Job {
+    ): Job = launchWorkspaceSelection { ticket, _ ->
+        selectAgentLocked(agent, preferredWorkspace, initialThreadId, ticket)
+    }
+
+    /** 先登记用户选择，再启动协程，避免控制面恢复抢占刚发起的切换。 */
+    private fun launchWorkspaceSelection(operation: suspend (Long, Long) -> Unit): Job = synchronized(selectionRequestLock) {
         val ticket = switchGeneration.incrementAndGet()
         val lossEpochAtStart = networkLossEpoch.get()
-        reconnectLoopJob?.cancel()
+        val previousLoop = reconnectLoopJob
         val previousOp = activeOperationJob
-        return scope.launch {
+        scope.launch(start = CoroutineStart.LAZY) {
             try {
+                previousLoop?.cancel()
                 previousOp?.cancel()
                 selection.withLock {
                     if (switchGeneration.get() != ticket) return@withLock
                     consumePendingNetworkLossLocked(lossEpochAtStart)
-                    selectAgentLocked(agent, preferredWorkspace, initialThreadId, ticket)
+                    operation(ticket, lossEpochAtStart)
                 }
             } finally {
                 withContext(NonCancellable) {
@@ -1252,8 +1313,11 @@ class RemoteRuntime(
                     }
                 }
             }
-        }.also { activeOperationJob = it }
-    }
+        }.also {
+            activeOperationJob = it
+            userSelectionJob = it
+        }
+    }.also { it.start() }
 
     private suspend fun selectAgentLocked(
         agent: AgentKey,
@@ -1383,9 +1447,11 @@ class RemoteRuntime(
             hydrateWorkspaces(force = true)
         } catch (failure: Exception) {
             if (failure.isTrueCancellation()) throw failure
+            if (switchGeneration.get() != ticket) return
             val code = errorCodeOf(failure)
-            if (isAuthRevokedError(code)) {
-                handleAuthRevoked(code)
+            val terminal = workspaceAuthorizationFailure(code)
+            if (terminal != null) {
+                handleAuthRevoked(terminal)
             } else {
                 val sameHostChannelStillOnline = channel != null &&
                     channel?.scope?.hostDeviceId == prevActiveAgent?.hostId &&
@@ -1440,134 +1506,114 @@ class RemoteRuntime(
      */
     fun selectWorkspace(workspace: RemoteWorkspace, initialThreadId: String? = null): Job {
         val targetAgent = AgentKey.fromEndpointKey(workspace.endpoint.key)
-        val ticket = switchGeneration.incrementAndGet()
-        val lossEpochAtStart = networkLossEpoch.get()
-        reconnectLoopJob?.cancel()
-        val previousOp = activeOperationJob
-        return scope.launch {
-            try {
-                previousOp?.cancel()
-                selection.withLock {
-                    if (switchGeneration.get() != ticket) return@withLock
-                    consumePendingNetworkLossLocked(lossEpochAtStart)
-                    val currentAgent = agentConnection.value.activeAgent
-                    if (currentAgent != targetAgent) {
-                        selectAgentLocked(targetAgent, preferredWorkspace = workspace, initialThreadId = initialThreadId, ticket = ticket)
-                        return@withLock
-                    }
+        return launchWorkspaceSelection { ticket, lossEpochAtStart ->
+            val currentAgent = agentConnection.value.activeAgent
+            if (currentAgent != targetAgent) {
+                selectAgentLocked(targetAgent, preferredWorkspace = workspace, initialThreadId = initialThreadId, ticket = ticket)
+                return@launchWorkspaceSelection
+            }
 
-                    val activeAccount = agentConnection.value.account ?: accountRuntime.account.value ?: run {
-                        fail(RemoteRpcException("ACCOUNT_AUTH_REQUIRED"))
-                        return@withLock
-                    }
-                    val currentChannel = channel
-                    val currentOnlineCarrier = activeCarriers.firstOrNull { it.backend == targetAgent.backendId.value }
+            val activeAccount = agentConnection.value.account ?: accountRuntime.account.value ?: run {
+                fail(RemoteRpcException("ACCOUNT_AUTH_REQUIRED"))
+                return@launchWorkspaceSelection
+            }
+            val currentChannel = channel
+            val currentOnlineCarrier = activeCarriers.firstOrNull { it.backend == targetAgent.backendId.value }
 
-                    // 若就是当前工作区：在线时先清空滞留错误态并打开目标会话，离线时就地重连
-                    if (workspaceContext.value.activeWorkspace == workspace.endpoint.key) {
-                        val activeCtrl = controller.value
-                        if (activeCtrl != null && hotRepository?.isOnline == true) {
-                            updateLayerStates(
-                                agentTransform = {
-                                    it.copy(
-                                        phase = AgentConnectionPhase.CONNECTED,
-                                        offlineConfirmed = false,
-                                        reconnectingInPlace = false,
-                                        errorCode = null,
-                                    )
-                                },
-                            )
-                            initialThreadId?.let(activeCtrl::openThread)
-                            return@withLock
-                        }
-                        if (activeCtrl != null) {
-                            launchInPlaceReconnectUnderLock(activeAccount, workspace, ticket, lossEpochAtStart)
-                            return@withLock
-                        }
-                    }
-
+            // 若就是当前工作区：在线时先清空滞留错误态并打开目标会话，离线时就地重连
+            if (workspaceContext.value.activeWorkspace == workspace.endpoint.key) {
+                val activeCtrl = controller.value
+                if (activeCtrl != null && hotRepository?.isOnline == true) {
                     updateLayerStates(
-                        agentTransform = { it.copy(busy = true, reconnectingInPlace = false, errorCode = null) },
-                        workspaceTransform = { it.copy(models = null, modelBusy = false) },
+                        agentTransform = {
+                            it.copy(
+                                phase = AgentConnectionPhase.CONNECTED,
+                                offlineConfirmed = false,
+                                reconnectingInPlace = false,
+                                errorCode = null,
+                            )
+                        },
                     )
-
-                    try {
-                        val reusableChannel = currentChannel?.takeIf {
-                            it.scope.hostDeviceId == targetAgent.hostId &&
-                                it.scope.accountId == activeAccount.accountId &&
-                                (hotRepository?.isOnline == true || agentConnection.value.phase == AgentConnectionPhase.CONNECTED)
-                        }
-                        val reusableCarrier = if (reusableChannel != null) {
-                            currentOnlineCarrier ?: carriers(reusableChannel).firstOrNull { it.backend == targetAgent.backendId.value }
-                        } else null
-
-                        if (reusableChannel != null && reusableCarrier != null) {
-                            // 在线复用底层通道与 Carrier！只更换工作区上下文与控制器
-                            val resolvedWorkspace = workspaceContext.value.workspaces
-                                .firstOrNull { it.endpoint.key == workspace.endpoint.key } ?: workspace
-                            switchWorkspaceControllerLocked(
-                                account = activeAccount,
-                                channel = reusableChannel,
-                                carrier = reusableCarrier,
-                                workspace = resolvedWorkspace,
-                                initialThreadId = initialThreadId,
-                            )
-                            updateLayerStates(
-                                agentTransform = {
-                                    it.copy(
-                                        phase = AgentConnectionPhase.CONNECTED,
-                                        offlineConfirmed = false,
-                                        reconnectingInPlace = false,
-                                        busy = false,
-                                        errorCode = null,
-                                    )
-                                },
-                                workspaceTransform = { current ->
-                                    val list = if (current.workspaces.any { it.endpoint.key == resolvedWorkspace.endpoint.key }) {
-                                        current.workspaces
-                                    } else {
-                                        current.workspaces + resolvedWorkspace
-                                    }
-                                    current.copy(
-                                        agentKey = targetAgent,
-                                        workspaces = list,
-                                        activeWorkspace = resolvedWorkspace.endpoint.key,
-                                    )
-                                },
-                            )
-                            controller.value?.let { ctrl ->
-                                refreshModels(ctrl.state.value.activeThreadId)
-                            }
-                            hydrateWorkspaces(force = false)
-                        } else {
-                            // 同 Agent 处于离线状态时切换工作区：先就地切换本地镜像视图，再后台静默建链
-                            switchOfflineWorkspaceOnlyLocked(workspace, initialThreadId)
-                            launchInPlaceReconnectUnderLock(activeAccount, workspace, ticket, lossEpochAtStart)
-                        }
-                    } catch (failure: Exception) {
-                        if (failure.isTrueCancellation()) throw failure
-                        val code = errorCodeOf(failure)
-                        if (isAuthRevokedError(code)) handleAuthRevoked(code) else fail(failure)
-                    } finally {
-                        withContext(NonCancellable) {
-                            if (switchGeneration.get() == ticket) {
-                                updateLayerStates(agentTransform = { it.copy(busy = false) })
-                            }
-                        }
-                    }
+                    initialThreadId?.let(activeCtrl::openThread)
+                    return@launchWorkspaceSelection
                 }
+                if (activeCtrl != null) {
+                    launchInPlaceReconnectUnderLock(activeAccount, workspace, ticket, lossEpochAtStart, forceClientControl = false)
+                    return@launchWorkspaceSelection
+                }
+            }
+
+            updateLayerStates(
+                agentTransform = { it.copy(busy = true, reconnectingInPlace = false, errorCode = null) },
+                workspaceTransform = { it.copy(models = null, modelBusy = false) },
+            )
+
+            try {
+                val reusableChannel = currentChannel?.takeIf {
+                    it.scope.hostDeviceId == targetAgent.hostId &&
+                        it.scope.accountId == activeAccount.accountId &&
+                        (hotRepository?.isOnline == true || agentConnection.value.phase == AgentConnectionPhase.CONNECTED)
+                }
+                val reusableCarrier = if (reusableChannel != null) {
+                    currentOnlineCarrier ?: carriers(reusableChannel).firstOrNull { it.backend == targetAgent.backendId.value }
+                } else null
+
+                if (reusableChannel != null && reusableCarrier != null) {
+                    // 在线复用底层通道与 Carrier！只更换工作区上下文与控制器
+                    val resolvedWorkspace = workspaceContext.value.workspaces
+                        .firstOrNull { it.endpoint.key == workspace.endpoint.key } ?: workspace
+                    switchWorkspaceControllerLocked(
+                        account = activeAccount,
+                        channel = reusableChannel,
+                        carrier = reusableCarrier,
+                        workspace = resolvedWorkspace,
+                        initialThreadId = initialThreadId,
+                    )
+                    updateLayerStates(
+                        agentTransform = {
+                            it.copy(
+                                phase = AgentConnectionPhase.CONNECTED,
+                                offlineConfirmed = false,
+                                reconnectingInPlace = false,
+                                busy = false,
+                                errorCode = null,
+                            )
+                        },
+                        workspaceTransform = { current ->
+                            val list = if (current.workspaces.any { it.endpoint.key == resolvedWorkspace.endpoint.key }) {
+                                current.workspaces
+                            } else {
+                                current.workspaces + resolvedWorkspace
+                            }
+                            current.copy(
+                                agentKey = targetAgent,
+                                workspaces = list,
+                                activeWorkspace = resolvedWorkspace.endpoint.key,
+                            )
+                        },
+                    )
+                    controller.value?.let { ctrl ->
+                        refreshModels(ctrl.state.value.activeThreadId)
+                    }
+                    hydrateWorkspaces(force = false)
+                } else {
+                    // 同 Agent 处于离线状态时切换工作区：先就地切换本地镜像视图，再后台静默建链
+                    switchOfflineWorkspaceOnlyLocked(workspace, initialThreadId)
+                    launchInPlaceReconnectUnderLock(activeAccount, workspace, ticket, lossEpochAtStart, forceClientControl = false)
+                }
+            } catch (failure: Exception) {
+                if (failure.isTrueCancellation()) throw failure
+                if (switchGeneration.get() != ticket) return@launchWorkspaceSelection
+                val terminal = workspaceAuthorizationFailure(errorCodeOf(failure))
+                if (terminal != null) handleAuthRevoked(terminal) else fail(failure)
             } finally {
                 withContext(NonCancellable) {
                     if (switchGeneration.get() == ticket) {
-                        updateLayerStates(
-                            agentTransform = {
-                                it.copy(busy = false, switchingAgent = null, reconnectingInPlace = false)
-                            },
-                        )
+                        updateLayerStates(agentTransform = { it.copy(busy = false) })
                     }
                 }
             }
-        }.also { activeOperationJob = it }
+        }
     }
 
     /** 自动拉取当前 Agent 下的全部可用工作区与各工作区下的会话列表（打开会话菜单或建链后调用）。 */
@@ -1720,9 +1766,23 @@ class RemoteRuntime(
     }
 
     /** 离线态点击「离线模式 / 重试」：全程停留在会话页就地重连，严禁销毁控制器或跳回登录页。 */
-    fun reconnectInPlace(): Job {
+    fun reconnectInPlace(): Job = reconnectInPlaceInternal(forceClientControl = false)
+
+    /** 会话列表手动刷新：先退役当前数据面，再完整重建 Client 控制面与当前会话通道。 */
+    fun forceRefreshActiveConnection(): Job = reconnectInPlaceInternal(forceClientControl = true)
+
+    private fun reconnectInPlaceInternal(forceClientControl: Boolean, automaticGeneration: Long? = null): Job = synchronized(selectionRequestLock) {
         val currentAgentState = agentConnection.value
-        if (currentAgentState.reconnectingInPlace) return activeOperationJob ?: CompletableDeferred(Unit)
+        if (automaticGeneration != null && (switchGeneration.get() != automaticGeneration ||
+                currentAgentState.phase == AgentConnectionPhase.AUTH_REVOKED)
+        ) {
+            return CompletableDeferred(Unit)
+        }
+        val previousOp = activeOperationJob
+        if (previousOp != null && !previousOp.isCompleted) {
+            if (automaticGeneration != null && previousOp === userSelectionJob) return previousOp
+            if (previousOp === forcedReconnectJob || !forceClientControl && currentAgentState.reconnectingInPlace) return previousOp
+        }
         val activeKey = workspaceContext.value.activeWorkspace ?: return refreshHosts()
         val targetWorkspace = workspaceContext.value.workspaces.firstOrNull { it.endpoint.key == activeKey }
             ?: currentAgentState.account?.let { loadSavedSelectionIfMatches(it, activeKey) }
@@ -1736,25 +1796,21 @@ class RemoteRuntime(
 
         val ticket = switchGeneration.incrementAndGet()
         val lossEpochAtStart = networkLossEpoch.get()
-        reconnectLoopJob?.cancel()
-        val previousOp = activeOperationJob
-        hotRepository?.setConnectionStreamHealth(StreamHealth.RECONNECTING)
-        updateLayerStates(
-            agentTransform = {
-                it.copy(
-                    phase = AgentConnectionPhase.RECONNECTING,
-                    reconnectingInPlace = true,
-                    errorCode = null,
-                )
-            },
-        )
+        val previousLoop = reconnectLoopJob
 
-        return scope.launch {
+        reconnectCoroutineScope().launch(start = CoroutineStart.LAZY) {
             try {
+                previousLoop?.cancel()
                 previousOp?.cancel()
                 selection.withLock {
                     if (switchGeneration.get() != ticket) return@withLock
-                    launchInPlaceReconnectUnderLock(expectedAccount, targetWorkspace, ticket, lossEpochAtStart)
+                    launchInPlaceReconnectUnderLock(
+                        expectedAccount,
+                        targetWorkspace,
+                        ticket,
+                        lossEpochAtStart,
+                        forceClientControl,
+                    )
                 }
             } finally {
                 withContext(NonCancellable) {
@@ -1774,7 +1830,62 @@ class RemoteRuntime(
                     }
                 }
             }
-        }.also { activeOperationJob = it }
+        }.also {
+            activeOperationJob = it
+            if (forceClientControl) forcedReconnectJob = it
+            hotRepository?.setConnectionStreamHealth(StreamHealth.RECONNECTING)
+            updateLayerStates(
+                agentTransform = { state ->
+                    state.copy(phase = AgentConnectionPhase.RECONNECTING, reconnectingInPlace = true, errorCode = null)
+                },
+            )
+        }
+    }.also { it.start() }
+
+    /** Presence、控制面代际或前台恢复只触发一次即时恢复；连接健康时保持幂等。 */
+    private fun requestImmediateDataReconnect() {
+        if (!networkConnected) return
+        val generation = switchGeneration.get()
+        val state = agentConnection.value
+        if (state.phase == AgentConnectionPhase.AUTH_REVOKED || state.phase == AgentConnectionPhase.DISCONNECTED) return
+        if (state.activeAgent == null || workspaceContext.value.activeWorkspace == null) return
+        if (state.phase == AgentConnectionPhase.CONNECTING &&
+            (state.busy || startupRecoveryJob?.isActive == true)
+        ) return
+        if (state.phase == AgentConnectionPhase.CONNECTED && hotRepository?.isOnline == true) return
+        if (state.reconnectingInPlace && activeOperationJob?.isActive == true) return
+        reconnectInPlaceInternal(forceClientControl = false, automaticGeneration = generation)
+    }
+
+    /** 只处理当前数据通道的终止；迟到旧连接或主动拆线不得覆盖新工作区。 */
+    private fun handleDataConnectionClosure(closure: RemoteDataConnectionClosure) {
+        if (channel?.scope != closure.scope) return
+        reconnectCoroutineScope().launch {
+            selection.withLock {
+                // 用户选择期间等待新工作区就绪，再核对关闭的是否仍是当前通道。
+                if (channel?.scope != closure.scope) return@withLock
+                val activeKey = workspaceContext.value.activeWorkspace ?: return@withLock
+                val targetWorkspace = workspaceContext.value.workspaces.firstOrNull { it.endpoint.key == activeKey }
+                    ?: agentConnection.value.account?.let { loadSavedSelectionIfMatches(it, activeKey) }
+                    ?: return@withLock
+                val ticket = switchGeneration.get()
+                updateLayerStates(agentTransform = {
+                    it.copy(phase = AgentConnectionPhase.RECONNECTING, reconnectingInPlace = false, offlineConfirmed = false)
+                })
+                runCatching { detachOnlineWorkspaceInPlace(StreamHealth.RECONNECTING) }.onFailure {
+                    android.util.Log.w("RemoteRuntime", "DATA_CONNECTION_DETACH_FAILED")
+                }
+                runCatching { closeChannelOnly() }.onFailure {
+                    android.util.Log.w("RemoteRuntime", "DATA_CONNECTION_CLEANUP_FAILED")
+                }
+                if (switchGeneration.get() != ticket) return@withLock
+                // 关闭理由可能只是旧访问票被拒。控制面确认不可恢复时才清空工作台。
+                updateLayerStates(agentTransform = {
+                    it.copy(phase = AgentConnectionPhase.OFFLINE, offlineConfirmed = true, errorCode = closure.code)
+                })
+                if (networkConnected) startBackgroundReconnectLoop(targetWorkspace, ticket)
+            }
+        }
     }
 
     private suspend fun launchInPlaceReconnectUnderLock(
@@ -1782,6 +1893,7 @@ class RemoteRuntime(
         targetWorkspace: RemoteWorkspace,
         ticket: Long,
         lossEpochAtStart: Long,
+        forceClientControl: Boolean,
     ) {
         consumePendingNetworkLossLocked(lossEpochAtStart)
         hotRepository?.setConnectionStreamHealth(StreamHealth.RECONNECTING)
@@ -1795,22 +1907,34 @@ class RemoteRuntime(
             },
         )
         try {
+            if (forceClientControl) {
+                // 先摘除数据面和旧句柄，再关闭 Client 控制 WS；随后所有 tunnel/Noise 都只能按新连接重建。
+                runCatching { detachOnlineWorkspaceInPlace(StreamHealth.RECONNECTING) }.onFailure {
+                    android.util.Log.w("RemoteRuntime", "MANUAL_RECONNECT_DATA_DETACH_FAILED")
+                }
+                runCatching { closeChannelOnly() }.onFailure {
+                    android.util.Log.w("RemoteRuntime", "MANUAL_RECONNECT_CHANNEL_CLOSE_FAILED")
+                }
+                accountRuntime.forceClientControlReconnect()
+            }
             val restored = accountRuntime.restore() ?: throw RemoteRpcException("ACCOUNT_AUTH_REQUIRED")
             if (restored != expectedAccount && accountRuntime.account.value != restored) {
                 throw RemoteRpcException("ACCOUNT_AUTH_REQUIRED")
             }
             runCatching { refreshHostsInternal() }.onFailure { if (it.isTrueCancellation()) throw it }
-            connectAndUpgradeCurrentWorkspaceLocked(restored, targetWorkspace)
+            connectAndUpgradeCurrentWorkspaceLocked(restored, targetWorkspace, forceFreshChannel = true)
             if (switchGeneration.get() == ticket) {
                 hydrateWorkspaces(force = true)
                 refreshModels()
             }
         } catch (failure: Exception) {
             if (failure.isTrueCancellation()) throw failure
+            if (switchGeneration.get() != ticket) return
             val code = errorCodeOf(failure)
-            if (isAuthRevokedError(code)) {
-                handleAuthRevoked(code)
-            } else if (switchGeneration.get() == ticket) {
+            val terminal = workspaceAuthorizationFailure(code)
+            if (terminal != null) {
+                handleAuthRevoked(terminal)
+            } else {
                 hotRepository?.setConnectionStreamHealth(StreamHealth.RECONNECTING)
                 updateLayerStates(
                     agentTransform = {
@@ -1829,15 +1953,15 @@ class RemoteRuntime(
 
     private fun startBackgroundReconnectLoop(targetWorkspace: RemoteWorkspace, ticket: Long) {
         reconnectLoopJob?.cancel()
-        reconnectLoopJob = scope.launch {
-            var delayMs = recoveryPolicy.backgroundReconnectInitialDelayMillis
+        reconnectLoopJob = reconnectCoroutineScope().launch {
+            var attempt = 0
             while (isActive &&
                 switchGeneration.get() == ticket &&
                 !agentConnection.value.reconnectingInPlace &&
                 agentConnection.value.phase == AgentConnectionPhase.OFFLINE &&
                 workspaceContext.value.activeWorkspace == targetWorkspace.endpoint.key
             ) {
-                delayFn(delayMs)
+                delayFn(nextBackgroundReconnectDelay(attempt++))
                 if (!isActive ||
                     switchGeneration.get() != ticket ||
                     agentConnection.value.reconnectingInPlace ||
@@ -1847,20 +1971,21 @@ class RemoteRuntime(
 
                 val lossEpochAtAttempt = networkLossEpoch.get()
                 val outcome = selection.withLock {
-                    if (switchGeneration.get() != ticket ||
+                    if (switchGeneration.get() != ticket || agentConnection.value.phase != AgentConnectionPhase.OFFLINE ||
                         workspaceContext.value.activeWorkspace != targetWorkspace.endpoint.key
                     ) return@withLock AttemptResult.CANCELLED
                     consumePendingNetworkLossLocked(lossEpochAtAttempt)
                     try {
                         val acc = accountRuntime.restore() ?: throw RemoteRpcException("ACCOUNT_AUTH_REQUIRED")
                         runCatching { refreshHostsInternal() }.onFailure { if (it.isTrueCancellation()) throw it }
-                        connectAndUpgradeCurrentWorkspaceLocked(acc, targetWorkspace)
+                        connectAndUpgradeCurrentWorkspaceLocked(acc, targetWorkspace, forceFreshChannel = true)
                         AttemptResult.SUCCESS
                     } catch (failure: Exception) {
                         if (failure.isTrueCancellation()) throw failure
-                        val code = errorCodeOf(failure)
-                        if (isAuthRevokedError(code)) {
-                            handleAuthRevoked(code)
+                        if (switchGeneration.get() != ticket) return@withLock AttemptResult.CANCELLED
+                        val terminal = workspaceAuthorizationFailure(errorCodeOf(failure))
+                        if (terminal != null) {
+                            handleAuthRevoked(terminal)
                             AttemptResult.AUTH_REVOKED
                         } else {
                             AttemptResult.FAILED
@@ -1875,18 +2000,39 @@ class RemoteRuntime(
                     }
                     AttemptResult.CANCELLED -> break
                     AttemptResult.AUTH_REVOKED -> break
-                    AttemptResult.FAILED -> {
-                        delayMs = (delayMs * 2).coerceAtMost(recoveryPolicy.backgroundReconnectMaxDelayMillis)
-                    }
+                    AttemptResult.FAILED -> Unit
                 }
             }
         }
     }
 
+    /** 数据面使用独立 supervisor；单次尝试或会话刷新异常不会取消其它 Runtime 工作。 */
+    private fun reconnectCoroutineScope(): CoroutineScope = synchronized(reconnectWorkerLock) {
+        reconnectWorker?.takeIf { reconnectSupervisor?.isActive == true } ?: run {
+            val supervisor = SupervisorJob(scope.coroutineContext[Job])
+            reconnectSupervisor = supervisor
+            CoroutineScope(scope.coroutineContext + supervisor).also { reconnectWorker = it }
+        }
+    }
+
+    private fun stopReconnectWorker(): CompletableJob? {
+        val (job, supervisor) = synchronized(reconnectWorkerLock) {
+            val heldJob = reconnectLoopJob.also { reconnectLoopJob = null }
+            reconnectWorker = null
+            heldJob to reconnectSupervisor.also { reconnectSupervisor = null }
+        }
+        job?.cancel()
+        supervisor?.cancel()
+        return supervisor
+    }
+
+    /** 复用统一的 1、2、4…30 秒基准，并按 ±20% 抖动避免多设备同时重连。 */
+    private fun nextBackgroundReconnectDelay(attempt: Int): Long = backgroundReconnectPolicy.delayMs(attempt, reconnectRandom)
+
     /** 复用或重建 Host 通道（仅跨 Host 或当前通道失效时连接，同 Host 复用当前通道）。 */
-    private suspend fun obtainOrConnectChannelLocked(hostId: String): RemoteRpcChannel {
+    private suspend fun obtainOrConnectChannelLocked(hostId: String, forceFresh: Boolean = false): RemoteRpcChannel {
         val existing = channel
-        if (existing != null && existing.scope.hostDeviceId == hostId) {
+        if (!forceFresh && existing != null && existing.scope.hostDeviceId == hostId) {
             val alive = try {
                 existing.invoke("harness.transport.describe", JsonValue.JObject(emptyList()))
                 true
@@ -1999,8 +2145,9 @@ class RemoteRuntime(
     private suspend fun connectAndUpgradeCurrentWorkspaceLocked(
         account: RemoteActiveAccount,
         targetWorkspace: RemoteWorkspace,
+        forceFreshChannel: Boolean = false,
     ) {
-        val nextChannel = obtainOrConnectChannelLocked(targetWorkspace.endpoint.key.hostId)
+        val nextChannel = obtainOrConnectChannelLocked(targetWorkspace.endpoint.key.hostId, forceFreshChannel)
         val carrier = activeCarriers.firstOrNull { it.backend == targetWorkspace.endpoint.key.backendId.value }
             ?: throw RemoteSessionException("REMOTE_BACKEND_UNAVAILABLE")
         val confirmed = carrier.workspaces().firstOrNull { it.endpoint.key == targetWorkspace.endpoint.key }
@@ -2130,6 +2277,8 @@ class RemoteRuntime(
             )
             publishConnectedLayerState()
             observeBackgroundWork()
+            // 热升级只换在线句柄；必须显式重开当前会话 follow，才能继续接收实时流。
+            currentController.retryTimeline()
         }
     }
 
@@ -2414,7 +2563,7 @@ class RemoteRuntime(
         switchGeneration.incrementAndGet()
         handledNetworkLossEpoch.updateAndGet { maxOf(it, networkLossEpoch.get()) }
         startupRecoveryJob?.cancel()
-        reconnectLoopJob?.cancel()
+        stopReconnectWorker()
         activeOperationJob?.cancel()
         invalidateHydration()?.cancel()
         loginEntryBridge.cancelLocal()
@@ -2460,7 +2609,7 @@ class RemoteRuntime(
         switchGeneration.incrementAndGet()
         handledNetworkLossEpoch.updateAndGet { maxOf(it, networkLossEpoch.get()) }
         startupRecoveryJob?.cancelAndJoin()
-        reconnectLoopJob?.cancelAndJoin()
+        stopReconnectWorker()?.cancelAndJoin()
         invalidateHydration()?.cancelAndJoin()
         activeOperationJob?.cancelAndJoin()
         selection.withLock {
@@ -2474,10 +2623,23 @@ class RemoteRuntime(
         }
     }
 
-    private suspend fun handleAuthRevoked(code: String) {
+    private fun currentWorkspaceClientFailure(): RemoteClientFailure? {
+        val active = accountRuntime.account.value
+        return accountRuntime.clientFailureSnapshot.value?.takeIf { failure ->
+            failure.account == agentConnection.value.account && (active == null || active == failure.account)
+        }
+    }
+
+    private fun workspaceAuthorizationFailure(code: String): String? {
+        currentWorkspaceClientFailure()?.let { return it.code }
+        // 控制面可以用新访问票恢复，这两类失败要等角色的最终结论。
+        return code.takeIf { it != "AUTH_INVALID" && it != "TOKEN_EXPIRED" && isAuthRevokedError(it) }
+    }
+
+    private suspend fun handleAuthRevoked(code: String) = withContext(NonCancellable) {
         switchGeneration.incrementAndGet()
         handledNetworkLossEpoch.updateAndGet { maxOf(it, networkLossEpoch.get()) }
-        reconnectLoopJob?.cancel()
+        stopReconnectWorker()
         invalidateHydration()?.cancel()
         lastHydratedAtMs = 0L
         runCatching { retireAllAndClearController() }
@@ -2571,10 +2733,22 @@ class RemoteRuntime(
 
     /** 仅在退出登录、认证失败或重登替换时清空工作台控制器与全部通道。 */
     private suspend fun retireAllAndClearController() {
-        retireWorkspaceContextKeepingChannel()
-        mutableController.value = null
-        closeChannelOnly()
-        handledNetworkLossEpoch.updateAndGet { maxOf(it, networkLossEpoch.get()) }
+        var failure: Throwable? = null
+        try {
+            retireWorkspaceContextKeepingChannel()
+        } catch (error: Throwable) {
+            failure = error
+        } finally {
+            // 认证终态必须最先从根路由移除控制器；后续资源清理失败不能把登录页重新卡回会话页。
+            mutableController.value = null
+            try {
+                closeChannelOnly()
+            } catch (error: Throwable) {
+                if (failure == null) failure = error
+            }
+            handledNetworkLossEpoch.updateAndGet { maxOf(it, networkLossEpoch.get()) }
+        }
+        failure?.let { throw it }
     }
 
     private fun chooseTargetWorkspace(
@@ -2975,6 +3149,7 @@ class RemoteRuntime(
         prepareForUi()
         accountRuntime.refreshControlConnection()
         synchronized(backgroundOwnership) { foreground = true }
+        requestImmediateDataReconnect()
         replyNotifications.refreshPermission()
         nativeConversationNotifications.refreshActive()
         refreshBackgroundWork(foregrounded = true)
@@ -3045,6 +3220,7 @@ class RemoteRuntime(
     fun onNetworkAvailable(@Suppress("UNUSED_PARAMETER") routeChanged: Boolean = false) {
         networkConnected = true
         accountRuntime.refreshControlConnection()
+        val generation = switchGeneration.get()
         val activeKey = workspaceContext.value.activeWorkspace ?: return
         val phase = agentConnection.value.phase
         if (phase == AgentConnectionPhase.AUTH_REVOKED || phase == AgentConnectionPhase.DISCONNECTED) return
@@ -3059,7 +3235,7 @@ class RemoteRuntime(
             AgentConnectionPhase.AUTH_REVOKED, AgentConnectionPhase.DISCONNECTED -> false
         }
         if (needReconnect) {
-            reconnectInPlace()
+            reconnectInPlaceInternal(forceClientControl = false, automaticGeneration = generation)
         } else {
             refreshBackgroundWork()
             if (nativeConversationNotifications.hasPendingReconciliation()) {
@@ -3117,7 +3293,7 @@ class RemoteRuntime(
                 if (switchGeneration.get() == lostTicket &&
                     (graceTarget != null || agentConnection.value.phase == AgentConnectionPhase.OFFLINE)
                 ) {
-                    reconnectInPlace()
+                    reconnectInPlaceInternal(forceClientControl = false, automaticGeneration = lostTicket)
                 }
                 return@launch
             }

@@ -10,7 +10,9 @@ import com.openandroidintelligence.gateway.remote.identity.RemoteIdentityScope
 import com.openandroidintelligence.gateway.remote.identity.RemoteRole
 import com.openandroidintelligence.gateway.remote.protocol.RemoteProtocol
 import com.openandroidintelligence.gateway.remote.protocol.RemoteControlCodec
+import com.openandroidintelligence.gateway.remote.rpc.RemoteDeliveryOutcome
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcEvent
+import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcHostHandler
 import com.openandroidintelligence.gateway.remote.runtime.*
 import com.openandroidintelligence.gateway.schema.Json
@@ -18,12 +20,17 @@ import com.openandroidintelligence.gateway.schema.JsonValue
 import java.io.IOException
 import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import okhttp3.*
 import okhttp3.mockwebserver.*
 import org.junit.Assert.*
@@ -33,6 +40,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [35])
 class RemoteClientControlLifecycleTest {
@@ -77,7 +85,11 @@ class RemoteClientControlLifecycleTest {
         }
     }
     private class Fixture(private val hostHandler: RemoteRpcHostHandler? = null,
-        dispatcher: CoroutineDispatcher = Dispatchers.Default, private val beforeClientAck: () -> Unit = {}) : AutoCloseable {
+        dispatcher: CoroutineDispatcher = Dispatchers.Default, private val beforeClientAck: () -> Unit = {},
+        private val reconnectPolicy: RemoteReconnectPolicy = RemoteReconnectPolicy(),
+        private val reconnectRandom: () -> Double = { 0.5 },
+        private val beforePresenceResponse: (Int) -> Unit = {},
+    ) : AutoCloseable {
         val server = MockWebServer()
         val parent = CoroutineScope(SupervisorJob() + dispatcher)
         val sockets = CopyOnWriteArrayList<WebSocket>()
@@ -90,12 +102,15 @@ class RemoteClientControlLifecycleTest {
         val refreshRequests = CopyOnWriteArrayList<JsonValue.JObject>()
         val accountTokenRequests = CopyOnWriteArrayList<String>()
         val directoryExtras = CopyOnWriteArrayList<JsonValue.JObject>()
-        val connectRequests = AtomicInteger()
+        val connectRequestSockets = CopyOnWriteArrayList<WebSocket>()
+        @Volatile var autoAcknowledgeClient = true
         val pongs = AtomicInteger()
         val passwordLoginCalls = AtomicInteger()
         val presenceCalls = AtomicInteger()
         val online = AtomicBoolean(true)
         val presenceDenied = AtomicBoolean(false)
+        @Volatile var heartbeatIntervalMs = 50L
+        @Volatile var presenceBodyDelayMs = 0L
         val includeRegisteredHost = AtomicBoolean(false)
         val rejectNextHostHelloWithTokenExpired = AtomicBoolean(false)
         @Volatile var rejectHostRegistration = false
@@ -111,6 +126,7 @@ class RemoteClientControlLifecycleTest {
         private val pingsByRole = java.util.concurrent.ConcurrentHashMap<String, AtomicInteger>()
         private val pingsBySocket = java.util.concurrent.ConcurrentHashMap<WebSocket, AtomicInteger>()
         private val pongsByRole = java.util.concurrent.ConcurrentHashMap<String, AtomicInteger>()
+        private val pongsBySocket = java.util.concurrent.ConcurrentHashMap<WebSocket, AtomicInteger>()
         private val protector = Protector()
         private val failRoleTerminalOnce = AtomicBoolean(false)
         private val failedRoleTerminals = AtomicInteger()
@@ -167,11 +183,15 @@ class RemoteClientControlLifecycleTest {
                         json(obj("items" to items.distinctBy { it.requiredText("deviceId") }, "nextCursor" to null))
                     }
                     request.path.orEmpty().startsWith("/api/v1/devices/") && request.path.orEmpty().endsWith("/presence") -> {
-                        presenceCalls.incrementAndGet()
+                        val wasOnline = online.get()
+                        val call = presenceCalls.incrementAndGet()
+                        beforePresenceResponse(call)
                         if (presenceDenied.get()) json(obj("error" to obj("code" to "MEMBERSHIP_REQUIRED"))).setResponseCode(403)
                         else json(obj("deviceId" to request.path.orEmpty().substringAfter("/api/v1/devices/").substringBefore("/presence"),
-                            "online" to online.get()))
+                            "online" to wasOnline)).setBodyDelay(presenceBodyDelayMs, TimeUnit.MILLISECONDS)
                     }
+                    request.path == "/api/v1/devices/host-0" -> json(obj("deviceId" to "host-0", "role" to "host",
+                        "name" to "Host 0", "platform" to "linux", "membershipId" to "member-0", "identityKey" to peerKey))
                     request.path == "/api/v1/devices/desktop-client" -> {
                         val token = requireNotNull(request.getHeader("Authorization"))
                         peerAuthorizations += token
@@ -188,20 +208,15 @@ class RemoteClientControlLifecycleTest {
                                     val role = frame.payload.requiredText("role")
                                     socketRoles[socket] = role
                                     sockets += socket
-                                    helloFrames += Hello(socket, frame.payload)
+                                    val hello = Hello(socket, frame.payload)
+                                    helloFrames += hello
                                     if (role == "host" && rejectNextHostHelloWithTokenExpired.compareAndSet(true, false)) {
                                         socket.send(Json.canonical(obj("v" to 1, "id" to "token-expired", "type" to "error", "timestamp" to 1,
                                             "payload" to obj("code" to "TOKEN_EXPIRED", "message" to "TOKEN_EXPIRED", "retryable" to false))))
                                         return
                                     }
                                     if (role == "client") beforeClientAck()
-                                    // 来自固定 server/gateway.ts 的 hello.ack 字段；短间隔只压缩反馈周期。
-                                    socket.send(Json.canonical(obj("v" to 1, "id" to "ack", "type" to "hello.ack", "timestamp" to 1,
-                                        "payload" to obj("protocol" to 1, "serverVersion" to "self-hosted/0.1.0", "connectionSessionId" to "$role-session-${sockets.size}",
-                                            "heartbeatIntervalMs" to 50, "maxControlFrameBytes" to 65536, "maxRelayFrameBytes" to 1048576,
-                                            "capabilities" to listOf("transport.relay")))))
-                                    acknowledgements += role
-                                    socket.send(Json.canonical(obj("v" to 1, "id" to "ping", "type" to "ping", "timestamp" to 1, "payload" to obj("nonce" to "server-heartbeat"))))
+                                    if (role != "client" || autoAcknowledgeClient) acknowledge(hello)
                                 }
                                 "ping" -> {
                                     socketRoles[socket]?.let { pingsByRole.computeIfAbsent(it) { AtomicInteger() }.incrementAndGet() }
@@ -210,9 +225,10 @@ class RemoteClientControlLifecycleTest {
                                 }
                                 "pong" -> {
                                     socketRoles[socket]?.let { pongsByRole.computeIfAbsent(it) { AtomicInteger() }.incrementAndGet() }
+                                    pongsBySocket.computeIfAbsent(socket) { AtomicInteger() }.incrementAndGet()
                                     pongs.incrementAndGet()
                                 }
-                                "connect.request" -> connectRequests.incrementAndGet()
+                                "connect.request" -> connectRequestSockets.add(socket)
                                 "connect.accepted", "connect.rejected" -> peerReplies += frame.type to frame.payload.optionalText("code")
                             }
                         }
@@ -235,8 +251,24 @@ class RemoteClientControlLifecycleTest {
                 { atomic, stream -> atomic.finishWrite(stream) })
             runtime = newRuntime()
         }
+        fun acknowledge(hello: Hello) {
+            val role = hello.role
+            // 来自固定 server/gateway.ts 的 hello.ack 字段；短间隔只压缩反馈周期。
+            hello.socket.send(Json.canonical(obj("v" to 1, "id" to "ack", "type" to "hello.ack", "timestamp" to 1,
+                "payload" to obj("protocol" to 1, "serverVersion" to "self-hosted/0.1.0", "connectionSessionId" to "$role-session-${sockets.size}",
+                    "heartbeatIntervalMs" to heartbeatIntervalMs, "maxControlFrameBytes" to 65536, "maxRelayFrameBytes" to 1048576,
+                    "capabilities" to listOf("transport.relay")))))
+            acknowledgements += role
+            hello.socket.send(Json.canonical(obj("v" to 1, "id" to "ping", "type" to "ping", "timestamp" to 1,
+                "payload" to obj("nonce" to "server-heartbeat"))))
+        }
+        fun hasPinnedHost(): Boolean {
+            val scope = RemoteIdentityScope(origin, "owner", RemoteRole.CLIENT)
+            return RemoteIdentityStore(vault, protector).load(scope)?.peers?.any { it.peerDeviceId.value == "host-0" } == true
+        }
         private fun newRuntime() = RemoteAccountRuntime(RuntimeEnvironment.getApplication(), accountScope,
-            hostHandler, vault = vault, protector = protector)
+            hostHandler, vault = vault, protector = protector, reconnectPolicy = reconnectPolicy,
+            reconnectRandom = reconnectRandom)
         suspend fun restartAccountProcess(restore: Boolean = true) {
             accountScope.coroutineContext.job.cancelAndJoin()
             accountScope = CoroutineScope(parent.coroutineContext + SupervisorJob(parent.coroutineContext[Job]))
@@ -274,6 +306,7 @@ class RemoteClientControlLifecycleTest {
         fun pingCount(role: String): Int = pingsByRole[role]?.get() ?: 0
         fun pingCount(socket: WebSocket): Int = pingsBySocket[socket]?.get() ?: 0
         fun pongCount(role: String): Int = pongsByRole[role]?.get() ?: 0
+        fun pongCount(socket: WebSocket): Int = pongsBySocket[socket]?.get() ?: 0
         fun expireHostAccessToken() {
             val active = requireNotNull(runtime.account.value)
             val store = RemoteIdentityStore(vault, protector)
@@ -311,6 +344,33 @@ class RemoteClientControlLifecycleTest {
         } catch (timeout: TimeoutCancellationException) {
             throw AssertionError("$description：${detail()}", timeout)
         }
+    }
+    private suspend fun pumpUntil(scheduler: TestCoroutineScheduler, condition: () -> Boolean) = await {
+        scheduler.runCurrent()
+        condition()
+    }
+    private fun privateField(owner: Any, name: String): Any? {
+        var type: Class<*>? = owner.javaClass
+        while (type != null) {
+            try {
+                return type.getDeclaredField(name).apply { isAccessible = true }.get(owner)
+            } catch (_: NoSuchFieldException) {
+                type = type.superclass
+            }
+        }
+        throw AssertionError("找不到测试故障注入字段：${owner.javaClass.name}.$name")
+    }
+    private fun setPrivateField(owner: Any, name: String, value: Any?) {
+        var type: Class<*>? = owner.javaClass
+        while (type != null) {
+            try {
+                type.getDeclaredField(name).apply { isAccessible = true }.set(owner, value)
+                return
+            } catch (_: NoSuchFieldException) {
+                type = type.superclass
+            }
+        }
+        throw AssertionError("找不到测试故障注入字段：${owner.javaClass.name}.$name")
     }
 
     @Test fun 自部署密码登录注册两角色并在目录过滤本机后保持Host心跳(): Unit = runBlocking {
@@ -411,6 +471,260 @@ class RemoteClientControlLifecycleTest {
         }
     }
 
+    @Test fun Host控制连接普通断线后复用持久身份重新上线并恢复心跳(): Unit = runBlocking {
+        Fixture(
+            EmptyHostHandler(),
+            reconnectPolicy = RemoteReconnectPolicy(initialDelayMs = 10L, maxDelayMs = 40L),
+        ).use { fixture ->
+            fixture.login()
+            await {
+                fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                    fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
+                    fixture.hellosFor("host").size == 1 && fixture.pongCount("host") > 0
+            }
+            val first = fixture.hellosFor("host").single()
+            val registrationsBefore = fixture.registrations.size
+
+            first.socket.close(1012, "服务重启")
+
+            await("Host 控制连接断开后未自动恢复", {
+                "hostState=${fixture.runtime.hostState.value}, hellos=${fixture.hellosFor("host").size}, " +
+                    "failure=${fixture.runtime.hostFailure.value}"
+            }) {
+                fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
+                    fixture.hellosFor("host").size == 2 && fixture.pongCount(fixture.hellosFor("host").last().socket) > 0
+            }
+            val second = fixture.hellosFor("host").last()
+            assertEquals(first.payload.requiredText("deviceId"), second.payload.requiredText("deviceId"))
+            assertEquals("普通控制断线不应重新登记第三个设备", registrationsBefore, fixture.registrations.size)
+            assertEquals(listOf("host", "host"), fixture.acknowledgements.filter { it == "host" })
+            assertNull(fixture.runtime.hostFailure.value)
+        }
+    }
+
+    @Test fun Host旧连接关闭清理抛错仍继续恢复在线(): Unit = runBlocking {
+        Fixture(
+            EmptyHostHandler(),
+            reconnectPolicy = RemoteReconnectPolicy(initialDelayMs = 10L, maxDelayMs = 40L),
+        ).use { fixture ->
+            fixture.login()
+            await {
+                fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                    fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE && fixture.hellosFor("host").size == 1
+            }
+            val hostControl = requireNotNull(privateField(fixture.runtime, "host")) as RemoteHostControl
+            val service = requireNotNull(privateField(hostControl, "socket")) as RemoteSignalService
+            @Suppress("UNCHECKED_CAST")
+            val original = privateField(service, "onClosed") as (String) -> Unit
+            setPrivateField(service, "onClosed", { code: String ->
+                original(code)
+                throw IOException("模拟 Host 旧连接关闭清理失败")
+            })
+
+            fixture.hellosFor("host").single().socket.close(1012, "服务重启")
+
+            await("Host 清理异常后未继续恢复", {
+                "hostState=${fixture.runtime.hostState.value}, hellos=${fixture.hellosFor("host").size}, " +
+                    "failure=${fixture.runtime.hostFailure.value}"
+            }) {
+                fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
+                    fixture.hellosFor("host").size == 2
+            }
+            assertEquals(1, fixture.registrations.count { it.requiredText("role") == "host" })
+        }
+    }
+
+    @Test fun 手动刷新Client控制面不重启VirtualHost(): Unit = runBlocking {
+        Fixture(
+            EmptyHostHandler(),
+            reconnectPolicy = RemoteReconnectPolicy(initialDelayMs = 10L, maxDelayMs = 40L),
+        ).use { fixture ->
+            fixture.login()
+            await {
+                fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                    fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
+                    fixture.hellosFor("client").size == 1 && fixture.hellosFor("host").size == 1
+            }
+            val hostSocket = fixture.hellosFor("host").single().socket
+            val hostPingsBefore = fixture.pingCount(hostSocket)
+
+            fixture.runtime.forceClientControlReconnect()
+            fixture.runtime.forceClientControlReconnect()
+
+            await("手动刷新未重建 Client 控制面", {
+                "state=${fixture.runtime.state.value}, clientHellos=${fixture.hellosFor("client").size}, " +
+                    "hostHellos=${fixture.hellosFor("host").size}"
+            }) {
+                fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                    fixture.hellosFor("client").size == 2
+            }
+            assertEquals("手动刷新不应重启 Virtual Host", 1, fixture.hellosFor("host").size)
+            assertEquals(RemoteHostConnectionState.ONLINE, fixture.runtime.hostState.value)
+            await("Virtual Host 心跳未继续", {
+                "before=$hostPingsBefore, after=${fixture.pingCount(hostSocket)}"
+            }) { fixture.pingCount(hostSocket) > hostPingsBefore }
+            delay(200)
+            assertEquals("并发手动刷新必须合并为一次连接重建", 2, fixture.hellosFor("client").size)
+        }
+    }
+
+    @Test fun 手动刷新返回后数据建连只使用新控制握手(): Unit = runBlocking {
+        val scheduler = TestCoroutineScheduler()
+        Fixture(dispatcher = StandardTestDispatcher(scheduler)).use { fixture ->
+            fixture.login()
+            fixture.peerKey = fixture.registrationFor("host").requiredText("identityKey")
+            pumpUntil(scheduler) { fixture.runtime.clientControlGeneration.value == 1L }
+            fixture.autoAcknowledgeClient = false
+
+            fixture.runtime.forceClientControlReconnect()
+            assertEquals("强刷返回时旧控制面已不再可用", RemoteAccountConnectionState.CONNECTING, fixture.runtime.state.value)
+            fixture.runtime.forceClientControlReconnect()
+            val connection = async(start = CoroutineStart.UNDISPATCHED) { runCatching { fixture.runtime.connect("host-0") } }
+            try {
+                pumpUntil(scheduler) { fixture.hasPinnedHost() && fixture.hellosFor("client").size == 2 }
+                assertFalse(connection.isCompleted)
+                assertTrue(fixture.connectRequestSockets.isEmpty())
+                assertEquals(1L, fixture.runtime.clientControlGeneration.value)
+
+                val newHello = fixture.hellosFor("client").last()
+                fixture.acknowledge(newHello)
+                pumpUntil(scheduler) { fixture.connectRequestSockets.isNotEmpty() }
+                assertEquals(listOf(newHello.socket), fixture.connectRequestSockets.toList())
+                assertEquals(2L, fixture.runtime.clientControlGeneration.value)
+            } finally {
+                connection.cancel()
+                scheduler.runCurrent()
+            }
+        }
+    }
+
+    @OptIn(ExperimentalForInheritanceCoroutinesApi::class)
+    @Test fun 手动刷新及时结束仍在等待旧控制握手的建连(): Unit = runBlocking {
+        val scheduler = TestCoroutineScheduler()
+        Fixture(dispatcher = StandardTestDispatcher(scheduler)).use { fixture ->
+            fixture.autoAcknowledgeClient = false
+            fixture.login()
+            fixture.peerKey = fixture.registrationFor("host").requiredText("identityKey")
+            pumpUntil(scheduler) { fixture.hellosFor("client").size == 1 }
+            @Suppress("UNCHECKED_CAST")
+            val oldAvailability = privateField(fixture.runtime, "clientAvailable") as CompletableDeferred<RemoteSignalService>
+            val awaitingOld = CompletableDeferred<Unit>()
+            setPrivateField(fixture.runtime, "clientAvailable", object : CompletableDeferred<RemoteSignalService> by oldAvailability {
+                override suspend fun await(): RemoteSignalService {
+                    awaitingOld.complete(Unit)
+                    return oldAvailability.await()
+                }
+            })
+            val waiting = async(start = CoroutineStart.UNDISPATCHED) { runCatching { fixture.runtime.connect("host-0") } }
+            try {
+                pumpUntil(scheduler) { awaitingOld.isCompleted }
+                assertFalse("旧可用性对象尚未完成", oldAvailability.isCompleted)
+                assertFalse(waiting.isCompleted)
+                assertTrue(fixture.connectRequestSockets.isEmpty())
+
+                fixture.runtime.forceClientControlReconnect()
+                pumpUntil(scheduler) { fixture.hellosFor("client").size == 2 }
+                val failure = withTimeout(1_000) { waiting.await() }.exceptionOrNull() as RemoteRpcException
+                assertEquals("CONNECTION_REPLACED", failure.code)
+                assertEquals(RemoteDeliveryOutcome.NOT_SENT, failure.deliveryOutcome)
+                assertEquals(0L, scheduler.currentTime)
+                assertTrue(fixture.connectRequestSockets.isEmpty())
+            } finally {
+                waiting.cancel()
+                scheduler.runCurrent()
+            }
+        }
+    }
+
+    @Test fun 强刷保留尚未转发的控制WebSocket真实关闭原因(): Unit = runBlocking {
+        for ((closeCode, code) in listOf(4003 to "CONNECTION_REPLACED", 4004 to "DEVICE_REVOKED")) {
+            val scheduler = TestCoroutineScheduler()
+            Fixture(dispatcher = StandardTestDispatcher(scheduler)).use { fixture ->
+                fixture.login()
+                pumpUntil(scheduler) { fixture.runtime.clientControlGeneration.value == 1L }
+                val active = requireNotNull(fixture.runtime.account.value)
+                val service = requireNotNull(privateField(fixture.runtime, "client")) as RemoteSignalService
+                val socket = requireNotNull(privateField(service, "socket")) as RemoteSocket
+                val socketRecordedTerminal = CompletableDeferred<Unit>()
+                val releaseCallback = CountDownLatch(1)
+                socket.frames.invokeOnClose {
+                    // 卡在 Socket 原子记录之后、通知信号服务之前。
+                    socketRecordedTerminal.complete(Unit)
+                    check(releaseCallback.await(15, TimeUnit.SECONDS)) { "测试未释放关闭回调" }
+                }
+                try {
+                    fixture.runtime.forceClientControlReconnect()
+                    assertTrue(fixture.hellosFor("client").single().socket.close(closeCode, code))
+                    withTimeout(5_000) { socketRecordedTerminal.await() }
+                    assertTrue("服务尚未收到 Socket 关闭通知", service.connected)
+                    scheduler.runCurrent()
+
+                    assertEquals(RemoteClientFailure(active, code), fixture.runtime.clientFailureSnapshot.value)
+                    assertEquals(code, fixture.vault.roleFailures(active).clientStop)
+                    fixture.runtime.refreshControlConnection()
+                    scheduler.runCurrent()
+                    assertEquals(RemoteAccountConnectionState.DISCONNECTED, fixture.runtime.state.value)
+                    assertEquals(1L, fixture.runtime.clientControlGeneration.value)
+                    assertEquals(1, fixture.hellosFor("client").size)
+                } finally {
+                    releaseCallback.countDown()
+                }
+            }
+        }
+    }
+
+    @Test fun 强刷占位合并重入且退出重登等待旧控制面退役(): Unit = runBlocking {
+        val scheduler = TestCoroutineScheduler()
+        val dispatcher = StandardTestDispatcher(scheduler)
+        Fixture(dispatcher = dispatcher).use { fixture ->
+            fixture.login()
+            pumpUntil(scheduler) { fixture.runtime.clientControlGeneration.value == 1L }
+            val oldAccount = fixture.runtime.account.value
+            val oldService = requireNotNull(privateField(fixture.runtime, "client")) as RemoteSignalService
+            val oldSupervisor = requireNotNull(privateField(fixture.runtime, "clientSupervisor")) as Job
+            val retiring = CompletableDeferred<Unit>()
+            val finishRetirement = CompletableDeferred<Unit>()
+            // 挂住旧 supervisor 的一个清理子任务，精确控制退役完成时点。
+            CoroutineScope(dispatcher + oldSupervisor).launch(start = CoroutineStart.UNDISPATCHED) {
+                try {
+                    awaitCancellation()
+                } finally {
+                    withContext(NonCancellable) {
+                        retiring.complete(Unit)
+                        finishRetirement.await()
+                    }
+                }
+            }
+            val reentry = launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+                fixture.runtime.state.first { it == RemoteAccountConnectionState.CONNECTING }
+                fixture.runtime.forceClientControlReconnect()
+            }
+            try {
+                fixture.runtime.forceClientControlReconnect()
+                assertTrue("状态发布应在 LAZY 重启开始前触发重入", reentry.isCompleted)
+                pumpUntil(scheduler) { retiring.isCompleted && !oldService.connected }
+                assertEquals(RemoteAccountConnectionState.CONNECTING, fixture.runtime.state.value)
+
+                fixture.runtime.logout()
+                fixture.login()
+                scheduler.runCurrent()
+                assertNotEquals(oldAccount, fixture.runtime.account.value)
+                assertEquals("重登必须继续等待旧 supervisor", RemoteAccountConnectionState.READY, fixture.runtime.state.value)
+                assertEquals(1, fixture.hellosFor("client").size)
+
+                finishRetirement.complete(Unit)
+                pumpUntil(scheduler) { fixture.runtime.clientControlGeneration.value == 2L }
+                assertTrue(oldSupervisor.isCompleted)
+                assertEquals(2, fixture.hellosFor("client").size)
+                assertEquals(RemoteAccountConnectionState.CONNECTED, fixture.runtime.state.value)
+            } finally {
+                reentry.cancel()
+                finishRetirement.complete(Unit)
+                scheduler.runCurrent()
+            }
+        }
+    }
+
     @Test fun 服务端撤销后并发发送心跳沿用首次关闭原因(): Unit = runBlocking {
         MockWebServer().use { server ->
             val peer = CompletableDeferred<WebSocket>()
@@ -466,11 +780,12 @@ class RemoteClientControlLifecycleTest {
                 await { fixture.pongs.get() > 0 }
                 assertEquals(RemoteAccountConnectionState.CONNECTING, fixture.runtime.state.value)
                 assertTrue(fixture.hellosFor("client").single().socket.close(4003, "replaced"))
-                await { fixture.accountJobs.all { it === gate.owner.get() } }
+                // 控制循环现在拥有独立 SupervisorJob；等待实际工作子任务收敛时忽略纯监督容器。
+                await { fixture.accountJobs.filterNot { it is CompletableJob }.all { it === gate.owner.get() } }
             } finally { resume.run() }
-            await { fixture.runtime.clientFailure.value != null || fixture.hellosFor("client").size > 1 }
+            await { fixture.runtime.clientFailureSnapshot.value?.code != null || fixture.hellosFor("client").size > 1 }
             assertEquals("握手后被接管不能再抢占 Client", 1, fixture.hellosFor("client").size)
-            assertEquals("CONNECTION_REPLACED", fixture.runtime.clientFailure.value)
+            assertEquals("CONNECTION_REPLACED", fixture.runtime.clientFailureSnapshot.value?.code)
         }
     }
 
@@ -488,11 +803,11 @@ class RemoteClientControlLifecycleTest {
 
                 clientHello.socket.close(closeCode, "单角色终态")
                 await("CLIENT 未进入 $expectedCode 终态", {
-                    "state=${fixture.runtime.state.value}, failure=${fixture.runtime.clientFailure.value}, " +
+                    "state=${fixture.runtime.state.value}, failure=${fixture.runtime.clientFailureSnapshot.value?.code}, " +
                         "clientHellos=${fixture.hellosFor("client").size}"
                 }) {
                     fixture.runtime.state.value == RemoteAccountConnectionState.DISCONNECTED &&
-                        fixture.runtime.clientFailure.value == expectedCode
+                        fixture.runtime.clientFailureSnapshot.value?.code == expectedCode
                 }
                 fixture.runtime.refreshControlConnection()
                 delay(1_200)
@@ -510,7 +825,7 @@ class RemoteClientControlLifecycleTest {
                         fixture.hellosFor("host").size == 2
                 }
                 assertEquals(RemoteAccountConnectionState.DISCONNECTED, fixture.runtime.state.value)
-                assertEquals(expectedCode, fixture.runtime.clientFailure.value)
+                assertEquals(expectedCode, fixture.runtime.clientFailureSnapshot.value?.code)
                 assertEquals("重启不能绕过 Client 单角色终态", 1, fixture.hellosFor("client").size)
 
                 fixture.login()
@@ -522,7 +837,7 @@ class RemoteClientControlLifecycleTest {
                         fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
                         fixture.hellosFor("client").size == 2 && fixture.hellosFor("host").size == 3
                 }
-                assertNull(fixture.runtime.clientFailure.value)
+                assertNull(fixture.runtime.clientFailureSnapshot.value)
             }
         }
     }
@@ -541,11 +856,11 @@ class RemoteClientControlLifecycleTest {
             fixture.hellosFor("client").single().socket.close(1012, "刷新票终态")
 
             await("刷新 TOKEN_REUSED 未停止 Client", {
-                "state=${fixture.runtime.state.value}, failure=${fixture.runtime.clientFailure.value}, " +
+                "state=${fixture.runtime.state.value}, failure=${fixture.runtime.clientFailureSnapshot.value?.code}, " +
                     "refreshCount=${fixture.refreshRequests.size}, clientHellos=${fixture.hellosFor("client").size}"
             }) {
                 fixture.runtime.state.value == RemoteAccountConnectionState.DISCONNECTED &&
-                    fixture.runtime.clientFailure.value == "TOKEN_REUSED"
+                    fixture.runtime.clientFailureSnapshot.value?.code == "TOKEN_REUSED"
             }
             assertEquals(1, fixture.refreshRequests.size)
             assertEquals(RemoteHostConnectionState.ONLINE, fixture.runtime.hostState.value)
@@ -560,7 +875,7 @@ class RemoteClientControlLifecycleTest {
                     fixture.hellosFor("host").size == 2
             }
             assertEquals(RemoteAccountConnectionState.DISCONNECTED, fixture.runtime.state.value)
-            assertEquals("TOKEN_REUSED", fixture.runtime.clientFailure.value)
+            assertEquals("TOKEN_REUSED", fixture.runtime.clientFailureSnapshot.value?.code)
             assertEquals(1, fixture.refreshRequests.size)
             assertEquals(1, fixture.hellosFor("client").size)
 
@@ -570,7 +885,7 @@ class RemoteClientControlLifecycleTest {
                     fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
                     fixture.hellosFor("client").size == 2 && fixture.hellosFor("host").size == 3
             }
-            assertNull(fixture.runtime.clientFailure.value)
+            assertNull(fixture.runtime.clientFailureSnapshot.value)
         }
     }
 
@@ -606,7 +921,7 @@ class RemoteClientControlLifecycleTest {
                     fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
                     fixture.hellosFor("client").size == 3 && fixture.hellosFor("host").size == 2
             }
-            assertNull(fixture.runtime.clientFailure.value)
+            assertNull(fixture.runtime.clientFailureSnapshot.value)
         }
     }
 
@@ -617,6 +932,7 @@ class RemoteClientControlLifecycleTest {
                 fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
                     fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE
             }
+            val activeBeforeFailure = requireNotNull(fixture.runtime.account.value)
             fixture.failNextRoleTerminal()
             fixture.failNextCredentialSeal()
             fixture.hellosFor("host").single().socket.close(4004, "撤销终态")
@@ -628,6 +944,8 @@ class RemoteClientControlLifecycleTest {
                     fixture.runtime.state.value == RemoteAccountConnectionState.SIGNED_OUT &&
                     fixture.runtime.hostFailure.value?.code == "REMOTE_CREDENTIAL_PERSISTENCE_FAILED"
             }
+            assertEquals(RemoteClientFailure(activeBeforeFailure, "REMOTE_CREDENTIAL_PERSISTENCE_FAILED"),
+                fixture.runtime.clientFailureSnapshot.value)
             assertEquals(1, fixture.failedRoleTerminalWrites())
             assertEquals(1, fixture.failedCredentialSeals())
             delay(1_200)
@@ -689,7 +1007,7 @@ class RemoteClientControlLifecycleTest {
                 await { f.runtime.hostState.value == RemoteHostConnectionState.ONLINE }
                 assertNotNull(f.runtime.account.value)
                 assertEquals(RemoteAccountConnectionState.DISCONNECTED, f.runtime.state.value)
-                assertNotNull(f.runtime.clientFailure.value)
+                assertEquals(f.runtime.account.value, requireNotNull(f.runtime.clientFailureSnapshot.value).account)
                 f.runtime.refreshControlConnection()
                 assertTrue(f.runtime.listHosts().isEmpty())
                 assertEquals(0, f.presenceCalls.get())
@@ -710,10 +1028,10 @@ class RemoteClientControlLifecycleTest {
             fixture.lockClientKey(false)
             fixture.runtime.refreshControlConnection()
             fixture.runtime.restore()
-            await("Client 解锁后未恢复握手", { "clientFailure=${fixture.runtime.clientFailure.value}" }) {
+            await("Client 解锁后未恢复握手", { "clientFailure=${fixture.runtime.clientFailureSnapshot.value?.code}" }) {
                 fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED && fixture.hellosFor("client").size == 2
             }
-            assertNull(fixture.runtime.clientFailure.value)
+            assertNull(fixture.runtime.clientFailureSnapshot.value)
             assertEquals(2, fixture.hellosFor("host").size)
             assertEquals(2, fixture.registrations.size)
             assertTrue(fixture.refreshRequests.isEmpty())
@@ -728,7 +1046,7 @@ class RemoteClientControlLifecycleTest {
             f.restartAccountProcess()
             if (bad == RemoteRole.CLIENT) {
                 await { f.runtime.hostState.value == RemoteHostConnectionState.ONLINE }
-                assertEquals("REMOTE_IDENTITY_CORRUPTED", f.runtime.clientFailure.value)
+                assertEquals("REMOTE_IDENTITY_CORRUPTED", f.runtime.clientFailureSnapshot.value?.code)
             } else {
                 await { f.runtime.state.value == RemoteAccountConnectionState.CONNECTED }
                 assertTrue(f.runtime.listHosts().isNotEmpty())
@@ -918,11 +1236,142 @@ class RemoteClientControlLifecycleTest {
         }
     }
 
+    @Test fun Client控制断开后旧服务关闭清理抛错仍继续下一次握手(): Unit = runBlocking {
+        lateinit var fixture: Fixture
+        val failureInjected = AtomicBoolean(false)
+        fixture = Fixture(beforeClientAck = {
+            if (failureInjected.compareAndSet(false, true)) {
+                val service = requireNotNull(privateField(fixture.runtime, "client")) as RemoteSignalService
+                // 当前生产构造没有可失败的信号服务工厂/关闭 seam；这里只在本测试内让第一次
+                // 握手失败后的真实 service.close() 抛出清理异常，后续尝试不再注入。
+                setPrivateField(service, "onClosed", { _: String ->
+                    throw IOException("模拟旧 Client 信号服务关闭清理失败")
+                })
+                @Suppress("UNCHECKED_CAST")
+                val ready = privateField(service, "ready") as CompletableDeferred<Unit>
+                ready.completeExceptionally(IOException("模拟首次握手失败"))
+            }
+        })
+        fixture.use {
+            fixture.login()
+            await("旧服务关闭清理抛错后 Client 未继续握手", {
+                "state=${fixture.runtime.state.value}, clientFailure=${fixture.runtime.clientFailureSnapshot.value?.code}, " +
+                    "clientHellos=${fixture.hellosFor("client").size}, injected=${failureInjected.get()}"
+            }) {
+                fixture.hellosFor("client").size == 2 &&
+                    fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED
+            }
+            assertEquals("关闭清理异常不能终止后续重连", 2, fixture.hellosFor("client").size)
+        }
+    }
+
+    @Test fun 退避等待期间重复刷新控制连接只触发一次即时重连(): Unit = runBlocking {
+        Fixture().use { fixture ->
+            fixture.login()
+            await { fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                fixture.hellosFor("client").size == 1 }
+            fixture.hellosFor("client").single().socket.close(1012, "服务重启")
+            await { fixture.runtime.state.value == RemoteAccountConnectionState.DISCONNECTED &&
+                fixture.hellosFor("client").size == 1 }
+
+            repeat(5) { fixture.runtime.refreshControlConnection() }
+            try {
+                withTimeout(750) {
+                    await { fixture.hellosFor("client").size == 2 &&
+                        fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED }
+                }
+            } catch (timeout: TimeoutCancellationException) {
+                fail("刷新控制连接未打断 1 秒退避：state=${fixture.runtime.state.value}, " +
+                    "clientHellos=${fixture.hellosFor("client").size}")
+            }
+            delay(1_200)
+            assertEquals("重复刷新必须合并为一次新连接", 2, fixture.hellosFor("client").size)
+            assertEquals("重复刷新不能创建额外 WebSocket", 2, fixture.sockets.size)
+        }
+    }
+
+    @Test fun 旧控制连接发起的目录查询不能跨新握手发布() = verifyPresenceAcrossReconnect(explicit = false)
+
+    @Test fun 显式刷新目录不返回旧控制代际的在线状态() = verifyPresenceAcrossReconnect(explicit = true)
+
+    private fun verifyPresenceAcrossReconnect(explicit: Boolean): Unit = runBlocking {
+        val scheduler = TestCoroutineScheduler()
+        val releaseOld = CountDownLatch(1)
+        val releaseNew = CountDownLatch(1)
+        val oldCall = if (explicit) 2 else 1
+        Fixture(dispatcher = StandardTestDispatcher(scheduler), beforePresenceResponse = { call ->
+            val gate = when {
+                call < oldCall -> null
+                call == oldCall -> releaseOld
+                else -> releaseNew
+            }
+            check(gate == null || gate.await(15, TimeUnit.SECONDS)) { "测试未释放在线状态应答" }
+        }).use { fixture ->
+            try {
+                fixture.heartbeatIntervalMs = 60_000
+                fixture.online.set(!explicit)
+                fixture.login()
+                val explicitRefresh = if (explicit) {
+                    pumpUntil(scheduler) { fixture.runtime.hosts.value.singleOrNull()?.online == false }
+                    fixture.online.set(true)
+                    fixture.parent.async { fixture.runtime.listHosts() }
+                } else null
+                pumpUntil(scheduler) { fixture.presenceCalls.get() == oldCall }
+                assertEquals(1L, fixture.runtime.clientControlGeneration.value)
+                val old = fixture.hellosFor("client").single()
+                fixture.online.set(false)
+                assertTrue(old.socket.close(1012, "服务重启"))
+                pumpUntil(scheduler) { fixture.runtime.state.value == RemoteAccountConnectionState.DISCONNECTED }
+                scheduler.advanceTimeBy(1_000)
+                pumpUntil(scheduler) { fixture.runtime.clientControlGeneration.value == 2L }
+
+                releaseOld.countDown()
+                pumpUntil(scheduler) { fixture.presenceCalls.get() == oldCall + 1 }
+                assertTrue("迟到的旧查询不能先发布在线", fixture.runtime.hosts.value.none { it.online })
+                if (explicitRefresh != null) assertFalse("显式查询不能返回旧结果", explicitRefresh.isCompleted)
+                releaseNew.countDown()
+                pumpUntil(scheduler) { fixture.runtime.hosts.value.isNotEmpty() && explicitRefresh?.isCompleted != false }
+                assertFalse(fixture.runtime.hosts.value.single().online)
+                if (explicitRefresh != null) assertFalse(explicitRefresh.await().single().online)
+            } finally {
+                releaseOld.countDown()
+                releaseNew.countDown()
+            }
+        }
+    }
+
+    @Test fun 控制面成功重连后刷新Host在线状态(): Unit = runBlocking {
+        Fixture().use { fixture ->
+            fixture.heartbeatIntervalMs = 60_000
+            fixture.login()
+            await { fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                fixture.runtime.hosts.value.singleOrNull()?.online == true }
+
+            val presenceBefore = fixture.presenceCalls.get()
+            fixture.presenceBodyDelayMs = 1_500
+            fixture.runtime.refreshControlConnection()
+            await { fixture.presenceCalls.get() == presenceBefore + 1 }
+            fixture.online.set(false)
+
+            fixture.hellosFor("client").single().socket.close(1012, "服务重启")
+            await { fixture.runtime.state.value == RemoteAccountConnectionState.DISCONNECTED }
+            await { fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                fixture.hellosFor("client").size == 2 }
+            await("控制面重连后未刷新 Host 在线状态", {
+                "presenceCalls=${fixture.presenceCalls.get()}, before=$presenceBefore, " +
+                    "hosts=${fixture.runtime.hosts.value}, state=${fixture.runtime.state.value}"
+            }) {
+                fixture.presenceCalls.get() > presenceBefore + 1 &&
+                    fixture.runtime.hosts.value.singleOrNull()?.online == false
+            }
+        }
+    }
+
     @Test fun 登录不选Host也立即注册Client并维持服务器心跳和在线刷新(): Unit = runBlocking {
         Fixture().use { fixture ->
             fixture.login()
             await { fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED && fixture.runtime.hosts.value.singleOrNull()?.online == true && fixture.pongs.get() > 0 }
-            assertEquals(0, fixture.connectRequests.get())
+            assertTrue(fixture.connectRequestSockets.isEmpty())
             assertEquals(1, fixture.sockets.size)
             fixture.online.set(false)
             await { fixture.runtime.hosts.value.singleOrNull()?.online == false }

@@ -350,6 +350,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                                 catalogError = workspaceCtx.catalogPhase == WorkspaceCatalogPhase.FAILED,
                                                 onHydrate = { runtime.hydrateWorkspaces(force = false) },
                                                 onRefreshCatalog = { runtime.hydrateWorkspaces(force = true) },
+                                                onForceRefresh = { runtime.forceRefreshActiveConnection() },
                                                 onOpenWorkspaceThread = { wsKey, threadId ->
                                                     workspacesByMenuKey[wsKey]?.let { runtime.selectWorkspace(it, initialThreadId = threadId) }
                                                 },
