@@ -72,6 +72,14 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
         check(scope.origin == origin) { "REMOTE_ORIGIN_MISMATCH" }
         return RemoteRoleCredential(identity, RemoteAuthCodec.parseTokenPair(auth(RemoteAuthCodec.registerAccountRole(identity, scope.role, accountToken, deviceNameProvider()))))
     }
+    /** 调用方以真实账号型 Client 的短期访问票据授权，为同一账号新增 HOST 角色身份；本项目不记录该票据。 */
+    suspend fun registerOwnedHost(scope: RemoteIdentityScope, identity: RemoteStaticIdentity,
+        clientAccessToken: String): RemoteRoleCredential {
+        check(scope.origin == origin) { "REMOTE_ORIGIN_MISMATCH" }
+        check(scope.role == RemoteRole.HOST) { "REMOTE_ROLE_MISMATCH" }
+        return RemoteRoleCredential(identity, RemoteAuthCodec.parseTokenPair(
+            auth(RemoteAuthCodec.registerOwnedRole(identity, RemoteRole.HOST, clientAccessToken, deviceNameProvider()))))
+    }
     override suspend fun refresh(scope: RemoteIdentityScope, deviceId: String, refreshToken: String): RemoteTokenPair {
         check(scope.origin == origin) { "REMOTE_ORIGIN_MISMATCH" }
         return RemoteAuthCodec.parseTokenPair(auth(RemoteAuthCodec.refresh(RemoteDeviceId(deviceId), refreshToken)))

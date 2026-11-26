@@ -1,6 +1,7 @@
 package com.openandroidintelligence.gateway.remote.network
 
 import com.openandroidintelligence.gateway.remote.identity.*
+import com.openandroidintelligence.gateway.remote.protocol.RemoteBase64Url
 import com.openandroidintelligence.gateway.remote.protocol.RemoteWireJson
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import com.openandroidintelligence.gateway.remote.runtime.*
@@ -70,6 +71,50 @@ class RemoteServerApiTest {
             assertTrue(registrations.all { it.third.objectValue().value("device").objectValue().requiredText("clientVersion") == com.openandroidintelligence.gateway.client.BuildConfig.OAI_REMOTE_CLIENT_VERSION })
             assertEquals(setOf("client", "host"), registrations.map { it.third.objectValue().value("device").objectValue().requiredText("role") }.toSet())
             assertEquals(7, fixture.requests.size)
+        }
+    }
+    @Test fun ownedHost注册使用客户端票据固定请求且先拒绝来源和角色() = runBlocking {
+        Server().use { fixture ->
+            val issuedAt = System.currentTimeMillis() + 60_000
+            fixture.route("/api/v1/devices/register-owned-role") {
+                obj("accessToken" to "a".repeat(16), "accessTokenExpiresAt" to issuedAt,
+                    "refreshToken" to "r".repeat(16), "refreshTokenExpiresAt" to issuedAt)
+            }
+            val clientAccessToken = "c".repeat(32)
+            val identity = RemoteStaticIdentityFactory.generate(RemoteDeviceId("00000000-0000-4000-8000-000000000001"))
+            val api = RemoteServerApi(fixture.origin, deviceNameProvider = { "测试手机" })
+            val hostScope = RemoteIdentityScope(fixture.origin, "owner", RemoteRole.HOST)
+            for (scope in listOf(
+                RemoteIdentityScope("https://other.example", "owner", RemoteRole.HOST),
+                RemoteIdentityScope(fixture.origin, "owner", RemoteRole.CLIENT),
+            )) {
+                val failure = runCatching { api.registerOwnedHost(scope, identity, clientAccessToken) }.exceptionOrNull()
+                assertEquals(IllegalStateException::class.java, failure?.javaClass)
+                assertEquals(if (scope.origin != fixture.origin) "REMOTE_ORIGIN_MISMATCH" else "REMOTE_ROLE_MISMATCH", failure?.message)
+            }
+            assertTrue(fixture.requests.isEmpty())
+
+            val credential = api.registerOwnedHost(hostScope, identity, clientAccessToken)
+
+            assertEquals(identity, credential.identity)
+            assertEquals(RemoteTokenPair("a".repeat(16), issuedAt, "r".repeat(16), issuedAt), credential.tokens)
+            val request = fixture.requests.single()
+            assertEquals("/api/v1/devices/register-owned-role", request.first)
+            assertEquals("Bearer $clientAccessToken", request.second)
+            assertEquals(Json.canonical(obj(
+                "v" to 1,
+                "device" to obj(
+                    "deviceId" to "00000000-0000-4000-8000-000000000001",
+                    "name" to "测试手机",
+                    "role" to "host",
+                    "platform" to "android",
+                    "identityKey" to RemoteBase64Url.encode(identity.publicKey),
+                    "clientVersion" to com.openandroidintelligence.gateway.client.BuildConfig.OAI_REMOTE_CLIENT_VERSION,
+                    "harnessVersion" to com.openandroidintelligence.gateway.remote.protocol.RemoteProtocol.HARNESS_COMPATIBILITY_VERSION,
+                ),
+            )), Json.canonical(request.third))
+            assertFalse(credential.identity.toString().contains(clientAccessToken))
+            assertFalse(credential.toString().contains(clientAccessToken))
         }
     }
     @Test fun 上游目录无online时必须查询presence且以独立在线事实为准() = runBlocking {

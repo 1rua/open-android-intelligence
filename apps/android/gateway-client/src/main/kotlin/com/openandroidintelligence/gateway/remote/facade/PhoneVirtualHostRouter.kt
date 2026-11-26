@@ -35,6 +35,7 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
                     "harnessVersionSource" to "compatibility", "upstreamCommit" to RemoteProtocol.UPSTREAM_COMMIT),
             ))
             "workspace/list" -> workspace(access)
+            "workspace/create" -> workspaceCreate(access, input)
             "session/list" -> Json.of(mapOf("items" to bus.sessions(access)))
             "session/create" -> {
                 val request = request(args)
@@ -149,9 +150,38 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
     fun sanitizeStreamContent(access: ControlAccessBinding,method: String,input: JsonValue,value: JsonValue): JsonValue =
         if (method == "session/follow") bus.sanitizeContent(access,sessionId(request(carrierArgs(input))),value) else value
 
-    private fun workspace(access: ControlAccessBinding): JsonValue = Json.of(mapOf("items" to listOf(mapOf("workspaceId" to WORKSPACE,
-        "path" to WORKSPACE, "title" to strings.workspaceTitle, "sessionIds" to bus.sessions(access).map { fields(it).text("sessionId") })),
-        "archivedSessionIds" to emptyList<String>(), "pinnedSessionIds" to emptyList<String>()))
+    private fun workspaceRecord(access: ControlAccessBinding): JsonValue.JObject {
+        val sessions = bus.sessions(access)
+        val createdAt = java.time.Instant.ofEpochMilli(bus.workspaceCreatedAt).toString()
+        val updatedMillis = sessions.mapNotNull { fields(it).number("updatedAt") }.maxOrNull() ?: bus.workspaceCreatedAt
+        val updatedAt = java.time.Instant.ofEpochMilli(maxOf(bus.workspaceCreatedAt, updatedMillis)).toString()
+        return Json.of(mapOf(
+            "workspaceId" to WORKSPACE,
+            "path" to WORKSPACE,
+            "title" to strings.workspaceTitle,
+            "sessionIds" to sessions.map { fields(it).text("sessionId") },
+            "createdAt" to createdAt,
+            "updatedAt" to updatedAt,
+        )) as JsonValue.JObject
+    }
+
+    private fun workspace(access: ControlAccessBinding): JsonValue = Json.of(mapOf(
+        "items" to listOf(workspaceRecord(access)),
+        "archivedSessionIds" to emptyList<String>(),
+        "pinnedSessionIds" to emptyList<String>(),
+    ))
+
+    /** 只复用基线中的唯一手机工作区；打开已有工作区不创建文件或任务。 */
+    private fun workspaceCreate(access: ControlAccessBinding, input: JsonValue): JsonValue {
+        val root = fields(input)
+        root.only(setOf("args"))
+        val args = fields(root["args"] ?: fail("CONTROL_PARAMETERS_INVALID"))
+        args.only(setOf("request"))
+        val request = fields(args["request"] ?: fail("CONTROL_PARAMETERS_INVALID"))
+        request.only(setOf("path"))
+        if (request.text("path") != WORKSPACE) fail("CONTROL_WORKSPACE_NOT_FOUND")
+        return Json.of(mapOf("workspace" to workspaceRecord(access), "created" to false))
+    }
 
     private fun history(access: ControlAccessBinding, request: Map<String, JsonValue>): JsonValue =
         bus.history(access, sessionId(request), request.number("beforeSeq"), request.number("throughSeq"), request.number("maxMessages")?.toInt() ?: 50)

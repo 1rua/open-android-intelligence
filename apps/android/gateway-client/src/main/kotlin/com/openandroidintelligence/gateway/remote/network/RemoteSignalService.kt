@@ -285,7 +285,7 @@ internal class RemoteSignalService(
         private val localPrivate = credential.identity.privateKeyCopy()
         private val secure = try { RemoteSecureChannel(NoiseIkChannel.create(if (identityScope.role == RemoteRole.CLIENT) NoiseRole.CLIENT_INITIATOR else NoiseRole.HOST_RESPONDER,
             binding, localPrivate, peer.publicKey)) } finally { localPrivate.fill(0) }
-        private val sent = Mutex(); private val handshake = Mutex(); private val rtcSignals = Mutex(); private val callbacksLock = Any()
+        private val sent = Mutex(); private val handshake = Mutex(); private val rtcSignals = Mutex(); private val transportSelection = Mutex(); private val callbacksLock = Any()
         private val messages = linkedSetOf<(ByteArray) -> Unit>(); private val closures = linkedSetOf<(String) -> Unit>()
         private val carrierReady = CompletableDeferred<Unit>()
         private val rtcAvailable = CompletableDeferred<RemoteRtcPeer>()
@@ -324,25 +324,38 @@ internal class RemoteSignalService(
             carrierReady.complete(Unit)
             sendControl("transport.selected", obj("connectionId" to id, "targetDeviceId" to peer.device.deviceId, "transport" to selected))
         }
-        suspend fun selectHostTransport(transport: String) {
+        suspend fun selectHostTransport(transport: String) = transportSelection.withLock {
+            if (selected != null) {
+                // 固定 v0.6.5 Host 在已认证隧道上忽略迟到重复 transport.selected，不切换数据面也不撕毁连接。
+                if (secure.complete) return@withLock
+                throw RemoteRpcException("CONNECTION_REPLACED")
+            }
             val preferred = (assignment.fields.firstOrNull { it.first == "preferredTransports" }?.second as? JsonValue.JArray)
                 ?.items?.mapNotNull { (it as? JsonValue.JString)?.value } ?: listOf("lan", "p2p", "turn", "relay")
             if (transport !in preferred || "transport.$transport" !in negotiated) throw RemoteRpcException("TRANSPORT_NOT_NEGOTIATED")
+            if (transport == "relay") {
+                synchronized(callbacksLock) { requireCurrentSelection(); selected = "relay" }
+                val closingRtc = rtcSignals.withLock {
+                    rtcDisabled = true
+                    rtc = null
+                    rtcPeer.also { rtcPeer = null }
+                }
+                closingRtc?.close()
+                attachRelay()
+                carrierReady.complete(Unit)
+                return@withLock
+            }
             synchronized(callbacksLock) {
                 requireCurrentSelection()
-                if (selected != null) throw RemoteRpcException("CONNECTION_REPLACED")
                 selected = transport
             }
-            if (transport == "relay") {
-                discardRtc()
-                attachRelay()
-            } else {
-                val peerRtc = withTimeout(15_000) { rtcAvailable.await() }
-                val carrier = peerRtc.awaitOpen()
-                synchronized(callbacksLock) { requireCurrentSelection(); rtc = carrier }
-                carrier.onMessage(::receiveCiphertext)
-                carrier.onClose { fail(it) }
+            val peerRtc = withTimeout(15_000) { rtcAvailable.await() }
+            val opened = peerRtc.awaitOpen()
+            synchronized(callbacksLock) {
+                requireCurrentSelection()
+                rtc = opened
             }
+            opened.onMessage(::receiveCiphertext); opened.onClose { fail(it) }
             carrierReady.complete(Unit)
         }
         private fun discardRtc() {
@@ -434,7 +447,15 @@ internal class RemoteSignalService(
         private fun sendControlFrame(frame: RemoteControlFrame) { requireCurrent(); socket?.send(frame) ?: throw RemoteRpcException("TRANSPORT_CLOSED") }
         suspend fun receiveHandshake(frame: RemoteControlFrame) = handshake.withLock {
             withTimeout(20_000) { carrierReady.await() }; requireCurrent()
-            if (terminal != null || secure.complete) throw RemoteRpcException("SECURE_CHANNEL_FAILED")
+            if (terminal != null) throw RemoteRpcException("SECURE_CHANNEL_FAILED")
+            if (secure.complete) {
+                // 固定 v0.6.5 Host 只忽略同隧道的重复首帧，不重跑 Noise 或认证。
+                if (identityScope.role == RemoteRole.HOST &&
+                    frame.payload.requiredText("connectionId") == id &&
+                    frame.payload.requiredText("targetDeviceId") == credential.identity.deviceId.value &&
+                    frame.payload.longValue("step") == 1L) return@withLock
+                throw RemoteRpcException("SECURE_CHANNEL_FAILED")
+            }
             secure.readHandshakeFrame(frame)
             if (identityScope.role == RemoteRole.HOST) {
                 val reply = secure.writeHandshakeFrame(UUID.randomUUID().toString(), System.currentTimeMillis())

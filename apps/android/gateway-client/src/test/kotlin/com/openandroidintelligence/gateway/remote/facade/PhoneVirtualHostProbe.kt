@@ -21,8 +21,26 @@ object PhoneVirtualHostProbe {
             }
             override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
                 context.beforeDispatch()
+                if (operation is ControlOperation.DumpTree && operation.query.text == "oversized-receipt-probe") {
+                    return PhoneControlResult(ControlValue.Object(mapOf(
+                        "snapshotId" to ControlValue.Text("probe-oversized-snapshot"),
+                        "payload" to ControlValue.Text("x".repeat(20_000)),
+                    )))
+                }
+                if (operation is ControlOperation.PluginInvoke &&
+                    operation.pluginId == "org.openandroidintelligence.probe" &&
+                    operation.capabilityId == "org.openandroidintelligence.probe.receipt@1.0.0" &&
+                    operation.method == "oversized") {
+                    val repeat = ((operation.params.values["repeat"] as? ControlValue.Number)?.value?.toIntOrNull() ?: 18_000)
+                        .coerceIn(1, 64_000)
+                    return PhoneControlResult(ControlValue.Object(mapOf(
+                        "snapshotId" to ControlValue.Text("probe-oversized"),
+                        "payload" to ControlValue.Text("x".repeat(repeat)),
+                    )))
+                }
                 return PhoneControlResult(ControlValue.Object(mapOf("snapshotId" to ControlValue.Text("probe-snapshot"),
-                    "nodes" to ControlValue.Array(emptyList()))), listOf(ControlArtifact("probe-artifact", "application/json", "probe-version", "手机隔离探针".toByteArray())))
+                    "nodes" to ControlValue.Array(emptyList()))),
+                    listOf(ControlArtifact("probe-artifact", "application/json", "probe-version", "手机隔离探针".toByteArray())))
             }
             override fun cancel(scope: ControlRequestScope) {}
             override fun capabilities(access: ControlAccessBinding) = ControlValue.Object(emptyMap())

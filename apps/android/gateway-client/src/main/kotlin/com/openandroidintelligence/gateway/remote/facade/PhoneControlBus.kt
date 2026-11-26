@@ -12,6 +12,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+/** Session V3 单条历史记录的 UTF-16 JSON 预算；回执正文不能占据整页预算。 */
+private const val HISTORY_RECORD_BUDGET = 16_000
+/** 回执溢出产物保留前缀；普通执行器产物不得占用以免发生静默覆盖。 */
+private const val RESULT_ARTIFACT_PREFIX = "result-"
+
 /** 当前进程唯一手机执行总线。Session 门面与 MCP 最终进入同一账本和内核执行器。 */
 class PhoneControlBus(
     private val coroutineScope: CoroutineScope,
@@ -39,6 +44,7 @@ class PhoneControlBus(
     private var stopped = false
     private var deliveryEpoch = 0L
     private val version = MutableStateFlow(0L)
+    val workspaceCreatedAt: Long = currentTimeMillis()
     val changes: StateFlow<Long> get() = version
 
     fun create(access: ControlAccessBinding, taskId: String = UUID.randomUUID().toString()): String = synchronized(lock) {
@@ -188,8 +194,16 @@ class PhoneControlBus(
                     return
                 }
                 result.requireContentAccess?.let { check -> check();task.contentChecks[request.requestId]=check }
+                val seenArtifactIds = mutableSetOf<String>()
+                result.artifacts.forEach { artifact ->
+                    if (!Regex("[A-Za-z0-9_-]+").matches(artifact.id) || artifact.id.startsWith(RESULT_ARTIFACT_PREFIX)) {
+                        fail("CONTROL_ARTIFACT_INVALID")
+                    }
+                    if (!seenArtifactIds.add(artifact.id)) {
+                        fail("CONTROL_ARTIFACT_CONFLICT")
+                    }
+                }
                 val artifacts = result.artifacts.map { artifact ->
-                    require(Regex("[A-Za-z0-9_-]+").matches(artifact.id)) { "CONTROL_ARTIFACT_INVALID" }
                     task.artifacts[artifact.id] = request.requestId to artifact.copy(bytes = artifact.bytes.copyOf())
                     mapOf("artifactId" to artifact.id, "path" to "artifacts/${artifact.id}", "mimeType" to artifact.mimeType,
                         "bytes" to artifact.bytes.size, "version" to artifact.version)
@@ -354,7 +368,7 @@ class PhoneControlBus(
         }
         if (related.none { requestEventType(it) == "assistant/message" }) {
             val receipt = Json.canonical(Json.of(minimal(row, false)))
-            publishAssistantMessage(task, id, turn, receipt)
+            publish(task, assistantMessage(task, id, turn, receipt))
         }
         if (related.none { requestEventType(it) == "turn/end" }) {
             event(task, "turn/end", mapOf("turn" to turn, "request_id" to id))
@@ -498,35 +512,69 @@ class PhoneControlBus(
         if (stopped || runCatching { executor.requireCurrentAccess(access) }.isFailure) return
         val complete = receipt(access, task.scope.taskSessionId, id)
         val fullText = Json.canonical(complete)
-        val text = if (fullText.length <= 12_000) fullText else {
-            val bytes = fullText.toByteArray()
-            val artifactId = "result-$id"
-            val version = "sha256:" + java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
-            task.artifacts[artifactId] = id to ControlArtifact(artifactId, "application/json", version, bytes)
-            Json.canonical(Json.of(minimal(find(access, task.scope.taskSessionId, id), true) + mapOf("resultArtifact" to mapOf(
-                "artifactId" to artifactId, "path" to "artifacts/$artifactId", "mimeType" to "application/json", "bytes" to bytes.size, "version" to version))))
+        val seq = task.records.size
+        val time = currentTimeMillis()
+        val record = assistantMessage(task, id, task.turn, fullText, seq, time)
+        val published = if (Json.canonical(record).length <= HISTORY_RECORD_BUDGET) record else {
+            val artifact = resultArtifact(task, id, fullText)
+            assistantMessage(task, id, task.turn, artifactSummary(access, task, id, artifact), seq, time)
         }
-        publishAssistantMessage(task, id, task.turn, text)
+        publish(task, published)
         if (task.activeRequestId == id) {
             event(task, "turn/end", mapOf("turn" to task.turn, "request_id" to id))
             task.activeRequestId = null
         }
     }
-    private fun publishAssistantMessage(task: Task, id: String, turn: Int, text: String) {
-        val stream = listOf(mapOf("type" to "block-start", "index" to 0, "blockType" to "text"),
+
+    private fun assistantMessage(task: Task, id: String, turn: Int, text: String,
+                                 seq: Int = task.records.size, time: Long = currentTimeMillis()): JsonValue.JObject {
+        val stream = listOf(
+            mapOf("type" to "block-start", "index" to 0, "blockType" to "text"),
             mapOf("type" to "text-delta", "index" to 0, "text" to text),
             mapOf("type" to "block-end", "index" to 0, "block" to mapOf("type" to "text", "text" to text)),
-            mapOf("type" to "finish", "reason" to mapOf("kind" to "stop"))).map {
-            mapOf("type" to "chunk", "time" to currentTimeMillis(), "chunk" to it)
-        }
-        event(task, "assistant/message", mapOf("turn" to turn, "step" to 1,
-            "message" to mapOf("id" to id, "role" to "assistant", "content" to listOf(mapOf("type" to "text", "text" to text)),
-                "source" to mapOf("kind" to "tool", "callId" to id)), "stream" to stream, "request_id" to id))
+            mapOf("type" to "finish", "reason" to mapOf("kind" to "stop")),
+        ).map { mapOf("type" to "chunk", "time" to time, "chunk" to it) }
+        return Json.of(mapOf("type" to "event", "event" to mapOf(
+            "seq" to seq, "time" to time, "type" to "assistant/message", "data" to mapOf(
+                "turn" to turn, "step" to 1, "message" to message(id, text), "stream" to stream, "request_id" to id,
+            ),
+        ))) as JsonValue.JObject
     }
-    private fun event(task: Task, type: String, data: Map<String, Any?>) {
-        task.records += Json.of(mapOf("type" to "event", "event" to mapOf("seq" to task.records.size, "time" to currentTimeMillis(), "type" to type, "data" to data)))
-        task.revision++; changed()
+
+    private fun message(id: String, text: String): Map<String, Any?> = mapOf(
+        "id" to id, "role" to "assistant", "content" to listOf(mapOf("type" to "text", "text" to text)),
+        "source" to mapOf("kind" to "tool", "callId" to id),
+    )
+
+    private fun artifactSummary(access: ControlAccessBinding, task: Task, id: String, artifact: ControlArtifact): String =
+        Json.canonical(Json.of(minimal(find(access, task.scope.taskSessionId, id), true) + mapOf("resultArtifact" to mapOf(
+            "artifactId" to artifact.id, "path" to "artifacts/${artifact.id}", "mimeType" to artifact.mimeType,
+            "bytes" to artifact.bytes.size, "version" to artifact.version,
+        ))))
+
+    private fun resultArtifact(task: Task, id: String, text: String): ControlArtifact {
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        val artifactId = "$RESULT_ARTIFACT_PREFIX$id"
+        val version = "sha256:" + java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+        val artifact = ControlArtifact(artifactId, "application/json", version, bytes)
+        task.artifacts[artifactId] = id to artifact
+        return artifact
     }
+
+    private fun event(task: Task, type: String, data: Map<String, Any?>): JsonValue.JObject {
+        val record = Json.of(mapOf("type" to "event", "event" to mapOf(
+            "seq" to task.records.size, "time" to currentTimeMillis(), "type" to type, "data" to data,
+        ))) as JsonValue.JObject
+        publish(task, record)
+        return record
+    }
+
+    private fun publish(task: Task, record: JsonValue.JObject) {
+        task.records += record
+        task.revision++
+        changed()
+    }
+
     private fun changed() { version.value += 1 }
     private fun executionProjection(rows: List<ControlRequestMetadata>): Map<String, Any> = mapOf(
         "status" to if (rows.any { it.state == ControlRequestState.AWAITING_CONFIRMATION }) "needs_user_input" else if (rows.any { !it.state.terminal }) "running" else "idle")

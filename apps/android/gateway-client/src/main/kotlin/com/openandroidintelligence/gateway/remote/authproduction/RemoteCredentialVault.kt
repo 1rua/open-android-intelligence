@@ -8,7 +8,11 @@ import com.openandroidintelligence.gateway.remote.auth.RemoteIdentityCorruptedEx
 import com.openandroidintelligence.gateway.remote.auth.RemoteIdentityLockedException
 import com.openandroidintelligence.gateway.remote.auth.RemoteIdentityPersistence
 import com.openandroidintelligence.gateway.remote.auth.RemoteIdentityProtector
+import com.openandroidintelligence.gateway.remote.auth.RemoteIdentityStore
 import com.openandroidintelligence.gateway.remote.auth.safeRoleErrorCode
+import com.openandroidintelligence.gateway.remote.identity.RemoteIdentityScope
+import com.openandroidintelligence.gateway.remote.identity.RemoteRole
+import com.openandroidintelligence.gateway.remote.identity.RemoteRoleCredential
 import com.openandroidintelligence.gateway.remote.protocol.RemoteBase64Url
 import com.openandroidintelligence.gateway.remote.protocol.RemoteWireJson
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
@@ -150,6 +154,42 @@ class RemoteCredentialVault internal constructor(
         val updated = state.copy(failures = state.failures.copy(hostStop = safe))
         persistRoleTerminal(updated, account, { it.copy(host = safe) })
     }
+    internal sealed interface HostRegistrationCommitResult {
+        data object Committed : HostRegistrationCommitResult
+        data object NotEligible : HostRegistrationCommitResult
+        data object ExistingHostConflict : HostRegistrationCommitResult
+        data object IdentityConflict : HostRegistrationCommitResult
+    }
+    /**
+     * 首次 Host 注册补偿只在仍有效的同一授权 epoch 内执行，并把 Host 凭据与清除暂态注册标记合并成一次提交。
+     * 在锁内明确区分成功、旧 Host 记录冲突、身份冲突与无资格，避免调用方锁外猜测；真正写盘失败仍抛出。
+     */
+    internal fun completeHostRegistration(account: RemoteActiveAccount, credential: RemoteRoleCredential): HostRegistrationCommitResult = locked {
+        if (!authorizationCurrent(account)) return@locked HostRegistrationCommitResult.NotEligible
+        val state = load()
+        if (state.active != account || state.failures.clientRegistration != null ||
+            state.failures.clientStop != null || state.failures.hostStop != null ||
+            state.failures.hostRegistration !in RETRYABLE_HOST_REGISTRATION_ERRORS) return@locked HostRegistrationCommitResult.NotEligible
+        val terminal = try { loadRoleTerminal(account) } catch (_: Exception) { return@locked HostRegistrationCommitResult.NotEligible }
+        if (terminal?.client != null || terminal?.host != null) return@locked HostRegistrationCommitResult.NotEligible
+
+        val clientScope = RemoteIdentityScope(account.origin, account.accountId, RemoteRole.CLIENT)
+        val hostScope = RemoteIdentityScope(account.origin, account.accountId, RemoteRole.HOST)
+        if (state.records.containsKey(hostScope.storageKey)) return@locked HostRegistrationCommitResult.ExistingHostConflict
+        val clientCredential = try { RemoteIdentityStore(ReadOnlyRecords(state.records), protector).load(clientScope) }
+        catch (_: Exception) { return@locked HostRegistrationCommitResult.NotEligible } ?: return@locked HostRegistrationCommitResult.NotEligible
+        if (clientCredential.identity.deviceId == credential.identity.deviceId ||
+            MessageDigest.isEqual(clientCredential.identity.publicKey, credential.identity.publicKey)) {
+            return@locked HostRegistrationCommitResult.IdentityConflict
+        }
+
+        val failures = state.failures.copy(hostRegistration = null)
+        val snapshot = HostRegistrationCommit(state, failures, hostScope.storageKey, ::save)
+        val registrationStore = RemoteIdentityStore(snapshot, protector)
+        val ticket = registrationStore.beginRegistration(account.origin, account.accountId)
+        registrationStore.commitRegistration(ticket, hostScope, credential)
+        if (snapshot.committed()) HostRegistrationCommitResult.Committed else HostRegistrationCommitResult.NotEligible
+    }
     /** 仅用于角色终态围栏本身也不可用时；账号级失败关闭，下一次显式登录建立新 epoch。 */
     internal fun failClosed(account: RemoteActiveAccount) = locked {
         markFailClosed(account)
@@ -179,9 +219,11 @@ class RemoteCredentialVault internal constructor(
         account
     }
     fun requireCurrent(account: RemoteActiveAccount) = locked {
-        check(!revocationPending() && !processFailClosed(account) && load().active == account &&
-            (account.loginAttemptId == null || loginFence.authorized(account.loginAttemptId))) { "REMOTE_AUTHORIZATION_SUPERSEDED" }
+        check(authorizationCurrent(account) && load().active == account) { "REMOTE_AUTHORIZATION_SUPERSEDED" }
     }
+    private fun authorizationCurrent(account: RemoteActiveAccount): Boolean =
+        !revocationPending() && !processFailClosed(account) &&
+            (account.loginAttemptId == null || loginFence.authorized(account.loginAttemptId))
     private fun revocationPending(): Boolean = try {
         revocation.openRead().use { it.read() != 0 }
     } catch (_: FileNotFoundException) { revocation.baseFile.exists() }
@@ -281,6 +323,25 @@ class RemoteCredentialVault internal constructor(
         .joinToString("") { "%02x".format(it.toInt() and 0xff) }
     private fun processKey(account: RemoteActiveAccount) = "${lockFile.canonicalPath}\u0000${accountKey(account)}"
     private fun processFailClosed(account: RemoteActiveAccount) = processKey(account) in processFailedClosed
+    /** 只短暂借用已受控的凭据快照解码；Store 的写入能力由单独适配器受限暴露。 */
+    private class ReadOnlyRecords(private val records: Map<String, String>) : RemoteIdentityPersistence {
+        override fun read(scopeKey: String): ByteArray? = records[scopeKey]?.let(RemoteBase64Url::decode)
+        override fun writeAtomic(scopeKey: String, value: ByteArray): Unit = error("REMOTE_CLIENT_READ_INVALID")
+        override fun clear(scopeKey: String): Unit = error("REMOTE_CLIENT_READ_INVALID")
+    }
+    /** 单次 Host 写入适配器复用 Store 的 peer pin 合并与编码，并原子合并清除暂态注册标记。 */
+    private class HostRegistrationCommit(private val state: State, private val failures: RoleFailures,
+        private val hostScopeKey: String, private val commit: (State) -> Unit) : RemoteIdentityPersistence {
+        private var written = false
+        override fun read(scopeKey: String): ByteArray? = state.records[scopeKey]?.let(RemoteBase64Url::decode)
+        override fun writeAtomic(scopeKey: String, value: ByteArray) {
+            check(scopeKey == hostScopeKey && !written) { "REMOTE_HOST_REGISTRATION_WRITE_INVALID" }
+            written = true
+            commit(state.copy(records = state.records + (scopeKey to RemoteBase64Url.encode(value)), failures = failures))
+        }
+        override fun clear(scopeKey: String): Unit = error("REMOTE_HOST_REGISTRATION_CLEAR_INVALID")
+        fun committed() = written
+    }
     private data class State(val epoch: Long = 0, val active: RemoteActiveAccount? = null, val records: Map<String, String> = emptyMap(),
         val failures: RoleFailures = RoleFailures())
     private fun load(): State {
@@ -329,6 +390,7 @@ class RemoteCredentialVault internal constructor(
     companion object {
         private const val ROLE_TERMINAL_UNAVAILABLE = "REMOTE_CREDENTIAL_PERSISTENCE_FAILED"
         private const val INVALID_ROLE_ERROR = "__INVALID_REMOTE_ROLE_ERROR__"
+        private val RETRYABLE_HOST_REGISTRATION_ERRORS = setOf("CONNECTION_FAILED", "RATE_LIMITED", "INTERNAL_ERROR")
         private val monitors = ConcurrentHashMap<String, Any>()
         private val transactions = ConcurrentHashMap<String, Mutex>()
         private val processFailedClosed = ConcurrentHashMap.newKeySet<String>()

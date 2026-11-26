@@ -175,6 +175,82 @@ class RemoteCredentialVaultTest {
         assertNull(afterStorageFailure.clientStop)
         mainBefore.fill(0)
     }
+    @Test fun Host首次注册补偿只原子清除正确代次的暂态标记并保留角色围栏() {
+        val directory = Files.createTempDirectory("remote-vault-host-registration").toFile()
+        val protector = Protector(); val vault = RemoteCredentialVault(directory, protector)
+        val store = RemoteIdentityStore(vault, protector)
+        val client = RemoteIdentityScope("https://remote.example", "owner", RemoteRole.CLIENT)
+        val host = client.copy(role = RemoteRole.HOST)
+        val tokens = RemoteTokenPair("client-access-secret", 1000000, "client-refresh-secret", 2000000)
+        store.save(client, RemoteRoleCredential(RemoteStaticIdentityFactory.generate(RemoteDeviceId("client")), tokens))
+        store.save(host, RemoteRoleCredential(RemoteStaticIdentityFactory.generate(RemoteDeviceId("old-host")), tokens))
+        val epoch = vault.revokeActive(); val active = vault.activate(client.origin, client.accountId, epoch,
+            hostRegistrationError = "CONNECTION_FAILED")
+        store.clear(host)
+        val expected = RemoteHostFailure(RemoteHostFailureStage.CONTROL, "DEVICE_REVOKED")
+        vault.stopHostUntilLogin(active, expected)
+        val hostCredential = RemoteRoleCredential(RemoteStaticIdentityFactory.generate(RemoteDeviceId("host")),
+            RemoteTokenPair("host-access-secret", 1000000, "host-refresh-secret", 2000000))
+
+        assertEquals("Host 已有角色终态时不能补注册", RemoteCredentialVault.HostRegistrationCommitResult.NotEligible,
+            vault.completeHostRegistration(active, hostCredential))
+        assertNull(RemoteIdentityStore(RemoteCredentialVault(directory, protector), protector).load(host))
+        assertEquals(expected, RemoteCredentialVault(directory, protector).roleFailures(active).hostStop)
+
+        val nextEpoch = vault.revokeActive(); val next = vault.activate(client.origin, client.accountId, nextEpoch,
+            hostRegistrationError = "RATE_LIMITED")
+        assertEquals(RemoteCredentialVault.HostRegistrationCommitResult.Committed, vault.completeHostRegistration(next, hostCredential))
+        assertEquals("同一角色不能由迟到的重入结果覆盖", RemoteCredentialVault.HostRegistrationCommitResult.NotEligible,
+            vault.completeHostRegistration(next, RemoteRoleCredential(
+                RemoteStaticIdentityFactory.generate(RemoteDeviceId("late-host")), tokens)))
+        val restarted = RemoteCredentialVault(directory, protector); val restartedStore = RemoteIdentityStore(restarted, protector)
+        assertEquals("host", restartedStore.load(host)!!.identity.deviceId.value)
+        assertNull(restarted.roleFailures(next).hostRegistration)
+        assertEquals("client", restartedStore.load(client)!!.identity.deviceId.value)
+    }
+    @Test fun Host首次注册补偿拒绝错代次同身份写失败与不完整授权() {
+        val directory = Files.createTempDirectory("remote-vault-host-registration-fence").toFile()
+        val protector = Protector(); val vault = RemoteCredentialVault(directory, protector)
+        val store = RemoteIdentityStore(vault, protector)
+        val client = RemoteIdentityScope("https://remote.example", "owner", RemoteRole.CLIENT)
+        val host = client.copy(role = RemoteRole.HOST)
+        val clientIdentity = RemoteStaticIdentityFactory.generate(RemoteDeviceId("client"))
+        val tokens = RemoteTokenPair("client-access-secret", 1000000, "client-refresh-secret", 2000000)
+        store.save(client, RemoteRoleCredential(clientIdentity, tokens))
+        val old = vault.activate(client.origin, client.accountId,
+            vault.revokeActive(), hostRegistrationError = "CONNECTION_FAILED")
+        val staleCredential = RemoteRoleCredential(RemoteStaticIdentityFactory.generate(RemoteDeviceId("host")), tokens)
+        val current = vault.activate(client.origin, client.accountId,
+            vault.revokeActive(), hostRegistrationError = "CONNECTION_FAILED")
+        assertEquals("旧 epoch 迟到结果不能写入", RemoteCredentialVault.HostRegistrationCommitResult.NotEligible,
+            vault.completeHostRegistration(old, staleCredential))
+
+        assertEquals("安装 Client 与待写 Host 必须是不同身份", RemoteCredentialVault.HostRegistrationCommitResult.IdentityConflict,
+            vault.completeHostRegistration(current, RemoteRoleCredential(clientIdentity, tokens)))
+        store.save(host, RemoteRoleCredential(RemoteStaticIdentityFactory.generate(RemoteDeviceId("legacy-host")), tokens))
+        assertEquals("磁盘存在旧 Host 记录时必须明确报冲突", RemoteCredentialVault.HostRegistrationCommitResult.ExistingHostConflict,
+            vault.completeHostRegistration(current, RemoteRoleCredential(RemoteStaticIdentityFactory.generate(RemoteDeviceId("host")), tokens)))
+        store.clear(host)
+        store.clear(client)
+        assertEquals("Client 凭据缺失时不能补注册 Host", RemoteCredentialVault.HostRegistrationCommitResult.NotEligible,
+            vault.completeHostRegistration(current, RemoteRoleCredential(RemoteStaticIdentityFactory.generate(RemoteDeviceId("host")), tokens)))
+        store.save(client, RemoteRoleCredential(clientIdentity, tokens))
+
+        val mainBefore = File(directory, "remote-credentials.bin").readBytes()
+        val failing = RemoteCredentialVault(directory, protector,
+            { atomic, stream -> atomic.finishWrite(stream) },
+            { _, _ -> throw IOException("模拟 Host 凭据提交失败") })
+        assertThrows(com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException::class.java) {
+            failing.completeHostRegistration(current, RemoteRoleCredential(
+                RemoteStaticIdentityFactory.generate(RemoteDeviceId("host")), tokens))
+        }
+        assertArrayEquals("写失败不能清除暂态标记或改动 Client 凭据", mainBefore, File(directory, "remote-credentials.bin").readBytes())
+        val restarted = RemoteCredentialVault(directory, protector); val restartedStore = RemoteIdentityStore(restarted, protector)
+        assertEquals("client", restartedStore.load(client)!!.identity.deviceId.value)
+        assertEquals("CONNECTION_FAILED", restarted.roleFailures(current).hostRegistration)
+        assertNull(restartedStore.load(host))
+        mainBefore.fill(0)
+    }
     @Test fun 角色围栏和主凭据同时不可写时账号级失败关闭且进程重建不能恢复() {
         val directory = Files.createTempDirectory("remote-vault-role-terminal-fail-closed").toFile()
         val protector = Protector(); val vault = RemoteCredentialVault(directory, protector)
@@ -224,5 +300,22 @@ class RemoteCredentialVaultTest {
         val failures = restarted.roleFailures(active)
         assertEquals(expected, failures.hostStop)
         assertNull("Host 终态不能扩大到 Client", failures.clientStop)
+    }
+    @Test fun stopHostUntilLogin回退未知错误码后重启仍可读取角色围栏且不影响Client() {
+        val directory = Files.createTempDirectory("remote-vault-host-fallback-code").toFile()
+        val protector = Protector(); val vault = RemoteCredentialVault(directory, protector)
+        val active = vault.activate("https://remote.example", "owner", vault.revokeActive())
+
+        vault.stopHostUntilLogin(active, RemoteHostFailure(RemoteHostFailureStage.REGISTRATION, "METHOD_NOT_FOUND"))
+
+        val inProcess = vault.roleFailures(active)
+        val expected = RemoteHostFailure(RemoteHostFailureStage.REGISTRATION, "CONTROL_CONNECTION_FAILED")
+        assertEquals(expected, inProcess.hostStop)
+        assertNull("未知 Host 错误回退不得连带停用健康 Client", inProcess.clientStop)
+
+        val restarted = RemoteCredentialVault(directory, protector)
+        val afterRestart = restarted.roleFailures(active)
+        assertEquals(expected, afterRestart.hostStop)
+        assertNull("重启读取角色围栏后 Client 仍须保持可用", afterRestart.clientStop)
     }
 }
