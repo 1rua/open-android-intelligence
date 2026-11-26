@@ -3,6 +3,7 @@ package com.openandroidintelligence.gateway.remote.facade
 import com.openandroidintelligence.control.remote.*
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcConnectionScope
 import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -23,7 +24,7 @@ class PhoneContentDeliveryTest {
             val next = rows.toMutableMap(); val result = change(next); rows = next; return result
         }
     }
-    private class Executor : PhoneControlExecutor {
+    private class Executor(private val artifactIdForRequest: (String) -> String = { artifactId(it) }) : PhoneControlExecutor {
         var current = true
         var contentCurrent = true
         val contentCurrentByRequest = mutableMapOf<String, Boolean>()
@@ -33,7 +34,7 @@ class PhoneContentDeliveryTest {
         override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
             context.beforeDispatch()
             return PhoneControlResult(ControlValue.Object(mapOf("secret" to ControlValue.Text(SECRET))),
-                listOf(ControlArtifact("private-image", "image/webp", "version", SECRET.toByteArray())),requireContentAccess={
+                listOf(ControlArtifact(artifactIdForRequest(context.scope.key.requestId), "image/webp", "version", SECRET.toByteArray())), requireContentAccess = {
                     if (!contentCurrent || contentCurrentByRequest[context.scope.key.requestId] == false) throw ControlRequestException("PUSH_DELIVERY_REVOKED")
                 })
         }
@@ -49,8 +50,8 @@ class PhoneContentDeliveryTest {
     private fun request(id: String = "content-request-00001") = ControlRequestParser.parse(Json.canonical(Json.of(mapOf(
         "request_id" to id, "op" to "ui.dump_tree", "args" to emptyMap<String, Any>()))))
     private fun page(taskId: String) = Json.of(mapOf("args" to mapOf("request" to mapOf("address" to mapOf("kind" to "session", "sessionId" to taskId)))))
-    private fun file(taskId: String) = Json.of(mapOf("args" to mapOf("workspaceFileScopeId" to taskId,
-        "path" to "artifacts/private-image", "range" to mapOf("offset" to 0, "length" to 4096))))
+    private fun file(taskId: String, requestId: String = "content-request-00001") = Json.of(mapOf("args" to mapOf("workspaceFileScopeId" to taskId,
+        "path" to "artifacts/${artifactId(requestId)}", "range" to mapOf("offset" to 0, "length" to 4096))))
     private suspend fun denied(code: String, action: suspend () -> Unit) {
         try { action(); fail("应在交付前拒绝 $code") } catch (failure: ControlRequestException) { assertEquals(code, failure.code) }
     }
@@ -59,7 +60,7 @@ class PhoneContentDeliveryTest {
         val executor = Executor(); val bus = PhoneControlBus(this, Ledger(), executor, phoneFacadeTestStrings); val router = PhoneVirtualHostRouter(bus)
         val taskId = bus.create(access); bus.submit(access, taskId, request()); runCurrent()
         assertTrue(Json.canonical(router.route(access, "session/page", page(taskId))).contains(SECRET))
-        assertEquals(SECRET, bus.artifact(access, taskId, "private-image").bytes.decodeToString())
+        assertEquals(SECRET, bus.artifact(access, taskId, artifactId()).bytes.decodeToString())
         bus.emergencyStop(); runCurrent()
         denied("LOCAL_EMERGENCY_STOP") { router.route(access, "session/page", page(taskId)) }
         denied("LOCAL_EMERGENCY_STOP") { router.route(access, "workspaceFiles/stat", file(taskId)) }
@@ -85,7 +86,7 @@ class PhoneContentDeliveryTest {
         assertFalse(history.contains(SECRET));assertTrue(history.contains("resultAvailable"))
         val events=Json.canonical(Json.of(bus.eventsSince(access,task,-1)))
         assertFalse(events.contains(SECRET));assertTrue(events.contains("resultAvailable"))
-        denied("CONTROL_ARTIFACT_UNAVAILABLE") { bus.artifact(access,task,"private-image") }
+        denied("CONTROL_ARTIFACT_UNAVAILABLE") { bus.artifact(access, task, artifactId()) }
         assertFalse(Json.canonical(bus.receipt(access,task,"content-request-00001")).contains(SECRET))
     }
 
@@ -97,11 +98,35 @@ class PhoneContentDeliveryTest {
         executor.contentCurrentByRequest["content-old-000001"] = false
         val oldReceipt=Json.canonical(bus.receipt(access,task,"content-old-000001"))
         assertTrue(oldReceipt.contains("resultAvailable\":false"));assertFalse(oldReceipt.contains(SECRET))
+        denied("CONTROL_ARTIFACT_UNAVAILABLE") { bus.artifact(access, task, artifactId("content-old-000001")) }
         val newReceipt=Json.canonical(bus.receipt(access,task,"content-new-000001"))
         assertTrue(newReceipt.contains(SECRET));assertTrue(newReceipt.contains("resultAvailable\":true"))
+        assertEquals(SECRET, bus.artifact(access, task, artifactId("content-new-000001")).bytes.decodeToString())
         val control=Json.canonical(bus.history(access,task))
         assertTrue(control.contains("content-old-000001"));assertTrue(control.contains("content-new-000001"))
         assertTrue(control.contains(SECRET)) // 未失效的新请求正文仍可读；旧请求在同一快照中已替换为metadata
+    }
+
+    @Test fun 撤权擦除后同任务旧回执的产物路径仍不能分配给新请求() = runTest {
+        val first = request()
+        val second = request("content-request-00002")
+        val executor = Executor { artifactId(first.requestId) }
+        val bus = PhoneControlBus(this, Ledger(), executor, phoneFacadeTestStrings)
+        val router = PhoneVirtualHostRouter(bus)
+        val task = bus.create(access)
+        val originalFile = file(task, first.requestId)
+
+        bus.submit(access, task, first)
+        runCurrent()
+        router.route(access, "workspaceFiles/stat", originalFile)
+        executor.contentCurrentByRequest[first.requestId] = false
+        denied("CONTROL_ARTIFACT_UNAVAILABLE") { router.route(access, "workspaceFiles/stat", originalFile) }
+
+        bus.submit(access, task, second)
+        runCurrent()
+        val receipt = bus.receipt(access, task, second.requestId) as JsonValue.JObject
+        assertEquals("CONTROL_ARTIFACT_CONFLICT", JsonFields.string(JsonFields.obj(JsonFields.field(receipt, "error")), "code"))
+        denied("CONTROL_ARTIFACT_UNAVAILABLE") { router.route(access, "workspaceFiles/readBytes", originalFile) }
     }
 
     @Test fun originalConnectionCannotDeliverBufferedSecretAfterEmergencyStop() = runTest {
@@ -147,5 +172,8 @@ class PhoneContentDeliveryTest {
         events.cancelAndJoin(); handler.close()
     }
 
-    companion object { private const val SECRET = "急停后不得交付的正文与像素" }
+    companion object {
+        private const val SECRET = "急停后不得交付的正文与像素"
+        private fun artifactId(requestId: String = "content-request-00001") = "private-image-$requestId"
+    }
 }

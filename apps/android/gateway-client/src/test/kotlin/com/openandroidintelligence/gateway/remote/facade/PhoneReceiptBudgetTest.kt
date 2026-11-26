@@ -209,4 +209,71 @@ class PhoneReceiptBudgetTest {
         assertEquals("CONTROL_ARTIFACT_INVALID", JsonFields.string(JsonFields.obj(JsonFields.field(row, "error")), "code"))
         assertThrows(ControlRequestException::class.java) { bus.artifact(access, task, "result-$id") }
     }
+
+    @Test fun 同任务连续请求返回同名产物ID时第二次报冲突且保留首份产物与归属() = runTest {
+        val firstId = "receipt-conflict-001"
+        val secondId = "receipt-conflict-002"
+        var firstContentAllowed = true
+        val executor = object : PhoneControlExecutor {
+            override fun requireCurrentAccess(access: ControlAccessBinding) = Unit
+            override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
+                context.beforeDispatch()
+                return if (context.scope.requestId == firstId) {
+                    PhoneControlResult(
+                        ControlValue.Object(mapOf("value" to ControlValue.Text("first-result"))),
+                        listOf(ControlArtifact("shared-artifact", "text/plain", "v1", "first-artifact-bytes".toByteArray())),
+                        requireContentAccess = {
+                            if (!firstContentAllowed) throw ControlRequestException("PUSH_DELIVERY_REVOKED")
+                        },
+                    )
+                } else {
+                    PhoneControlResult(
+                        ControlValue.Object(mapOf("value" to ControlValue.Text("second-result"))),
+                        listOf(
+                            ControlArtifact("non-conflicting-sibling", "text/plain", "v2", "must-not-be-written".toByteArray()),
+                            ControlArtifact("shared-artifact", "text/plain", "v2", "second-artifact-bytes".toByteArray()),
+                        ),
+                    )
+                }
+            }
+            override fun cancel(scope: ControlRequestScope) = Unit
+            override fun capabilities(access: ControlAccessBinding) = ControlValue.Object(emptyMap())
+        }
+        val bus = PhoneControlBus(this, Ledger(), executor, phoneFacadeTestStrings, currentTimeMillis = { 1_700_000_000_000L })
+        val task = bus.create(access)
+
+        bus.submit(access, task, request(firstId))
+        runCurrent()
+        val firstReceipt = bus.receipt(access, task, firstId) as JsonValue.JObject
+        assertEquals(ControlRequestState.COMPLETED.wire, JsonFields.string(firstReceipt, "state"))
+        val beforeConflict = bus.artifact(access, task, "shared-artifact")
+        assertEquals("v1", beforeConflict.version)
+        assertEquals("first-artifact-bytes", beforeConflict.bytes.decodeToString())
+
+        bus.submit(access, task, request(secondId))
+        runCurrent()
+        val secondReceipt = bus.receipt(access, task, secondId) as JsonValue.JObject
+        assertEquals(ControlRequestState.OUTCOME_UNKNOWN.wire, JsonFields.string(secondReceipt, "state"))
+        assertEquals(false, JsonFields.bool(secondReceipt, "resultAvailable"))
+        assertEquals("CONTROL_ARTIFACT_CONFLICT", JsonFields.string(JsonFields.obj(JsonFields.field(secondReceipt, "error")), "code"))
+
+        // 写任何产物前必须整体拒绝：同批次中不重名的前置产物也不得落入 task.artifacts。
+        val missingSibling = assertThrows(ControlRequestException::class.java) {
+            bus.artifact(access, task, "non-conflicting-sibling")
+        }
+        assertEquals("CONTROL_ARTIFACT_UNAVAILABLE", missingSibling.code)
+
+        // 首条请求的产物字节、版本与请求归属必须完整保留。
+        assertEquals(firstReceipt, bus.receipt(access, task, firstId))
+        val afterConflict = bus.artifact(access, task, "shared-artifact")
+        assertEquals("v1", afterConflict.version)
+        assertEquals("first-artifact-bytes", afterConflict.bytes.decodeToString())
+
+        // 撤销首条请求的内容许可后该产物立即不可读，直接证明归属仍严格绑定在 firstId。
+        firstContentAllowed = false
+        val revokedFirst = assertThrows(ControlRequestException::class.java) {
+            bus.artifact(access, task, "shared-artifact")
+        }
+        assertEquals("CONTROL_ARTIFACT_UNAVAILABLE", revokedFirst.code)
+    }
 }

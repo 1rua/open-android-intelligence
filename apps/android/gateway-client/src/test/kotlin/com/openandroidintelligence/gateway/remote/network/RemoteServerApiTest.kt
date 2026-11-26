@@ -290,6 +290,48 @@ class RemoteServerApiTest {
             }
         }
     }
+    @Test fun 响应200读到一半断开归类为CONNECTION_FAILED且下次请求恢复成功() = runBlocking {
+        val expiresAt = System.currentTimeMillis() + 60_000
+        val tokenBody = Json.canonical(obj(
+            "accessToken" to "a".repeat(32), "accessTokenExpiresAt" to expiresAt,
+            "refreshToken" to "r".repeat(32), "refreshTokenExpiresAt" to expiresAt + 600_000,
+        ))
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
+                .setBody(tokenBody).setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
+            server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
+                .setBody(tokenBody))
+            server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
+                .setBody(tokenBody).setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
+            server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
+                .setBody(tokenBody))
+            server.enqueue(MockResponse().setResponseCode(400).setHeader("Content-Type", "application/json")
+                .setBody(Json.canonical(obj("error" to obj("code" to "AUTH_INVALID", "message" to "x".repeat(128)))))
+                .setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
+            // 显式绑定 127.0.0.1，避免双栈宿主机上 OkHttp 对 localhost 在断连后切到未监听的 ::1 路由。
+            server.start(java.net.InetAddress.getByName("127.0.0.1"), 0)
+            val origin = server.url("/").toString().removeSuffix("/")
+            val api = RemoteServerApi(origin)
+            val hostScope = RemoteIdentityScope(origin, "owner", RemoteRole.HOST)
+            val identity = RemoteStaticIdentityFactory.generate(RemoteDeviceId("00000000-0000-4000-8000-000000000099"))
+
+            assertEquals("CONNECTION_FAILED", failureCode {
+                api.registerAccountRole(hostScope, identity, RemoteAccountAuthorizationToken("l".repeat(32)))
+            })
+            assertEquals(1, server.requestCount)
+            val firstRecovered = api.registerAccountRole(hostScope, identity, RemoteAccountAuthorizationToken("l".repeat(32)))
+            assertEquals("a".repeat(32), firstRecovered.tokens.accessToken)
+
+            assertEquals("CONNECTION_FAILED", failureCode {
+                api.registerOwnedHost(hostScope, identity, "c".repeat(32))
+            })
+            assertEquals(3, server.requestCount)
+            val ownedRecovered = api.registerOwnedHost(hostScope, identity, "c".repeat(32))
+            assertEquals("a".repeat(32), ownedRecovered.tokens.accessToken)
+
+            assertEquals("CONNECTION_FAILED", failureCode { api.loginProviders() })
+        }
+    }
     private suspend fun failureCode(block: suspend () -> Unit): String =
         (runCatching { block() }.exceptionOrNull() as RemoteRpcException).code
 }

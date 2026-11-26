@@ -798,8 +798,10 @@ class RemoteAccountRuntime(
         if (!isCurrentAccount(active)) return HostRegistrationAttempt.Done
         if (standbyAwaitingForeground == active || mutableClientFailure.value != null) return HostRegistrationAttempt.Done
         val failures = try { vault.roleFailures(active) } catch (cancelled: CancellationException) { throw cancelled }
-        catch (_: Exception) {
-            return if (!isCurrentAccount(active)) HostRegistrationAttempt.Done else HostRegistrationAttempt.Stop("REMOTE_CREDENTIAL_MISSING")
+        catch (error: Exception) {
+            return if (!isCurrentAccount(active)) HostRegistrationAttempt.Done
+            else if (error is RemoteIdentityLockedException) HostRegistrationAttempt.Retry("REMOTE_IDENTITY_LOCKED")
+            else HostRegistrationAttempt.Stop("REMOTE_CREDENTIAL_MISSING")
         }
         if (failures.hostRegistration !in hostRegistrationRecoveryCodes || failures.hostStop != null ||
             failures.clientRegistration != null || failures.clientStop != null) return HostRegistrationAttempt.Done
@@ -808,7 +810,13 @@ class RemoteAccountRuntime(
         val client = try { credential(active, RemoteRole.CLIENT) } catch (cancelled: CancellationException) { throw cancelled }
         catch (error: Exception) {
             if (!isCurrentAccount(active)) return HostRegistrationAttempt.Done
-            val code = (error as? RemoteRpcException)?.code
+            // Client 密钥暂锁属于可恢复暂态，不得落盘为 Host 永久缺票终态。
+            if (error is RemoteIdentityLockedException) return HostRegistrationAttempt.Retry("REMOTE_IDENTITY_LOCKED")
+            val code = when (error) {
+                is RemoteIdentityCorruptedException -> "REMOTE_IDENTITY_CORRUPTED"
+                is RemoteRpcException -> error.code
+                else -> null
+            }
             if (code in hostRegistrationCredentialRetryCodes) return HostRegistrationAttempt.Retry(requireNotNull(code))
             // 客户端已落盘终态时不再叠加覆盖 Host 终态；其余不可恢复缺票停止 Host 补偿。
             return if (runCatching { vault.roleFailures(active).clientStop }.getOrNull() == null) {

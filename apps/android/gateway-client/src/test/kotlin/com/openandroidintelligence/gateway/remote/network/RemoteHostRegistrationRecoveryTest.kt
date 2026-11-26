@@ -29,6 +29,7 @@ import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -41,7 +42,10 @@ import org.robolectric.annotation.Config
 class RemoteHostRegistrationRecoveryTest {
     private class Protector : RemoteIdentityProtector {
         private val keys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-        override fun hasKey(scopeKey: String) = scopeKey in keys
+        private val lockedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        fun lock(scopeKey: String) { lockedKeys += scopeKey }
+        fun unlock(scopeKey: String) { lockedKeys -= scopeKey }
+        override fun hasKey(scopeKey: String) = scopeKey in keys && scopeKey !in lockedKeys
         override fun seal(scopeKey: String, plaintext: ByteArray, associatedData: ByteArray) =
             plaintext.copyOf().also { keys += scopeKey }
         override fun open(scopeKey: String, ciphertext: ByteArray, associatedData: ByteArray) = ciphertext.copyOf()
@@ -52,11 +56,11 @@ class RemoteHostRegistrationRecoveryTest {
         override suspend fun invoke(scope: RemoteRpcConnectionScope, method: String, params: JsonValue.JObject) = obj()
     }
 
-    private class Fixture : AutoCloseable {
+    private class Fixture(hostRegistrationError: String = "CONNECTION_FAILED") : AutoCloseable {
         val server = MockWebServer()
         private val parent = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         private var runtimeScope = CoroutineScope(parent.coroutineContext + SupervisorJob(parent.coroutineContext[Job]))
-        private val protector = Protector()
+        val protector = Protector()
         val vault = RemoteCredentialVault(Files.createTempDirectory("remote-host-registration-recovery").toFile(), protector)
         val store = RemoteIdentityStore(vault, protector)
         val ownedRequests = CopyOnWriteArrayList<String>()
@@ -69,7 +73,9 @@ class RemoteHostRegistrationRecoveryTest {
         @Volatile var rejectOwnedRole = true
         @Volatile var ownedRoleErrorCode: String = "CONNECTION_FAILED"
         @Volatile var ownedRoleErrorStatus: Int = 400
+        @Volatile var disconnectOwnedRoleBody = false
         @Volatile var rejectHostRegistration = false
+        @Volatile var disconnectHostRegisterBody = false
         @Volatile var ownedRoleEntered: CountDownLatch? = null
         @Volatile var ownedRoleRelease: CountDownLatch? = null
         val clientIdentity = RemoteStaticIdentityFactory.generate(RemoteDeviceId("00000000-0000-4000-8000-000000000011"))
@@ -91,7 +97,12 @@ class RemoteHostRegistrationRecoveryTest {
                         "expiresAt" to 4_000_000_000_000))
                     "/api/v1/devices/register" -> {
                         val device = RemoteWireJson.parse(request.body.readUtf8()).objectValue().value("device").objectValue()
-                        if (device.requiredText("role") == "host" && rejectHostRegistration) {
+                        if (device.requiredText("role") == "host" && disconnectHostRegisterBody) {
+                            response(obj("accessToken" to "registered-access-0001",
+                                "accessTokenExpiresAt" to 4_000_000_000_000, "refreshToken" to "registered-refresh-0001",
+                                "refreshTokenExpiresAt" to 4_000_000_000_000))
+                                .setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY)
+                        } else if (device.requiredText("role") == "host" && rejectHostRegistration) {
                             response(obj("error" to obj("code" to "CONNECTION_FAILED")), 400)
                         } else response(obj("accessToken" to "registered-access-0001",
                             "accessTokenExpiresAt" to 4_000_000_000_000, "refreshToken" to "registered-refresh-0001",
@@ -114,11 +125,11 @@ class RemoteHostRegistrationRecoveryTest {
                     else -> MockResponse().setResponseCode(404)
                 }
             }
-            server.start()
+            server.start(java.net.InetAddress.getByName("127.0.0.1"), 0)
             origin = server.url("/").toString().removeSuffix("/")
             store.save(RemoteIdentityScope(origin, "owner", RemoteRole.CLIENT), RemoteRoleCredential(clientIdentity, clientTokens))
             vault.installationIdentityStore { "测试手机" }.loadOrCreate(clientIdentity, ownedHostIdentity)
-            active = vault.activate(origin, "owner", vault.revokeActive(), hostRegistrationError = "CONNECTION_FAILED")
+            active = vault.activate(origin, "owner", vault.revokeActive(), hostRegistrationError = hostRegistrationError)
             runtime = newRuntime()
         }
 
@@ -131,6 +142,12 @@ class RemoteHostRegistrationRecoveryTest {
                 ownedRoleEntered?.countDown()
                 ownedRoleRelease?.let { latch ->
                     check(latch.await(5, TimeUnit.SECONDS)) { "等待测试放行 register-owned-role 超时" }
+                }
+                if (disconnectOwnedRoleBody) {
+                    registrationFailures.incrementAndGet()
+                    return response(obj("accessToken" to hostTokens.accessToken, "accessTokenExpiresAt" to hostTokens.accessTokenExpiresAt,
+                        "refreshToken" to hostTokens.refreshToken, "refreshTokenExpiresAt" to hostTokens.refreshTokenExpiresAt))
+                        .setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY)
                 }
                 if (rejectOwnedRole) {
                     registrationFailures.incrementAndGet()
@@ -472,6 +489,80 @@ class RemoteHostRegistrationRecoveryTest {
             delay(200)
             assertEquals(callsBeforeRestart, fixture.ownedRequests.size)
             assertFalse("host" in fixture.helloRoles)
+        }
+    }
+
+    @Test fun Client密钥暂锁时保留Host注册重试且同一账号解锁后成功注册上线() = runBlocking {
+        Fixture().use { fixture ->
+            val clientScopeKey = RemoteIdentityScope(fixture.origin, "owner", RemoteRole.CLIENT).storageKey
+            fixture.protector.lock(clientScopeKey)
+            fixture.rejectOwnedRole = false
+
+            assertEquals(fixture.active, fixture.runtime.restore())
+            await { fixture.runtime.hostFailure.value == RemoteHostFailure(RemoteHostFailureStage.REGISTRATION, "REMOTE_IDENTITY_LOCKED") }
+            val lockedFailures = fixture.vault.roleFailures(fixture.active)
+            assertNull("Client 密钥暂锁不得持久化为 Host 停止终态", lockedFailures.hostStop)
+            assertNull(lockedFailures.clientStop)
+            assertEquals("CONNECTION_FAILED", lockedFailures.hostRegistration)
+            assertNull(fixture.hostCredential())
+            assertTrue(fixture.ownedRequests.isEmpty())
+            assertFalse("host" in fixture.helloRoles)
+
+            // 仅解锁就应由同一账号已有的退避任务自动恢复。
+            fixture.protector.unlock(clientScopeKey)
+
+            await { fixture.hostCredential() != null && fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE && "host" in fixture.helloRoles }
+            assertEquals(fixture.active, fixture.vault.activeAccount())
+            assertEquals(fixture.hostTokens, fixture.hostCredential()!!.tokens)
+            assertNull(fixture.vault.roleFailures(fixture.active).hostRegistration)
+            assertNull(fixture.vault.roleFailures(fixture.active).hostStop)
+            assertEquals(1, fixture.ownedRequests.size)
+            assertEquals(1, fixture.helloRoles.count { it == "host" })
+        }
+    }
+
+    @Test fun 补注册响应200读到一半断开按网络故障重试且下次恢复上线() = runBlocking {
+        Fixture(hostRegistrationError = "RATE_LIMITED").use { fixture ->
+            fixture.rejectOwnedRole = false
+            fixture.disconnectOwnedRoleBody = true
+
+            assertEquals(fixture.active, fixture.runtime.restore())
+            await { fixture.registrationFailures.get() >= 1 && fixture.runtime.hostFailure.value?.code == "CONNECTION_FAILED" }
+            val afterDisconnect = fixture.vault.roleFailures(fixture.active)
+            assertNull("HTTP 200 响应体中断不得写死为 Host 停止终态", afterDisconnect.hostStop)
+            assertEquals("RATE_LIMITED", afterDisconnect.hostRegistration)
+            assertNull(fixture.hostCredential())
+            assertFalse("host" in fixture.helloRoles)
+
+            fixture.disconnectOwnedRoleBody = false
+            fixture.runtime.refreshControlConnection()
+
+            await { fixture.hostCredential() != null && fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE && "host" in fixture.helloRoles }
+            assertEquals(fixture.hostTokens, fixture.hostCredential()!!.tokens)
+            assertNull(fixture.vault.roleFailures(fixture.active).hostRegistration)
+            assertNull(fixture.vault.roleFailures(fixture.active).hostStop)
+            assertTrue(fixture.ownedRequests.size >= 2)
+            assertEquals(1, fixture.helloRoles.count { it == "host" })
+        }
+    }
+
+    @Test fun 首次登录Host注册响应200读到一半断开进入补偿重试并最终上线() = runBlocking {
+        Fixture().use { fixture ->
+            fixture.disconnectHostRegisterBody = true
+            fixture.rejectOwnedRole = false
+
+            val login = fixture.runtime.login(fixture.origin, "owner", "password")
+            assertEquals(RemoteRoleRegistrationState.REGISTERED, login.client.state)
+            assertEquals(RemoteRoleRegistrationState.FAILED, login.host.state)
+            assertEquals("CONNECTION_FAILED", login.host.errorCode)
+
+            await { fixture.hostCredential() != null && fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE && "host" in fixture.helloRoles }
+            val current = fixture.vault.activeAccount()!!
+            assertEquals(fixture.hostTokens, fixture.hostCredential()!!.tokens)
+            assertNull(fixture.vault.roleFailures(current).hostRegistration)
+            assertNull(fixture.vault.roleFailures(current).hostStop)
+            assertEquals(1, fixture.ownedRequests.size)
+            assertEquals(1, fixture.helloRoles.count { it == "host" })
         }
     }
 

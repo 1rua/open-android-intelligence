@@ -36,6 +36,8 @@ class PhoneControlBus(
         val jobs = mutableMapOf<String, Job>()
         val access = mutableMapOf<String, ControlAccessBinding>()
         val artifacts = mutableMapOf<String, Pair<String, ControlArtifact>>()
+        // 正文撤权后也保留已分配的标识，避免旧回执的路径指向新请求。
+        val publishedArtifactIds = mutableSetOf<String>()
         val contentChecks = mutableMapOf<String,() -> Unit>()
         var revision = 0L
     }
@@ -193,16 +195,20 @@ class PhoneControlBus(
                     finish(access, task, request.requestId)
                     return
                 }
-                result.requireContentAccess?.let { check -> check();task.contentChecks[request.requestId]=check }
+                val contentCheck = result.requireContentAccess
+                contentCheck?.invoke()
                 val seenArtifactIds = mutableSetOf<String>()
+                // 整批通过校验后才写入，冲突时保留原产物及其请求归属。
                 result.artifacts.forEach { artifact ->
                     if (!Regex("[A-Za-z0-9_-]+").matches(artifact.id) || artifact.id.startsWith(RESULT_ARTIFACT_PREFIX)) {
                         fail("CONTROL_ARTIFACT_INVALID")
                     }
-                    if (!seenArtifactIds.add(artifact.id)) {
+                    if (!seenArtifactIds.add(artifact.id) || artifact.id in task.publishedArtifactIds) {
                         fail("CONTROL_ARTIFACT_CONFLICT")
                     }
                 }
+                task.publishedArtifactIds.addAll(seenArtifactIds)
+                if (contentCheck != null) task.contentChecks[request.requestId] = contentCheck
                 val artifacts = result.artifacts.map { artifact ->
                     task.artifacts[artifact.id] = request.requestId to artifact.copy(bytes = artifact.bytes.copyOf())
                     mapOf("artifactId" to artifact.id, "path" to "artifacts/${artifact.id}", "mimeType" to artifact.mimeType,
@@ -302,6 +308,7 @@ class PhoneControlBus(
             task.frozen = true
             task.artifacts.values.forEach { it.second.bytes.fill(0) }
             task.artifacts.clear()
+            task.publishedArtifactIds.clear()
             task.results.clear()
             task.records.clear()
             task.activeRequestId = null
