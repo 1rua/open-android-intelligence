@@ -8,6 +8,7 @@ import com.openandroidintelligence.gateway.remote.network.RemoteHostDevice
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcChannel
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcHostHandler
 import com.openandroidintelligence.gateway.remote.runtime.RemoteAccountRuntime
+import com.openandroidintelligence.gateway.remote.runtime.RemoteClientFailure
 import com.openandroidintelligence.gateway.remote.runtime.RemoteAccountConnectionState
 import com.openandroidintelligence.gateway.remote.runtime.RemoteDataConnectionClosure
 import com.openandroidintelligence.gateway.remote.runtime.RemoteHostConnectionState
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.Flow
 
 private val NO_HOST_STANDBY = MutableStateFlow(false)
 private val NO_CLIENT_CONTROL_GENERATION = MutableStateFlow(0L)
+private val NO_CLIENT_FAILURE = MutableStateFlow<RemoteClientFailure?>(null)
 
 /** App 只需要账号生命周期和真实连接，不了解凭据、Noise 或信令的实现细节。 */
 interface RemoteAccountConnection {
@@ -30,6 +32,8 @@ interface RemoteAccountConnection {
     val hosts: Flow<List<RemoteHostDevice>> get() = kotlinx.coroutines.flow.emptyFlow()
     /** Client 控制面每完成一次 hello.ack 递增；用于唤醒已失效的数据面。 */
     val clientControlGeneration: StateFlow<Long> get() = NO_CLIENT_CONTROL_GENERATION
+    /** 当前 Client 角色确认不可用的原因。访问票刷新期间保持为空。 */
+    val clientFailureSnapshot: StateFlow<RemoteClientFailure?> get() = NO_CLIENT_FAILURE
     /** 数据隧道终止信号；使用 scope 精确匹配当前连接，避免迟到旧事件覆盖新连接。 */
     val dataConnectionClosures: Flow<RemoteDataConnectionClosure> get() = kotlinx.coroutines.flow.emptyFlow()
     suspend fun login(origin: String, email: String, password: String): RemoteLoginResult
@@ -79,6 +83,7 @@ internal class ProductionRemoteAccountConnection(context: Context, scope: Corout
     override val hostState = runtime.hostState
     override val hosts = runtime.hosts
     override val clientControlGeneration = runtime.clientControlGeneration
+    override val clientFailureSnapshot = runtime.clientFailureSnapshot
     override val dataConnectionClosures = runtime.dataConnectionClosures
     override suspend fun login(origin: String, email: String, password: String) =
         registration.duringRegistration { runtime.login(origin, email, password) }

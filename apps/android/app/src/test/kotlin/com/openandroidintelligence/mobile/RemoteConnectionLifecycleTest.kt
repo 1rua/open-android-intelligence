@@ -633,10 +633,12 @@ class RemoteConnectionLifecycleTest {
             assertTrue("旧数据通道必须先被关闭", oldChannel.closed)
             assertNotEquals("恢复必须使用新的 connectionId", oldChannel.scope.connectionId, newChannel.scope.connectionId)
             assertSame("数据面恢复不得替换当前控制器", controller, coldRuntime.controller.value)
-            assertTrue(
-                "当前会话必须在新通道重新打开 follow 流: ${newChannel.streamOpenEndpoints}",
-                newChannel.streamOpenEndpoints.any { it.contains("follow") },
-            )
+            assertEquals(RemoteLocalIds.encode("s1"), controller.state.value.activeThreadId)
+            eventually { newChannel.sessionFollowStreams.containsKey("s1") }
+            newChannel.emitAssistantMessage("s1", "新通道实时回复")
+            eventually {
+                (controller.state.value.timeline as? Loadable.Ready)?.value.orEmpty().any { it.text == "新通道实时回复" }
+            }
             coldAccount.closeDataConnection(oldChannel.scope)
             delay(100)
             assertEquals("迟到旧连接关闭不得再次拆毁新连接", 2, coldAccount.channels.size)
@@ -729,6 +731,119 @@ class RemoteConnectionLifecycleTest {
     }
 
     @Test
+    fun `控制通道拒绝旧票时等续票结果并保留当前工作台`() = withConnectedRuntime { coldRuntime, coldAccount ->
+        val controller = requireNotNull(coldRuntime.controller.value)
+        val oldChannel = coldAccount.channels.single()
+
+        coldAccount.closeDataConnection(oldChannel.scope, "AUTH_INVALID")
+        eventually { coldRuntime.agentConnection.value.phase == AgentConnectionPhase.OFFLINE }
+        assertSame(controller, coldRuntime.controller.value)
+
+        coldAccount.nextConnectError = RemoteRpcException("AUTH_INVALID")
+        coldRuntime.reconnectInPlace().join()
+        assertEquals(AgentConnectionPhase.OFFLINE, coldRuntime.agentConnection.value.phase)
+        assertSame(controller, coldRuntime.controller.value)
+
+        coldAccount.nextConnectError = null
+        coldAccount.publishClientControlConnected()
+        eventually { coldAccount.channels.size == 2 && controller.state.value.isOnline }
+        assertSame(controller, coldRuntime.controller.value)
+
+        coldAccount.failClient("AUTH_INVALID")
+        eventually { coldRuntime.agentConnection.value.phase == AgentConnectionPhase.AUTH_REVOKED }
+        assertNull(coldRuntime.controller.value)
+    }
+
+    @Test
+    fun `Client控制通道确认设备被替代后停止数据面重试`() = withConnectedRuntime { coldRuntime, coldAccount ->
+        coldAccount.closeDataConnection(coldAccount.channels.single().scope, "CONNECTION_REPLACED")
+        eventually { coldRuntime.agentConnection.value.phase == AgentConnectionPhase.OFFLINE }
+        coldAccount.nextConnectError = RemoteRpcException("CONNECTION_REPLACED")
+        coldAccount.failClient("CONNECTION_REPLACED")
+
+        eventually { coldRuntime.agentConnection.value.phase == AgentConnectionPhase.AUTH_REVOKED }
+        assertEquals("CONNECTION_REPLACED", coldRuntime.agentConnection.value.errorCode)
+        assertNull(coldRuntime.controller.value)
+        coldRuntime.onAppForegrounded()
+        coldRuntime.onNetworkAvailable()
+        assertEquals("控制面终态后唤醒不得再发起数据建链", 1, coldAccount.connectCalls)
+    }
+
+    @Test
+    fun `凭据持久化失败关闭账号后仍能终止原工作台`() = withConnectedRuntime { coldRuntime, coldAccount ->
+        coldAccount.failClient("REMOTE_CREDENTIAL_PERSISTENCE_FAILED", clearAccount = true)
+
+        eventually { coldRuntime.agentConnection.value.phase == AgentConnectionPhase.AUTH_REVOKED }
+        assertEquals("REMOTE_CREDENTIAL_PERSISTENCE_FAILED", coldRuntime.agentConnection.value.errorCode)
+        assertNull(coldRuntime.controller.value)
+        assertEquals(1, coldAccount.connectCalls)
+    }
+
+    @Test
+    fun `旧Host恢复信号不能抢占用户切换新Host`() = withConnectedRuntime { coldRuntime, coldAccount ->
+        coldAccount.closeDataConnection(coldAccount.channels.single().scope)
+        eventually { coldRuntime.agentConnection.value.phase == AgentConnectionPhase.OFFLINE }
+        val toAgent = AgentKey(RemoteServiceOrigin.fromCanonicalOrigin(origin), accountId, "host-2", BackendId("harness"))
+        val connectGate = CompletableDeferred<Unit>()
+        coldAccount.connectGate = connectGate
+        val switch = coldRuntime.selectAgent(toAgent)
+        try {
+            eventually { coldAccount.connectCalls == 2 && coldRuntime.agentConnection.value.switchingAgent == toAgent }
+            coldAccount.publishClientControlConnected()
+            coldRuntime.onAppForegrounded()
+            coldRuntime.onNetworkAvailable()
+        } finally {
+            connectGate.complete(Unit)
+        }
+        withTimeout(5_000) { switch.join() }
+        assertEquals(toAgent, coldRuntime.agentConnection.value.activeAgent)
+        assertEquals(listOf("host-1", "host-2"), coldAccount.channels.map { it.scope.hostDeviceId })
+    }
+
+    @Test
+    fun `旧Host恢复信号不能抢占设置页发现新Host`() = withConnectedRuntime { coldRuntime, coldAccount ->
+        coldAccount.closeDataConnection(coldAccount.channels.single().scope)
+        eventually { coldRuntime.agentConnection.value.phase == AgentConnectionPhase.OFFLINE }
+        coldAccount.hostOneOffline = true
+        val connectGate = CompletableDeferred<Unit>()
+        coldAccount.connectGate = connectGate
+        val discover = coldRuntime.discover(coldAccount.availableHosts.first { it.deviceId == "host-2" })
+        try {
+            eventually { coldAccount.connectCalls == 2 }
+            coldAccount.publishClientControlConnected()
+            coldRuntime.onNetworkAvailable()
+        } finally {
+            connectGate.complete(Unit)
+        }
+        withTimeout(5_000) { discover.join() }
+        assertTrue(coldRuntime.agentConnection.value.agents.any { it.key.hostId == "host-2" })
+    }
+
+    private fun withConnectedRuntime(run: suspend (RemoteRuntime, FakeAccountConnection) -> Unit) = runBlocking {
+        seedSavedWorkspaceWithCachedTimeline()
+        val coldAccount = FakeAccountConnection()
+        val coldRoot = SupervisorJob()
+        val coldRuntime = buildRuntime(
+            policy = ConnectionRecoveryPolicy(
+                offlineGracePeriodMillis = 80L,
+                graceRetryAttempts = 0,
+                graceRetryDelayMillis = 10L,
+                backgroundReconnectInitialDelayMillis = 60_000L,
+                backgroundReconnectMaxDelayMillis = 60_000L,
+            ),
+            customScope = CoroutineScope(coldRoot + Dispatchers.Unconfined),
+            customAccount = coldAccount,
+        )
+        try {
+            eventually { coldRuntime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED }
+            run(coldRuntime, coldAccount)
+        } finally {
+            coldRuntime.logout().join()
+            coldRoot.cancelAndJoin()
+        }
+    }
+
+    @Test
     fun `前台恢复立即打断长退避并合并重复唤醒`() = runBlocking {
         seedSavedWorkspaceWithCachedTimeline()
         val coldAccount = FakeAccountConnection()
@@ -777,7 +892,17 @@ class RemoteConnectionLifecycleTest {
             val controller = requireNotNull(coldRuntime.controller.value)
             val oldChannel = coldAccount.channels.last()
 
-            coldRuntime.forceRefreshActiveConnection().join()
+            val connectGate = CompletableDeferred<Unit>()
+            coldAccount.connectGate = connectGate
+            val firstRefresh = coldRuntime.forceRefreshActiveConnection()
+            try {
+                eventually { coldAccount.connectCalls == 2 }
+                assertEquals(1, coldAccount.forceClientControlReconnectCalls.get())
+                assertSame("整链路强刷进行中应合并重复刷新", firstRefresh, coldRuntime.forceRefreshActiveConnection())
+            } finally {
+                connectGate.complete(Unit)
+            }
+            withTimeout(5_000) { firstRefresh.join() }
 
             eventually {
                 coldAccount.channels.size == 2 &&
@@ -1486,6 +1611,7 @@ class RemoteConnectionLifecycleTest {
         override val clientControlGeneration = MutableStateFlow(0L)
         private val closureFlow = MutableSharedFlow<RemoteDataConnectionClosure>(extraBufferCapacity = 8, replay = 1)
         override val dataConnectionClosures: Flow<RemoteDataConnectionClosure> = closureFlow
+        override val clientFailureSnapshot = MutableStateFlow<RemoteClientFailure?>(null)
         val forceClientControlReconnectCalls = java.util.concurrent.atomic.AtomicInteger(0)
         var listCalls = 0
         var registration: RemoteLoginResult? = null
@@ -1545,6 +1671,15 @@ class RemoteConnectionLifecycleTest {
 
         fun publishClientControlConnected() {
             clientControlGeneration.value += 1
+        }
+
+        fun failClient(code: String, clearAccount: Boolean = false) {
+            val failedAccount = requireNotNull(account.value)
+            if (clearAccount) {
+                account.value = null
+                restorableAccount = null
+            }
+            clientFailureSnapshot.value = RemoteClientFailure(failedAccount, code)
         }
 
         fun closeDataConnection(scope: RemoteRpcConnectionScope, code: String = "TRANSPORT_CLOSED") {
@@ -1622,7 +1757,22 @@ class RemoteConnectionLifecycleTest {
         override val events = MutableSharedFlow<RemoteRpcEvent>(extraBufferCapacity = 32)
         @Volatile var closed = false
         val invokedMethods = CopyOnWriteArrayList<String>()
-        val streamOpenEndpoints = CopyOnWriteArrayList<String>()
+        val sessionFollowStreams = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+        suspend fun emitAssistantMessage(sessionId: String, text: String) {
+            val streamId = sessionFollowStreams.getValue(sessionId)
+            events.emit(RemoteRpcEvent("harness.remote.frame", Json.of(mapOf(
+                "streamId" to streamId,
+                "value" to mapOf(
+                    "type" to "event",
+                    "event" to mapOf(
+                        "seq" to 2,
+                        "type" to "assistant/message",
+                        "data" to mapOf("message" to mapOf("id" to "live-msg-2", "content" to listOf(mapOf("type" to "text", "text" to text)))),
+                    ),
+                ),
+            ))))
+        }
 
         override suspend fun invoke(
             method: String,
@@ -1636,7 +1786,12 @@ class RemoteConnectionLifecycleTest {
                 "harness.remote.stream.open" -> {
                     val endpoint = JsonFields.string(params, "endpoint")
                     val streamId = JsonFields.string(params, "streamId")
-                    endpoint?.let(streamOpenEndpoints::add)
+                    if (endpoint == "session/follow") {
+                        val address = listOf("payload", "args", "request", "address").fold<String, JsonValue?>(params) { value, name ->
+                            JsonFields.field(JsonFields.obj(value), name)
+                        }
+                        sessionFollowStreams[requireNotNull(JsonFields.string(JsonFields.obj(address), "sessionId"))] = requireNotNull(streamId)
+                    }
                     if (endpoint == "workspace/follow") {
                         owner.workspaceFollowHook?.invoke()
                         val extraIds = owner.extraWorkspaceTwoSessions.map { it["sessionId"] as String }

@@ -1,6 +1,10 @@
 package com.openandroidintelligence.gateway.remote.runtime
 
+import com.openandroidintelligence.gateway.remote.authproduction.RemoteActiveAccount
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcConnectionScope
+
+/** Client 终态及其准确的账号授权代际。 */
+data class RemoteClientFailure(val account: RemoteActiveAccount, val code: String)
 
 /** 已授权数据通道的真实终止；由连接代际围栏决定它是否仍影响当前工作区。 */
 data class RemoteDataConnectionClosure(
