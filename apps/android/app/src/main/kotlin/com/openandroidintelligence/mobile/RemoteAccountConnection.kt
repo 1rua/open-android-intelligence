@@ -44,9 +44,9 @@ interface RemoteAccountConnection {
     fun authenticatedPeer(connectionId: String): AuthenticatedRemotePeer
     suspend fun logout()
     /** 网络恢复或前台恢复时打断退避；实施方负责合并重复唤醒。 */
-    fun refreshControlConnection() {}
+    fun refreshControlConnection() = Unit
     /** 手动刷新专用：只重建 Client 控制面及依赖它的数据面，不重启 Virtual Host。 */
-    fun forceClientControlReconnect() {}
+    fun forceClientControlReconnect() = Unit
 }
 
 /** 本机登录还在注册时先保留可见的服务启动机会。服务等待所有在途尝试收束后读取最终授权。 */

@@ -22,12 +22,6 @@ enum class RemoteAccountConnectionState { SIGNED_OUT, READY, CONNECTING, CONNECT
 enum class RemoteHostConnectionState { STOPPED, CONNECTING, ONLINE, FAILED }
 
 private val clientReauthorizationCodes = setOf("TOKEN_EXPIRED", "AUTH_INVALID")
-private val clientTerminalCodes = setOf(
-    "CONNECTION_REPLACED", "DEVICE_REVOKED", "TOKEN_REUSED", "MEMBERSHIP_REQUIRED", "PERMISSION_DENIED",
-    "DEVICE_OWNERSHIP_REQUIRED", "REMOTE_IDENTITY_CORRUPTED", "REMOTE_CREDENTIAL_PERSISTENCE_FAILED",
-    "REMOTE_REFRESH_PERSISTENCE_FAILED", "PEER_IDENTITY_MISMATCH", "SECURE_CHANNEL_FAILED",
-    "NOISE_AUTHENTICATION_FAILED", "NOISE_INITIALIZATION_FAILED", "UNSUPPORTED_VERSION", "INVALID_MESSAGE",
-)
 private fun safeClientErrorCode(code: String, fallback: String) =
     if (code == "CLIENT_CLOSED") code else safeRoleErrorCode(code, fallback)
 
@@ -72,6 +66,7 @@ class RemoteAccountRuntime(
     private var host: RemoteHostControl? = null
     @Volatile private var client: RemoteSignalService? = null
     @Volatile private var clientJob: Job? = null
+    @Volatile private var clientControlRestartJob: Job? = null
     @Volatile private var clientSupervisor: CompletableJob? = null
     @Volatile private var clientWorker: CoroutineScope? = null
     @Volatile private var clientWake = RemoteReconnectSignal()
@@ -363,6 +358,7 @@ class RemoteAccountRuntime(
         }
         val closingClient = synchronized(selectionLock) {
             val closingSupervisor = detachClientControlLocked()
+            clientControlRestartJob?.cancel(); clientControlRestartJob = null
             clientAvailable.completeExceptionally(RemoteRpcException("CLIENT_CLOSED"))
             clientAvailable = CompletableDeferred()
             client.also { client = null } to closingSupervisor
@@ -401,7 +397,9 @@ class RemoteAccountRuntime(
     }
     /** 账号控制面与 Host 业务隧道分别拥有生命周期；登录后不等待选工作区才上线。 */
     private fun startClient(active: RemoteActiveAccount): Unit = synchronized(selectionLock) {
-        if (clientJob?.isActive == true || mutableClientFailure.value != null) return@synchronized
+        if (clientJob?.isActive == true || mutableClientFailure.value != null || clientControlRestartJob?.isActive == true) {
+            return@synchronized
+        }
         requireActive(active)
         val worker = clientWorker?.takeIf { clientSupervisor?.isActive == true } ?: run {
             val supervisor = SupervisorJob(scope.coroutineContext[Job])
@@ -487,7 +485,7 @@ class RemoteAccountRuntime(
                     if (mutableAccount.value != active) return@launch
                     val refreshRejected = failure.code in clientReauthorizationCodes && !refreshedAfterRejection && usedToken != null
                     if (refreshRejected) rejectedToken = usedToken
-                    else if (failure.code in clientReauthorizationCodes || failure.code in clientTerminalCodes) {
+                    else if (failure.code in clientReauthorizationCodes || failure.code in remoteTerminalControlCodes) {
                         persistClientTerminal(active, failure.code)
                         return@launch
                     }
@@ -564,6 +562,7 @@ class RemoteAccountRuntime(
                 closingHost = host.also { host = null }
                 closingClient = client.also { client = null }
                 closingClientSupervisor = detachClientControlLocked()
+                clientControlRestartJob?.cancel(); clientControlRestartJob = null
                 if (clientAvailable.isCompleted) clientAvailable = CompletableDeferred()
                 clientAvailable.completeExceptionally(RemoteRpcException("REMOTE_CREDENTIAL_PERSISTENCE_FAILED"))
                 closingPeers = peers.values.toList()
@@ -629,27 +628,43 @@ class RemoteAccountRuntime(
 
     /** 手动刷新只重启 Client 控制角色；Virtual Host 继续独立在线，避免影响远端控机。 */
     fun forceClientControlReconnect() {
-        val active = mutableAccount.value ?: return
-        if (mutableClientFailure.value != null) return
-        var closing: RemoteSignalService? = null
-        var closingSupervisor: CompletableJob? = null
+        val active: RemoteActiveAccount
+        val restartJob: Job
         synchronized(selectionLock) {
-            if (mutableAccount.value != active || standbyAwaitingForeground == active) return
-            closing = client.also { client = null }
-            closingSupervisor = detachClientControlLocked()
-            clientAvailable = CompletableDeferred()
-            mutableState.value = RemoteAccountConnectionState.CONNECTING
-        }
-        // 必须先取消旧保持器并关闭旧控制 WS，再启动新一轮，禁止新旧 Client 控制面并存。
-        closingSupervisor?.cancel()
-        runCatching { closing?.close() }.onFailure {
-            android.util.Log.w("RemoteAccountRuntime", "CLIENT_FORCED_RECONNECT_CLOSE_FAILED")
-        }
-        synchronized(selectionLock) {
-            if (mutableAccount.value == active && mutableClientFailure.value == null && clientJob?.isActive != true) {
-                startClient(active)
+            active = mutableAccount.value ?: return
+            if (mutableClientFailure.value != null || standbyAwaitingForeground == active) return
+            clientControlRestartJob?.takeIf { it.isActive }?.let { return }
+            // 先占位，防止并发手动刷新在旧代际退出前重复启动。
+            clientControlRestartJob = scope.launch(start = CoroutineStart.LAZY) {
+                val runningJob = currentCoroutineContext()[Job]
+                try {
+                    val (current, supervisor) = synchronized(selectionLock) {
+                        val closing = client
+                        val heldSupervisor = detachClientControlLocked()
+                        client = null
+                        clientAvailable = CompletableDeferred()
+                        mutableState.value = RemoteAccountConnectionState.CONNECTING
+                        closing to heldSupervisor
+                    }
+                    supervisor?.cancelAndJoin()
+                    runCatching { current?.close() }.onFailure {
+                        android.util.Log.w("RemoteAccountRuntime", "CLIENT_FORCED_RECONNECT_CLOSE_FAILED")
+                    }
+                    synchronized(selectionLock) {
+                        if (clientControlRestartJob === runningJob) clientControlRestartJob = null
+                        if (mutableAccount.value == active && mutableClientFailure.value == null && clientJob?.isActive != true) {
+                            startClient(active)
+                        }
+                    }
+                } finally {
+                    synchronized(selectionLock) {
+                        if (clientControlRestartJob === runningJob) clientControlRestartJob = null
+                    }
+                }
             }
+            restartJob = clientControlRestartJob!!
         }
+        restartJob.start()
     }
     private fun startHost(active: RemoteActiveAccount, server: RemoteServerApi) {
         val handler = hostHandler ?: return

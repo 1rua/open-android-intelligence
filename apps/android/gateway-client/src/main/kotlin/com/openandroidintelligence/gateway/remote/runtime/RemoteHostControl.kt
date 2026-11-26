@@ -97,7 +97,7 @@ internal class RemoteHostControl(
             // 服务端可先于本机时钟判票失效。只轮换本轮使用过的票一次，连续拒绝交回本机登录处理。
             if (stage == RemoteHostFailureStage.CONTROL && failure.code in setOf("TOKEN_EXPIRED", "AUTH_INVALID") && !refreshedAfterRejection) {
                 rejectedToken = usedToken
-            } else if (failure.code in terminalCodes) {
+            } else if (failure.code in remoteTerminalControlCodes) {
                 val persistence = try { onTerminal(failure, failure.code in authorizationStops) } catch (_: Exception) {
                     RemoteTerminalPersistence.FAILED_CLOSED
                 }
@@ -116,13 +116,5 @@ internal class RemoteHostControl(
         const val TAG = "OAI-Virtual-Host"
         private val authorizationStops = setOf("CONNECTION_REPLACED", "DEVICE_REVOKED", "TOKEN_REUSED", "TOKEN_EXPIRED", "AUTH_INVALID",
             "REMOTE_CREDENTIAL_PERSISTENCE_FAILED", "REMOTE_REFRESH_PERSISTENCE_FAILED")
-        /** 只有明确不可恢复的授权、身份或协议错误停止 Host；未知内部/清理异常继续退避恢复。 */
-        private val terminalCodes = setOf(
-            "CONNECTION_REPLACED", "DEVICE_REVOKED", "TOKEN_REUSED", "TOKEN_EXPIRED", "AUTH_INVALID",
-            "MEMBERSHIP_REQUIRED", "PERMISSION_DENIED",
-            "DEVICE_OWNERSHIP_REQUIRED", "REMOTE_IDENTITY_CORRUPTED", "REMOTE_CREDENTIAL_PERSISTENCE_FAILED",
-            "REMOTE_REFRESH_PERSISTENCE_FAILED", "PEER_IDENTITY_MISMATCH", "SECURE_CHANNEL_FAILED",
-            "NOISE_AUTHENTICATION_FAILED", "NOISE_INITIALIZATION_FAILED", "UNSUPPORTED_VERSION", "INVALID_MESSAGE",
-        )
     }
 }

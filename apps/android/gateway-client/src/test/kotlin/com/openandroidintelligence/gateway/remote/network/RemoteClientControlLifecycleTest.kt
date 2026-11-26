@@ -522,6 +522,7 @@ class RemoteClientControlLifecycleTest {
             val hostPingsBefore = fixture.pingCount(hostSocket)
 
             fixture.runtime.forceClientControlReconnect()
+            fixture.runtime.forceClientControlReconnect()
 
             await("手动刷新未重建 Client 控制面", {
                 "state=${fixture.runtime.state.value}, clientHellos=${fixture.hellosFor("client").size}, " +
@@ -535,6 +536,8 @@ class RemoteClientControlLifecycleTest {
             await("Virtual Host 心跳未继续", {
                 "before=$hostPingsBefore, after=${fixture.pingCount(hostSocket)}"
             }) { fixture.pingCount(hostSocket) > hostPingsBefore }
+            delay(200)
+            assertEquals("并发手动刷新必须合并为一次连接重建", 2, fixture.hellosFor("client").size)
         }
     }
 
