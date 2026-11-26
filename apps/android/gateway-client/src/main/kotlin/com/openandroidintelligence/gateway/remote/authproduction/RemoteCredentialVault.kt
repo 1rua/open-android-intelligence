@@ -167,7 +167,8 @@ class RemoteCredentialVault internal constructor(
      */
     internal fun completeHostRegistration(account: RemoteActiveAccount, credential: RemoteRoleCredential): HostRegistrationCommitResult = locked {
         if (!authorizationCurrent(account)) return@locked HostRegistrationCommitResult.NotEligible
-        val state = load()
+        val state = try { load() }
+        catch (_: RemoteIdentityLockedException) { return@locked HostRegistrationCommitResult.CredentialsLocked }
         if (state.active != account || state.failures.clientRegistration != null ||
             state.failures.clientStop != null || state.failures.hostStop != null ||
             state.failures.hostRegistration !in RETRYABLE_HOST_REGISTRATION_ERRORS) return@locked HostRegistrationCommitResult.NotEligible

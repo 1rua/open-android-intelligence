@@ -26,8 +26,8 @@ enum class RemoteHostConnectionState { STOPPED, CONNECTING, ONLINE, FAILED }
 private val clientReauthorizationCodes = setOf("TOKEN_EXPIRED", "AUTH_INVALID")
 private fun safeClientErrorCode(code: String, fallback: String) =
     if (code == "CLIENT_CLOSED") code else safeRoleErrorCode(code, fallback)
-private val hostRegistrationCredentialRetryCodes = setOf(
-    "CONNECTION_FAILED", "RATE_LIMITED", "INTERNAL_ERROR", "REMOTE_REFRESH_FAILED", "REMOTE_REFRESH_CONFLICT", "REMOTE_IDENTITY_LOCKED",
+private val hostRegistrationCredentialRetryCodes = RETRYABLE_HOST_REGISTRATION_ERRORS + setOf(
+    "REMOTE_REFRESH_FAILED", "REMOTE_REFRESH_CONFLICT", "REMOTE_IDENTITY_LOCKED",
 )
 private const val OLD_HOST_REGISTRATION_CONFLICT = "REMOTE_HOST_REGISTRATION_CONFLICT"
 
@@ -798,13 +798,21 @@ class RemoteAccountRuntime(
             }
         }
     }
+    private fun hostRegistrationAccountBlocked(active: RemoteActiveAccount): HostRegistrationAttempt? = try {
+        requireActive(active)
+        null
+    } catch (_: RemoteIdentityLockedException) {
+        HostRegistrationAttempt.Retry("REMOTE_IDENTITY_LOCKED")
+    } catch (_: IllegalStateException) {
+        HostRegistrationAttempt.Done
+    }
     private suspend fun attemptOwnedHostRegistration(active: RemoteActiveAccount): HostRegistrationAttempt {
-        if (!isCurrentAccount(active)) return HostRegistrationAttempt.Done
+        hostRegistrationAccountBlocked(active)?.let { return it }
         if (standbyAwaitingForeground == active || mutableClientFailure.value != null) return HostRegistrationAttempt.Done
         val failures = try { vault.roleFailures(active) } catch (cancelled: CancellationException) { throw cancelled }
         catch (error: Exception) {
-            return if (!isCurrentAccount(active)) HostRegistrationAttempt.Done
-            else if (error is RemoteIdentityLockedException) HostRegistrationAttempt.Retry("REMOTE_IDENTITY_LOCKED")
+            hostRegistrationAccountBlocked(active)?.let { return it }
+            return if (error is RemoteIdentityLockedException) HostRegistrationAttempt.Retry("REMOTE_IDENTITY_LOCKED")
             else HostRegistrationAttempt.Stop("REMOTE_CREDENTIAL_MISSING")
         }
         if (failures.hostRegistration !in RETRYABLE_HOST_REGISTRATION_ERRORS || failures.hostStop != null ||
@@ -813,7 +821,7 @@ class RemoteAccountRuntime(
         val server = api ?: return HostRegistrationAttempt.Done
         val client = try { credential(active, RemoteRole.CLIENT) } catch (cancelled: CancellationException) { throw cancelled }
         catch (error: Exception) {
-            if (!isCurrentAccount(active)) return HostRegistrationAttempt.Done
+            hostRegistrationAccountBlocked(active)?.let { return it }
             // Client 密钥暂锁属于可恢复暂态，不得落盘为 Host 永久缺票终态。
             if (error is RemoteIdentityLockedException) return HostRegistrationAttempt.Retry("REMOTE_IDENTITY_LOCKED")
             val code = when (error) {
@@ -827,12 +835,12 @@ class RemoteAccountRuntime(
                 HostRegistrationAttempt.Stop(code ?: "REMOTE_CREDENTIAL_MISSING")
             } else HostRegistrationAttempt.Done
         }
-        if (!isCurrentAccount(active)) return HostRegistrationAttempt.Done
+        hostRegistrationAccountBlocked(active)?.let { return it }
         currentCoroutineContext().ensureActive()
         val identity = try { installation.loadOrCreate(client.identity, null).host }
         catch (cancelled: CancellationException) { throw cancelled }
         catch (error: Exception) {
-            if (!isCurrentAccount(active)) return HostRegistrationAttempt.Done
+            hostRegistrationAccountBlocked(active)?.let { return it }
             return when (error) {
                 is RemoteIdentityLockedException -> HostRegistrationAttempt.Retry("REMOTE_IDENTITY_LOCKED")
                 is RemoteIdentityCorruptedException -> HostRegistrationAttempt.Stop("REMOTE_IDENTITY_CORRUPTED")
@@ -855,7 +863,7 @@ class RemoteAccountRuntime(
             }
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) {
-            if (!isCurrentAccount(active)) return HostRegistrationAttempt.Done
+            hostRegistrationAccountBlocked(active)?.let { return it }
             return when (failure) {
                 is RemoteIdentityLockedException -> HostRegistrationAttempt.Retry("REMOTE_IDENTITY_LOCKED")
                 is RemoteIdentityCorruptedException -> HostRegistrationAttempt.Stop("REMOTE_IDENTITY_CORRUPTED")
@@ -869,7 +877,7 @@ class RemoteAccountRuntime(
         return commitOwnedHostRegistration(active, issued)
     }
     private suspend fun commitOwnedHostRegistration(active: RemoteActiveAccount, issued: RemoteRoleCredential): HostRegistrationAttempt {
-        if (!isCurrentAccount(active)) return HostRegistrationAttempt.Done
+        if (mutableAccount.value != active) return HostRegistrationAttempt.Done
         val server = api ?: return HostRegistrationAttempt.Done
         val hostScope = RemoteIdentityScope(active.origin, active.accountId, RemoteRole.HOST)
         currentCoroutineContext().ensureActive()

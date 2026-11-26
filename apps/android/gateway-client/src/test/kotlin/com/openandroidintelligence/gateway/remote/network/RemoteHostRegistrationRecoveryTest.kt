@@ -522,27 +522,40 @@ class RemoteHostRegistrationRecoveryTest {
     }
 
     @Test fun 注册响应返回时Client暂锁则解锁后只提交原Host凭据() = runBlocking {
+        assertIssuedHostCredentialSurvivesLock(lockVault = false)
+    }
+
+    @Test fun 注册响应返回时凭据库暂锁则解锁后只提交原Host凭据() = runBlocking {
+        assertIssuedHostCredentialSurvivesLock(lockVault = true)
+    }
+
+    private suspend fun assertIssuedHostCredentialSurvivesLock(lockVault: Boolean) {
         Fixture().use { fixture ->
             val entered = CountDownLatch(1)
             val release = CountDownLatch(1)
-            val clientScopeKey = RemoteIdentityScope(fixture.origin, "owner", RemoteRole.CLIENT).storageKey
+            val lockedKey = if (lockVault) "credential-vault"
+                else RemoteIdentityScope(fixture.origin, "owner", RemoteRole.CLIENT).storageKey
             fixture.ownedRoleEntered = entered
             fixture.ownedRoleRelease = release
             fixture.rejectOwnedRole = false
             assertEquals(fixture.active, fixture.runtime.restore())
             try {
                 assertTrue(withContext(Dispatchers.IO) { entered.await(3, TimeUnit.SECONDS) })
-                fixture.protector.lock(clientScopeKey)
+                fixture.protector.lock(lockedKey)
                 release.countDown()
                 await { fixture.runtime.hostFailure.value?.code == "REMOTE_IDENTITY_LOCKED" }
-                assertNull(fixture.vault.roleFailures(fixture.active).hostStop)
-                assertNull(fixture.hostCredential())
+                if (!lockVault) {
+                    assertNull(fixture.vault.roleFailures(fixture.active).hostStop)
+                    assertNull(fixture.hostCredential())
+                }
+                assertFalse("暂锁期间不能启动 Host", "host" in fixture.helloRoles)
             } finally {
                 release.countDown()
-                fixture.protector.unlock(clientScopeKey)
+                fixture.protector.unlock(lockedKey)
             }
             await { fixture.hostCredential() != null && fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE }
             assertEquals(fixture.active, fixture.vault.activeAccount())
+            assertNull(fixture.vault.roleFailures(fixture.active).hostStop)
             assertEquals(fixture.hostTokens, fixture.hostCredential()!!.tokens)
             assertEquals(1, fixture.ownedRequests.size)
         }
