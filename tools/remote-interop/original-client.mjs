@@ -9,7 +9,6 @@ import { pathToFileURL } from 'node:url';
 import * as ws from 'ws';
 import { z } from 'zod';
 import { Context } from '@deepseek-ai/cordis';
-import { PhoneMcpBridge } from '../../integrations/oai-android-mcp/src/bridge.mjs';
 
 const expectedClientTimeZone = 'Asia/Shanghai';
 process.env.TZ = expectedClientTimeZone;
@@ -330,6 +329,8 @@ async function installedRuntimeVerifier(runtime) {
   const signal = AbortSignal.timeout(2_000);
   const { sessionCreateCalls } = await verifyWorkspaceOpenAndSessionCreate(runtime, instance, 'phone', trace, signal, 'verify', '固定');
 
+  // 仅安装版探针使用桥，默认固定源码互通只需要自己的 Node 依赖。
+  const { PhoneMcpBridge } = await import('../../integrations/oai-android-mcp/src/bridge.mjs');
   // 使用真实已安装 0.6.5 ClientModeRuntime 验证 PhoneMcpBridge：
   // 1) 隔离目录仅含 control-bus 时，旧任务 request_result 经真实 SESSION_NOT_IN_WORKSPACE 回查 control-bus request.status；
   // 2) 长回执通过真实 withToolRemote + remoteTypertGateway 内存读取 workspaceFiles/stat/readBytes，零 Downloads 落盘。
