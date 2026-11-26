@@ -3,6 +3,7 @@ package com.openandroidintelligence.gateway.remote.runtime
 import android.content.Context
 import com.openandroidintelligence.gateway.remote.auth.*
 import com.openandroidintelligence.gateway.remote.authproduction.*
+import com.openandroidintelligence.gateway.remote.authproduction.RemoteCredentialVault.Companion.RETRYABLE_HOST_REGISTRATION_ERRORS
 import com.openandroidintelligence.gateway.remote.identity.*
 import com.openandroidintelligence.gateway.remote.network.*
 import com.openandroidintelligence.gateway.remote.rpc.*
@@ -25,7 +26,6 @@ enum class RemoteHostConnectionState { STOPPED, CONNECTING, ONLINE, FAILED }
 private val clientReauthorizationCodes = setOf("TOKEN_EXPIRED", "AUTH_INVALID")
 private fun safeClientErrorCode(code: String, fallback: String) =
     if (code == "CLIENT_CLOSED") code else safeRoleErrorCode(code, fallback)
-private val hostRegistrationRecoveryCodes = setOf("CONNECTION_FAILED", "RATE_LIMITED", "INTERNAL_ERROR")
 private val hostRegistrationCredentialRetryCodes = setOf(
     "CONNECTION_FAILED", "RATE_LIMITED", "INTERNAL_ERROR", "REMOTE_REFRESH_FAILED", "REMOTE_REFRESH_CONFLICT", "REMOTE_IDENTITY_LOCKED",
 )
@@ -126,7 +126,7 @@ class RemoteAccountRuntime(
                     publishHost(RemoteHostConnectionState.FAILED, RemoteHostFailure(RemoteHostFailureStage.REGISTRATION,
                         result.host.errorCode ?: "REMOTE_ROLE_REGISTRATION_FAILED"))
                     if (result.client.state == RemoteRoleRegistrationState.REGISTERED &&
-                        result.host.errorCode in hostRegistrationRecoveryCodes) {
+                        result.host.errorCode in RETRYABLE_HOST_REGISTRATION_ERRORS) {
                         mutableAccount.value?.let(::scheduleHostRegistrationRecovery)
                     }
                 }
@@ -223,7 +223,7 @@ class RemoteAccountRuntime(
         startClientRole(active, clientError)
         // 旧 Host 记录与本次待补注册不能共存：先持久终止，等待显式重新登录或后续迁移切片。
         val oldHostRegistration = hostCredential != null && failures.hostStop == null &&
-            failures.hostRegistration in hostRegistrationRecoveryCodes
+            failures.hostRegistration in RETRYABLE_HOST_REGISTRATION_ERRORS
         if (oldHostRegistration) {
             val failure = RemoteHostFailure(RemoteHostFailureStage.REGISTRATION, OLD_HOST_REGISTRATION_CONFLICT)
             try { vault.stopHostUntilLogin(active, failure) }
@@ -240,7 +240,7 @@ class RemoteAccountRuntime(
                 RemoteHostFailure(RemoteHostFailureStage.REGISTRATION, failures.hostRegistration))
         }
         if (hostCredential == null && hostReceipt.second == null && failures.hostStop == null &&
-            failures.hostRegistration in hostRegistrationRecoveryCodes && clientError == null) scheduleHostRegistrationRecovery(active)
+            failures.hostRegistration in RETRYABLE_HOST_REGISTRATION_ERRORS && clientError == null) scheduleHostRegistrationRecovery(active)
         active
     }
 
@@ -759,22 +759,26 @@ class RemoteAccountRuntime(
     }
     private sealed interface HostRegistrationAttempt {
         data object Done : HostRegistrationAttempt
-        data class Retry(val code: String) : HostRegistrationAttempt
+        data class Retry(val code: String, val pendingCommit: RemoteRoleCredential? = null) : HostRegistrationAttempt
         data class Stop(val code: String) : HostRegistrationAttempt
     }
     private suspend fun recoverOwnedHost(active: RemoteActiveAccount) {
         var retry = 1_000L
+        var pendingCommit: RemoteRoleCredential? = null
         val runningJob = currentCoroutineContext()[Job]
         try {
             while (currentCoroutineContext().isActive) {
                 currentCoroutineContext().ensureActive()
-                when (val outcome = attemptOwnedHostRegistration(active)) {
+                val outcome = pendingCommit?.let { commitOwnedHostRegistration(active, it) }
+                    ?: attemptOwnedHostRegistration(active)
+                when (outcome) {
                     HostRegistrationAttempt.Done -> return
                     is HostRegistrationAttempt.Stop -> {
                         stopHostRegistrationRecovery(active, outcome.code)
                         return
                     }
                     is HostRegistrationAttempt.Retry -> {
+                        pendingCommit = outcome.pendingCommit
                         publishHostRegistrationFailure(active, outcome.code)
                         withTimeoutOrNull(retry) { hostRegistrationWake.receive() }
                         retry = (retry * 2).coerceAtMost(30_000L)
@@ -803,7 +807,7 @@ class RemoteAccountRuntime(
             else if (error is RemoteIdentityLockedException) HostRegistrationAttempt.Retry("REMOTE_IDENTITY_LOCKED")
             else HostRegistrationAttempt.Stop("REMOTE_CREDENTIAL_MISSING")
         }
-        if (failures.hostRegistration !in hostRegistrationRecoveryCodes || failures.hostStop != null ||
+        if (failures.hostRegistration !in RETRYABLE_HOST_REGISTRATION_ERRORS || failures.hostStop != null ||
             failures.clientRegistration != null || failures.clientStop != null) return HostRegistrationAttempt.Done
         storedHostRegistrationBlock(active)?.let { return HostRegistrationAttempt.Stop(it) }
         val server = api ?: return HostRegistrationAttempt.Done
@@ -862,7 +866,12 @@ class RemoteAccountRuntime(
                 else -> HostRegistrationAttempt.Stop("REMOTE_CREDENTIAL_MISSING")
             }
         }
+        return commitOwnedHostRegistration(active, issued)
+    }
+    private suspend fun commitOwnedHostRegistration(active: RemoteActiveAccount, issued: RemoteRoleCredential): HostRegistrationAttempt {
         if (!isCurrentAccount(active)) return HostRegistrationAttempt.Done
+        val server = api ?: return HostRegistrationAttempt.Done
+        val hostScope = RemoteIdentityScope(active.origin, active.accountId, RemoteRole.HOST)
         currentCoroutineContext().ensureActive()
         return when (vault.completeHostRegistration(active, issued)) {
             RemoteCredentialVault.HostRegistrationCommitResult.Committed -> {
@@ -883,6 +892,9 @@ class RemoteAccountRuntime(
                 HostRegistrationAttempt.Stop(storedHostRegistrationBlock(active) ?: OLD_HOST_REGISTRATION_CONFLICT)
             RemoteCredentialVault.HostRegistrationCommitResult.IdentityConflict ->
                 HostRegistrationAttempt.Stop(OLD_HOST_REGISTRATION_CONFLICT)
+            RemoteCredentialVault.HostRegistrationCommitResult.CredentialsLocked ->
+                // 服务端已完成注册。解锁后提交原响应，避免重复发起注册。
+                HostRegistrationAttempt.Retry("REMOTE_IDENTITY_LOCKED", pendingCommit = issued)
             RemoteCredentialVault.HostRegistrationCommitResult.NotEligible -> HostRegistrationAttempt.Done
         }
     }

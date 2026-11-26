@@ -201,7 +201,7 @@ internal class RemoteSignalService(
             }
             "signal.offer", "signal.answer", "signal.ice" -> {
                 val tunnel = requireTunnel(payload)
-                worker.launch { try { tunnel.signal(frame.type, payload) } catch (_: Exception) { tunnel.fail("RTC_NEGOTIATION_FAILED") } }
+                worker.launch { tunnel.signal(frame.type, payload) }
             }
             "relay" -> requireTunnel(payload).receiveRelay(payload)
             "ping" -> { sendControl("pong", payload); observeHeartbeat() }
@@ -304,7 +304,7 @@ internal class RemoteSignalService(
         private fun isRtcGenerationActive(generation: Long): Boolean = synchronized(rtcStateLock) {
             terminal == null && selected != "relay" && !rtcDisabled && rtcGeneration == generation
         }
-        private fun invalidateRtc(reason: String? = null): Pair<RemoteRtcPeerSession?, Deferred<RemoteRtcPeerSession?>?> {
+        private fun invalidateRtc(): Pair<RemoteRtcPeerSession?, Deferred<RemoteRtcPeerSession?>?> {
             val closingPeer: RemoteRtcPeerSession?
             val cancellingInit: Deferred<RemoteRtcPeerSession?>?
             synchronized(rtcStateLock) {
@@ -314,7 +314,6 @@ internal class RemoteSignalService(
                 closingPeer = rtcPeer.also { rtcPeer = null }
                 cancellingInit = rtcInitTask.also { rtcInitTask = null }
             }
-            reason?.let { rtcAvailable.completeExceptionally(RemoteRpcException(it)) }
             return closingPeer to cancellingInit
         }
         private fun cleanupRtcAsync(closingPeer: RemoteRtcPeerSession?, cancellingInit: Deferred<RemoteRtcPeerSession?>?) {
@@ -361,7 +360,8 @@ internal class RemoteSignalService(
                 selected = "relay"
             }
             // 先让旧协商失效。即使 TURN 或原生构造仍未结束，中继也可以独立就绪。
-            val (closingRtc, cancellingInit) = invalidateRtc("RTC_UNAVAILABLE")
+            val (closingRtc, cancellingInit) = invalidateRtc()
+            rtcAvailable.completeExceptionally(RemoteRpcException("RTC_UNAVAILABLE"))
             try {
                 attachRelay()
                 carrierReady.complete(Unit)
@@ -480,17 +480,21 @@ internal class RemoteSignalService(
                     }
                 }
             } catch (cancelled: CancellationException) {
-                if (!isRtcGenerationActive(initialGeneration)) return
                 throw cancelled
-            } catch (failure: RemoteRpcException) {
-                if (!isRtcGenerationActive(initialGeneration)) return
-                if (identityScope.role != RemoteRole.HOST || selected != null || failure.code !in setOf("RTC_UNAVAILABLE", "RTC_SDP_FAILED", "RTC_CLOSED")) throw failure
-                // Host本地RTC不可用只结束该候选；等待Client选择合法Relay，不伪造上游未定义的signal.error。
-                val (closingRtc, cancellingInit) = invalidateRtc("RTC_UNAVAILABLE")
-                cleanupRtcAsync(closingRtc, cancellingInit)
             } catch (failure: Exception) {
-                if (!isRtcGenerationActive(initialGeneration)) return
-                throw failure
+                if (identityScope.role == RemoteRole.HOST && failure is RemoteRpcException &&
+                    failure.code in setOf("RTC_UNAVAILABLE", "RTC_SDP_FAILED", "RTC_CLOSED")) {
+                    val discarded = synchronized(rtcStateLock) {
+                        if (isRtcGenerationActive(initialGeneration) && selected == null) invalidateRtc() else null
+                    }
+                    if (discarded != null) {
+                        // Host 本地候选不可用时等待桌面选择 Relay。
+                        rtcAvailable.completeExceptionally(RemoteRpcException("RTC_UNAVAILABLE"))
+                        cleanupRtcAsync(discarded.first, discarded.second)
+                        return
+                    }
+                }
+                fail("RTC_NEGOTIATION_FAILED", initialGeneration)
             }
         }
         private suspend fun attachRelay() {
@@ -615,16 +619,20 @@ internal class RemoteSignalService(
             return AutoCloseable { synchronized(callbacksLock) { closures -= handler } }
         }
         override suspend fun close() { fail("CLIENT_CLOSED") }
-        fun fail(code: String) {
+        fun fail(code: String) = fail(code, rtcEpoch = null)
+        private fun fail(code: String, rtcEpoch: Long?) {
             val closingRelay: RemoteSocket?
             val callbacks = synchronized(callbacksLock) {
-                if (terminal != null) return
-                terminal = code
+                synchronized(rtcStateLock) {
+                    if (terminal != null || rtcEpoch != null && !isRtcGenerationActive(rtcEpoch)) return
+                    // 与 Relay 选路使用同一把锁，迟到的协商错误无法关闭已接管的中继。
+                    terminal = code
+                }
                 closingRelay = relaySocket
                 messages.clear()
                 closures.toList().also { closures.clear() }
             }
-            val (closingRtc, cancellingInit) = invalidateRtc(code)
+            val (closingRtc, cancellingInit) = invalidateRtc()
             tunnels.remove(id, this)
             if (identityScope.role == RemoteRole.HOST && code != "CLIENT_CLOSED") {
                 Log.d(RemoteHostControl.TAG, "PEER_DISCONNECTED ${safeRoleErrorCode(code, "PEER_CONNECTION_CLOSED")}")
@@ -632,6 +640,7 @@ internal class RemoteSignalService(
             closeRemoteConnectionResources(
                 { onPeerClosed(connectionScope, code) },
                 { cancellingInit?.cancel(); Unit },
+                { rtcAvailable.completeExceptionally(RemoteRpcException(code)); Unit },
                 { carrierReady.completeExceptionally(RemoteRpcException(code)); Unit },
                 { secure.close() }, { closingRtc?.close(); Unit }, { closingRelay?.close(); Unit },
                 *callbacks.map { callback -> { callback(code) } }.toTypedArray(),

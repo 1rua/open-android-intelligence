@@ -521,6 +521,33 @@ class RemoteHostRegistrationRecoveryTest {
         }
     }
 
+    @Test fun 注册响应返回时Client暂锁则解锁后只提交原Host凭据() = runBlocking {
+        Fixture().use { fixture ->
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val clientScopeKey = RemoteIdentityScope(fixture.origin, "owner", RemoteRole.CLIENT).storageKey
+            fixture.ownedRoleEntered = entered
+            fixture.ownedRoleRelease = release
+            fixture.rejectOwnedRole = false
+            assertEquals(fixture.active, fixture.runtime.restore())
+            try {
+                assertTrue(withContext(Dispatchers.IO) { entered.await(3, TimeUnit.SECONDS) })
+                fixture.protector.lock(clientScopeKey)
+                release.countDown()
+                await { fixture.runtime.hostFailure.value?.code == "REMOTE_IDENTITY_LOCKED" }
+                assertNull(fixture.vault.roleFailures(fixture.active).hostStop)
+                assertNull(fixture.hostCredential())
+            } finally {
+                release.countDown()
+                fixture.protector.unlock(clientScopeKey)
+            }
+            await { fixture.hostCredential() != null && fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE }
+            assertEquals(fixture.active, fixture.vault.activeAccount())
+            assertEquals(fixture.hostTokens, fixture.hostCredential()!!.tokens)
+            assertEquals(1, fixture.ownedRequests.size)
+        }
+    }
+
     @Test fun 补注册响应200读到一半断开按网络故障重试且下次恢复上线() = runBlocking {
         Fixture(hostRegistrationError = "RATE_LIMITED").use { fixture ->
             fixture.rejectOwnedRole = false

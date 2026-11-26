@@ -157,12 +157,13 @@ class RemoteCredentialVault internal constructor(
     internal sealed interface HostRegistrationCommitResult {
         data object Committed : HostRegistrationCommitResult
         data object NotEligible : HostRegistrationCommitResult
+        data object CredentialsLocked : HostRegistrationCommitResult
         data object ExistingHostConflict : HostRegistrationCommitResult
         data object IdentityConflict : HostRegistrationCommitResult
     }
     /**
      * 首次 Host 注册补偿只在仍有效的同一授权 epoch 内执行，并把 Host 凭据与清除暂态注册标记合并成一次提交。
-     * 在锁内明确区分成功、旧 Host 记录冲突、身份冲突与无资格，避免调用方锁外猜测；真正写盘失败仍抛出。
+     * 提交结果区分暂锁、冲突与失去资格，供运行时决定是否保留同一次注册响应。
      */
     internal fun completeHostRegistration(account: RemoteActiveAccount, credential: RemoteRoleCredential): HostRegistrationCommitResult = locked {
         if (!authorizationCurrent(account)) return@locked HostRegistrationCommitResult.NotEligible
@@ -177,6 +178,7 @@ class RemoteCredentialVault internal constructor(
         val hostScope = RemoteIdentityScope(account.origin, account.accountId, RemoteRole.HOST)
         if (state.records.containsKey(hostScope.storageKey)) return@locked HostRegistrationCommitResult.ExistingHostConflict
         val clientCredential = try { RemoteIdentityStore(ReadOnlyRecords(state.records), protector).load(clientScope) }
+        catch (_: RemoteIdentityLockedException) { return@locked HostRegistrationCommitResult.CredentialsLocked }
         catch (_: Exception) { return@locked HostRegistrationCommitResult.NotEligible } ?: return@locked HostRegistrationCommitResult.NotEligible
         if (clientCredential.identity.deviceId == credential.identity.deviceId ||
             MessageDigest.isEqual(clientCredential.identity.publicKey, credential.identity.publicKey)) {
@@ -187,7 +189,8 @@ class RemoteCredentialVault internal constructor(
         val snapshot = HostRegistrationCommit(state, failures, hostScope.storageKey, ::save)
         val registrationStore = RemoteIdentityStore(snapshot, protector)
         val ticket = registrationStore.beginRegistration(account.origin, account.accountId)
-        registrationStore.commitRegistration(ticket, hostScope, credential)
+        try { registrationStore.commitRegistration(ticket, hostScope, credential) }
+        catch (_: RemoteIdentityLockedException) { return@locked HostRegistrationCommitResult.CredentialsLocked }
         if (snapshot.committed()) HostRegistrationCommitResult.Committed else HostRegistrationCommitResult.NotEligible
     }
     /** 仅用于角色终态围栏本身也不可用时；账号级失败关闭，下一次显式登录建立新 epoch。 */
@@ -390,7 +393,7 @@ class RemoteCredentialVault internal constructor(
     companion object {
         private const val ROLE_TERMINAL_UNAVAILABLE = "REMOTE_CREDENTIAL_PERSISTENCE_FAILED"
         private const val INVALID_ROLE_ERROR = "__INVALID_REMOTE_ROLE_ERROR__"
-        private val RETRYABLE_HOST_REGISTRATION_ERRORS = setOf("CONNECTION_FAILED", "RATE_LIMITED", "INTERNAL_ERROR")
+        internal val RETRYABLE_HOST_REGISTRATION_ERRORS = setOf("CONNECTION_FAILED", "RATE_LIMITED", "INTERNAL_ERROR")
         private val monitors = ConcurrentHashMap<String, Any>()
         private val transactions = ConcurrentHashMap<String, Mutex>()
         private val processFailedClosed = ConcurrentHashMap.newKeySet<String>()

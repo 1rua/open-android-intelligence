@@ -336,14 +336,20 @@ class RemoteSignalServiceTest {
     }
 
     @Test fun Host挂起TURN凭据请求时Relay仍可完成握手和RPC() = runBlocking {
-        assertRelayWinsRtcRace(holdTurn = true)
+        assertRelayWinsRtcRace(RtcStallPoint.TURN)
     }
 
     @Test fun Host原生连接构造迟到时Relay先就绪并销毁旧连接() = runBlocking {
-        assertRelayWinsRtcRace(holdTurn = false)
+        assertRelayWinsRtcRace(RtcStallPoint.PEER_CREATION)
     }
 
-    private suspend fun assertRelayWinsRtcRace(holdTurn: Boolean) {
+    @Test fun Host迟到的RTC协商失败不关闭已经接管的Relay() = runBlocking {
+        assertRelayWinsRtcRace(RtcStallPoint.OFFER)
+    }
+
+    private enum class RtcStallPoint { TURN, PEER_CREATION, OFFER }
+
+    private suspend fun assertRelayWinsRtcRace(stall: RtcStallPoint) {
         val host = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
         val client = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
         val binding = RemoteConnectionBinding("relay-fast-connection", host.deviceId.value, client.deviceId.value)
@@ -355,6 +361,9 @@ class RemoteSignalServiceTest {
         val factoryRelease = CountDownLatch(1)
         val latePeerClosed = CompletableDeferred<Unit>()
         val oldSignalHandled = AtomicBoolean(false)
+        val offerEntered = CompletableDeferred<Unit>()
+        val offerRelease = CompletableDeferred<Unit>()
+        val offerRejected = CompletableDeferred<Unit>()
         val relayAttached = CompletableDeferred<Unit>()
         val handshakeReplied = CompletableDeferred<Unit>()
         val firstResponse = CompletableDeferred<JsonValue>()
@@ -458,7 +467,7 @@ class RemoteSignalServiceTest {
             RemoteRoleCredential(host, token()), {}, { _, _ -> peer }, handler,
             onPeerClosed = { _, _ -> tunnelClosed.complete(Unit) },
             iceServers = {
-                if (holdTurn) withContext(NonCancellable) {
+                if (stall == RtcStallPoint.TURN) withContext(NonCancellable) {
                     turnEntered.complete(Unit)
                     turnRelease.await()
                     turnFinished.complete(Unit)
@@ -468,10 +477,22 @@ class RemoteSignalServiceTest {
             rtcPeerFactory = { _, _, _, _, _ ->
                 factoryCalls.incrementAndGet()
                 factoryEntered.complete(Unit)
-                check(factoryRelease.await(5, TimeUnit.SECONDS)) { "等待放行 PeerConnection 工厂超时" }
+                if (stall == RtcStallPoint.PEER_CREATION) {
+                    check(factoryRelease.await(5, TimeUnit.SECONDS)) { "等待放行 PeerConnection 工厂超时" }
+                }
                 object : RemoteRtcPeerSession {
                     override suspend fun initiate() = error("Host 不应发起 WebRTC 协商")
-                    override suspend fun acceptOffer(sdp: String) { oldSignalHandled.set(true) }
+                    override suspend fun acceptOffer(sdp: String) {
+                        if (stall == RtcStallPoint.OFFER) {
+                            withContext(NonCancellable) {
+                                offerEntered.complete(Unit)
+                                offerRelease.await()
+                                offerRejected.complete(Unit)
+                            }
+                            throw RemoteRpcException("RTC_SDP_FAILED")
+                        }
+                        oldSignalHandled.set(true)
+                    }
                     override suspend fun acceptAnswer(sdp: String) { oldSignalHandled.set(true) }
                     override fun acceptIce(value: JsonValue.JObject) { oldSignalHandled.set(true) }
                     override suspend fun selectedTransport() = "p2p"
@@ -497,7 +518,12 @@ class RemoteSignalServiceTest {
         }
         try {
             service.startHost()
-            withTimeout(3_000) { (if (holdTurn) turnEntered else factoryEntered).await() }
+            val rtcStalled = when (stall) {
+                RtcStallPoint.TURN -> turnEntered
+                RtcStallPoint.PEER_CREATION -> factoryEntered
+                RtcStallPoint.OFFER -> offerEntered
+            }
+            withTimeout(3_000) { rtcStalled.await() }
             // 旧协商持续挂起期间，桌面切到 Relay 并立刻发送 Noise 首帧。
             val ws = withTimeout(3_000) { controlWebSocket.await() }
             ws.send(text(control("transport.selected", obj(
@@ -515,17 +541,26 @@ class RemoteSignalServiceTest {
 
             turnRelease.complete(Unit)
             factoryRelease.countDown()
-            withTimeout(2_000) { (if (holdTurn) turnFinished else latePeerClosed).await() }
+            offerRelease.complete(Unit)
+            withTimeout(2_000) {
+                when (stall) {
+                    RtcStallPoint.TURN -> turnFinished.await()
+                    RtcStallPoint.PEER_CREATION -> latePeerClosed.await()
+                    RtcStallPoint.OFFER -> { latePeerClosed.await(); offerRejected.await() }
+                }
+            }
 
             sendEncryptedRpcOverRelay(dataSocket, "second-over-relay")
             assertEquals(JsonValue.JBool(true), withTimeout(2_000) { secondResponse.await() }.objectValue().value("ok"))
-            assertEquals("迟到的 TURN 不应构造 PeerConnection", if (holdTurn) 0 else 1, factoryCalls.get())
-            assertFalse("迟到的 PeerConnection 不得处理旧信令", oldSignalHandled.get() || signalAnswerSent.get())
+            assertEquals("迟到的 TURN 不应构造 PeerConnection", if (stall == RtcStallPoint.TURN) 0 else 1, factoryCalls.get())
+            if (stall != RtcStallPoint.OFFER) assertFalse("迟到的 PeerConnection 不得处理旧信令", oldSignalHandled.get())
+            assertFalse("中继接管后不应发送旧应答", signalAnswerSent.get())
             assertFalse("释放旧协商不得关闭当前 Relay 隧道", tunnelClosed.isCompleted)
             assertTrue(service.connected)
         } finally {
             turnRelease.complete(Unit)
             factoryRelease.countDown()
+            offerRelease.complete(Unit)
             service.close(); parent.cancel(); server.shutdown(); secure.close()
         }
     }
