@@ -61,6 +61,8 @@ data class WorkspaceMenuState(
     val catalogError: Boolean = false,
     val onHydrate: () -> Unit = {},
     val onRefreshCatalog: () -> Unit = {},
+    /** 顶部刷新按钮的完整恢复动作；为空时保持只刷新目录与当前列表的兼容行为。 */
+    val onForceRefresh: (() -> Unit)? = null,
     val onOpenWorkspaceThread: (workspaceKey: String, threadId: String) -> Unit = { _, _ -> },
     val onCreateWorkspaceThread: (workspaceKey: String) -> Unit = {},
 )
@@ -311,7 +313,13 @@ fun WorkspaceConversationBrowser(
                         )
                     }
                 }
-                IconButton(onClick = { workspaceMenu.onRefreshCatalog(); onRefresh() }) {
+                IconButton(onClick = {
+                    workspaceMenu.onForceRefresh?.invoke()
+                        ?: run {
+                            workspaceMenu.onRefreshCatalog()
+                            onRefresh()
+                        }
+                }) {
                     Icon(Icons.Default.Refresh, contentDescription = stringResource(UiR.string.conv_browser_refresh_cd))
                 }
                 IconButton(onClick = onCreateThread, enabled = online) {

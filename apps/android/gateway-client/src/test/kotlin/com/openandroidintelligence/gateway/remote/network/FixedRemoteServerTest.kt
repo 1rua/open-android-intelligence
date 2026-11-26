@@ -109,7 +109,7 @@ class FixedRemoteServerTest {
                         check(releaseNewAuthentication.await(5, TimeUnit.SECONDS)) { "等待释放新Host认证屏障超时" }
                     }
                 },
-                onPeerClosed = { connection ->
+                onPeerClosed = { connection, _ ->
                     if (connection.hostDeviceId == hosts[0].deviceId.value && pauseOld.compareAndSet(true, false)) {
                         oldCleanupEntered.countDown()
                         check(releaseOldCleanup.await(5, TimeUnit.SECONDS)) { "等待释放旧Host清理屏障超时" }

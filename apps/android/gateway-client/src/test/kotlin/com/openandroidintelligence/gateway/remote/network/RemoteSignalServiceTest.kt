@@ -177,7 +177,7 @@ class RemoteSignalServiceTest {
             override fun events(scope: RemoteRpcConnectionScope) = emptyFlow<RemoteRpcEvent>()
         }
         val service = RemoteSignalService(context, parent, api, RemoteIdentityScope(api.origin, "owner", RemoteRole.HOST), RemoteRoleCredential(host, token()), {}, { id, _ -> peers.getValue(id) }, handler,
-            onPeerClosed = { throw java.io.IOException("模拟关闭登记失败") }, onClosed = { serviceClosed = true })
+            onPeerClosed = { _, _ -> throw java.io.IOException("模拟关闭登记失败") }, onClosed = { serviceClosed = true })
         try {
             service.startHost()
             assertEquals("good", withTimeout(3000) { result.await() }.objectValue().value("payload").objectValue().requiredText("requestId"))

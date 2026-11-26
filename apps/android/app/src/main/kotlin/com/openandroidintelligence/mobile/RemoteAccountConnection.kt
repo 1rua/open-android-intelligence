@@ -9,6 +9,7 @@ import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcChannel
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcHostHandler
 import com.openandroidintelligence.gateway.remote.runtime.RemoteAccountRuntime
 import com.openandroidintelligence.gateway.remote.runtime.RemoteAccountConnectionState
+import com.openandroidintelligence.gateway.remote.runtime.RemoteDataConnectionClosure
 import com.openandroidintelligence.gateway.remote.runtime.RemoteHostConnectionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.Flow
 
 private val NO_HOST_STANDBY = MutableStateFlow(false)
+private val NO_CLIENT_CONTROL_GENERATION = MutableStateFlow(0L)
 
 /** App 只需要账号生命周期和真实连接，不了解凭据、Noise 或信令的实现细节。 */
 interface RemoteAccountConnection {
@@ -26,6 +28,10 @@ interface RemoteAccountConnection {
     val hostStandby: StateFlow<Boolean> get() = NO_HOST_STANDBY
     val hostState: StateFlow<RemoteHostConnectionState>
     val hosts: Flow<List<RemoteHostDevice>> get() = kotlinx.coroutines.flow.emptyFlow()
+    /** Client 控制面每完成一次 hello.ack 递增；用于唤醒已失效的数据面。 */
+    val clientControlGeneration: StateFlow<Long> get() = NO_CLIENT_CONTROL_GENERATION
+    /** 数据隧道终止信号；使用 scope 精确匹配当前连接，避免迟到旧事件覆盖新连接。 */
+    val dataConnectionClosures: Flow<RemoteDataConnectionClosure> get() = kotlinx.coroutines.flow.emptyFlow()
     suspend fun login(origin: String, email: String, password: String): RemoteLoginResult
     suspend fun loginAccountToken(origin: String, token: String, loginAttemptId: String): RemoteLoginResult = error("REMOTE_LOGIN_UNAVAILABLE")
     suspend fun importPairing(value: com.openandroidintelligence.gateway.remote.auth.RemotePairingImport): Unit = error("REMOTE_LOGIN_UNAVAILABLE")
@@ -37,7 +43,10 @@ interface RemoteAccountConnection {
     suspend fun connect(hostDeviceId: String): RemoteRpcChannel
     fun authenticatedPeer(connectionId: String): AuthenticatedRemotePeer
     suspend fun logout()
+    /** 网络恢复或前台恢复时打断退避；实施方负责合并重复唤醒。 */
     fun refreshControlConnection() {}
+    /** 手动刷新专用：只重建 Client 控制面及依赖它的数据面，不重启 Virtual Host。 */
+    fun forceClientControlReconnect() {}
 }
 
 /** 本机登录还在注册时先保留可见的服务启动机会。服务等待所有在途尝试收束后读取最终授权。 */
@@ -69,6 +78,8 @@ internal class ProductionRemoteAccountConnection(context: Context, scope: Corout
     override val hostStandby = runtime.hostStandby
     override val hostState = runtime.hostState
     override val hosts = runtime.hosts
+    override val clientControlGeneration = runtime.clientControlGeneration
+    override val dataConnectionClosures = runtime.dataConnectionClosures
     override suspend fun login(origin: String, email: String, password: String) =
         registration.duringRegistration { runtime.login(origin, email, password) }
     override suspend fun loginAccountToken(origin: String, token: String, loginAttemptId: String) =
@@ -85,4 +96,5 @@ internal class ProductionRemoteAccountConnection(context: Context, scope: Corout
     override fun authenticatedPeer(connectionId: String) = runtime.authenticatedPeer(connectionId)
     override suspend fun logout() = runtime.logout()
     override fun refreshControlConnection() = runtime.refreshControlConnection()
+    override fun forceClientControlReconnect() = runtime.forceClientControlReconnect()
 }

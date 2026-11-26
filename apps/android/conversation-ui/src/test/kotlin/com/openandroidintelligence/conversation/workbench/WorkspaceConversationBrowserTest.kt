@@ -75,6 +75,65 @@ class WorkspaceConversationBrowserTest {
     )
 
     @Test
+    fun `刷新会话按钮存在强制恢复回调时只执行完整恢复`() {
+        var forceRefreshCount = 0
+        var catalogRefreshCount = 0
+        var currentListRefreshCount = 0
+        val menu = WorkspaceMenuState(
+            agentTitle = "主力电脑 · DSH",
+            groups = sampleGroups(),
+            onRefreshCatalog = { catalogRefreshCount++ },
+            onForceRefresh = { forceRefreshCount++ },
+        )
+
+        compose.setContent {
+            MaterialTheme {
+                WorkspaceConversationBrowser(
+                    workspaceMenu = menu,
+                    activeThreadId = null,
+                    onOpenThread = {},
+                    onCreateThread = {},
+                    onRefresh = { currentListRefreshCount++ },
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("刷新会话").performClick()
+
+        assertEquals(1, forceRefreshCount)
+        assertEquals(0, catalogRefreshCount)
+        assertEquals(0, currentListRefreshCount)
+    }
+
+    @Test
+    fun `刷新会话按钮缺少强制恢复回调时保持目录与列表刷新语义`() {
+        var catalogRefreshCount = 0
+        var currentListRefreshCount = 0
+        val menu = WorkspaceMenuState(
+            agentTitle = "主力电脑 · DSH",
+            groups = sampleGroups(),
+            onRefreshCatalog = { catalogRefreshCount++ },
+        )
+
+        compose.setContent {
+            MaterialTheme {
+                WorkspaceConversationBrowser(
+                    workspaceMenu = menu,
+                    activeThreadId = null,
+                    onOpenThread = {},
+                    onCreateThread = {},
+                    onRefresh = { currentListRefreshCount++ },
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("刷新会话").performClick()
+
+        assertEquals(1, catalogRefreshCount)
+        assertEquals(1, currentListRefreshCount)
+    }
+
+    @Test
     fun `打开抽屉自动触发工作区水合并按工作区分组展示且移除文件夹管理`() {
         val controller = buildController()
         var hydrateCount = 0

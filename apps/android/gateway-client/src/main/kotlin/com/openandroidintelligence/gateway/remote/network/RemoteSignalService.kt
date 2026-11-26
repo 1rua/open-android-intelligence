@@ -36,7 +36,7 @@ internal class RemoteSignalService(
     private val authorizePeer: suspend (String, RemoteRole) -> RemoteAuthorizedPeer,
     private val hostHandler: RemoteRpcHostHandler? = null,
     private val onAuthenticatedPeer: (AuthenticatedRemotePeer) -> Unit = {},
-    private val onPeerClosed: (RemoteRpcConnectionScope) -> Unit = {},
+    private val onPeerClosed: (RemoteRpcConnectionScope, String) -> Unit = { _, _ -> },
     private val onClosed: (String) -> Unit = {},
     private val onHeartbeat: () -> Unit = {},
     private val iceServers: suspend (String) -> List<RemoteIceServer> = { id -> api.iceServers(credential.tokens.accessToken, id) },
@@ -385,7 +385,7 @@ internal class RemoteSignalService(
                     }
                 }
             } catch (failure: Exception) {
-                onPeerClosed(connectionScope)
+                onPeerClosed(connectionScope, (failure as? RemoteRpcException)?.code ?: "CONNECTION_FAILED")
                 throw failure
             }
         }
@@ -437,7 +437,7 @@ internal class RemoteSignalService(
                 Log.d(RemoteHostControl.TAG, "PEER_DISCONNECTED ${safeRoleErrorCode(code, "PEER_CONNECTION_CLOSED")}")
             }
             closeRemoteConnectionResources(
-                { onPeerClosed(connectionScope) },
+                { onPeerClosed(connectionScope, code) },
                 { rtcAvailable.completeExceptionally(RemoteRpcException(code)); Unit },
                 { carrierReady.completeExceptionally(RemoteRpcException(code)); Unit },
                 { secure.close() }, { rtcPeer?.close(); Unit }, { relaySocket?.close(); Unit },
