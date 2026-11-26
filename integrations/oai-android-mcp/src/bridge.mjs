@@ -183,9 +183,10 @@ export class PhoneMcpBridge {
         catch (error) {
           if (signal.aborted) throw error;
           await this.#current(signal, fence);
-          if (error?.category === 'target_missing') items.push({ hostId: device.deviceId, name: device.name, backend: 'harness', state: 'missing' });
-          else items.push({ hostId: device.deviceId, name: device.name, backend: 'harness', state: 'unavailable' });
-          // 健康候选不受其他 Host 的 unavailable/missing 影响；只返回脱敏类别。
+          // 已完成目录探测且确认没有手机工作区时，不向 MCP 暴露该主机。
+          if (error?.category !== 'target_missing') {
+            items.push({ hostId: device.deviceId, name: device.name, backend: 'harness', state: 'unavailable' });
+          }
         }
       }
       return { devices: items };
@@ -407,16 +408,14 @@ export class PhoneMcpBridge {
     const fallbackId = `receipt-${randomUUID()}`;
     const receipt = await this.#send(fixed, 'control-bus', { request_id: fallbackId, op: 'request.status',
       args: { targetRequestId: request_id, targetTaskSessionId: taskSessionId } }, signal, fence);
-    // 仅在 request.status 查询自身已完成时校验内层原回执身份；未完成或传输未知须忠实保留原状态，不误报伪造。
-    if (receipt?.state === 'outcome_unknown') {
-      return { ...fixed, taskSessionId, request_id, state: 'outcome_unknown', resultAvailable: false, ...(receipt.receipt !== undefined ? { receipt: receipt.receipt } : {}) };
-    }
-    if (['failed', 'denied', 'cancelled'].includes(receipt?.state)) {
-      return { ...fixed, taskSessionId, request_id, state: receipt.state, resultAvailable: false,
-        ...(receipt.error !== undefined ? { error: receipt.error } : {}) };
-    }
-    if (receipt?.state !== 'completed') {
-      return { ...fixed, taskSessionId, request_id, state: receipt?.state === 'awaiting_confirmation' ? 'awaiting_confirmation' : 'accepted', resultAvailable: false };
+    // 外层回执属于这次查询。查询没有完成时，原请求状态仍无依据。
+    if (receipt.state !== 'completed') {
+      return { ...fixed, taskSessionId, request_id, resultAvailable: false, query: {
+        request_id: fallbackId, taskSessionId: 'control-bus', state: receipt.state,
+        ...(receipt.execution === undefined ? {} : { execution: receipt.execution }),
+        ...(receipt.error === undefined ? {} : { error: receipt.error }),
+        ...(receipt.receipt === undefined ? {} : { receipt: receipt.receipt }),
+      } };
     }
     const nested = receipt.result && typeof receipt.result === 'object' ? receipt.result : undefined;
     if (!nested || nested.request_id !== request_id || nested.taskSessionId !== taskSessionId) {
@@ -511,6 +510,8 @@ export function registerPhoneMcpRoute({ webServer, connection, bridge, bearer = 
       }
       let input; try { input = JSON.parse(Buffer.concat(parts).toString('utf8')); } catch { bridgeFailure(res, 400, new Error('BRIDGE_BODY_INVALID')); return; }
       const value = await bridge.call(operation, input, abort.signal);
+      if (revoked) throw new Error('BRIDGE_AUTHORITY_CHANGED');
+      if (closed) throw new Error('BRIDGE_CLOSED');
       writeJson(res, 200, { ok: true, value });
     } catch (error) {
       if (abort.signal.aborted && !res.headersSent) return;

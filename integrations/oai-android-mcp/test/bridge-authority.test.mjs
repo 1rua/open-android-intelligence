@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { PhoneMcpBridge, registerPhoneMcpRoute } from '../src/bridge.mjs';
-import { apply, createRuntimeAuthority } from '../index.mjs';
+import { apply, createRuntimeAuthority, inject, name } from '../index.mjs';
 
 function identityStatus(deviceId, overrides = {}) {
   return {
@@ -19,11 +19,19 @@ function identityStatus(deviceId, overrides = {}) {
   };
 }
 
+class FixtureClientServerApi {
+  role = 'client';
+  baseUrl = 'https://remote.invalid';
+  constructor(path) { this.store = { path }; }
+  async authorizeWithAccount(_identity, _account, authorize) { return authorize(); }
+}
+
 function fakeRuntime(deviceId, overrides = {}) {
   let hasCredentials = true;
   let status = identityStatus(deviceId, overrides);
   let logoutCount = 0;
   return {
+    server: new FixtureClientServerApi(deviceId),
     status: () => status,
     async handleControl(endpoint) {
       assert.equal(endpoint, 'client.authorization.status');
@@ -466,5 +474,147 @@ test('可选真实 DSH 组件：requestRejection 无 Cookie 返回 401，真实 
   } finally {
     await registration.close();
     await ctx.fiber.dispose();
+  }
+});
+
+
+test('固定 DSH 0.6.5 settings.configure 换同服同设备的凭据时拦截签发、丢弃在途结果，并保留上游失败语义', {
+  skip: !process.env.OAI_DSH_REMOTE_ENTRY || !process.env.OAI_DSH_FIXTURES_NODE_MODULES,
+  timeout: 10_000,
+}, async (t) => {
+  const entry = pathToFileURL(process.env.OAI_DSH_REMOTE_ENTRY);
+  const manifest = JSON.parse(await readFile(new URL('../package.json', entry), 'utf8'));
+  assert.equal(manifest.name, 'ds-harness-remote');
+  assert.equal(manifest.version, '0.6.5');
+  const dsh = await import(entry.href);
+  const fixtures = process.env.OAI_DSH_FIXTURES_NODE_MODULES;
+  const { Context } = await import(pathToFileURL(join(fixtures, '@deepseek-ai/cordis/lib/index.js')));
+  const { WebServer } = await import(pathToFileURL(join(fixtures, '@deepseek-ai/dsh-host-webserver/lib/index.js')));
+  const root = await mkdtemp(join(tmpdir(), 'oai-android-mcp-settings-'));
+  const ctx = new Context();
+  const originalFetch = globalThis.fetch;
+  t.after(async () => {
+    globalThis.fetch = originalFetch;
+    await ctx.fiber.dispose();
+    const trash = join(tmpdir(), 'oai-android-mcp-trash');
+    await mkdir(trash, { recursive: true });
+    await rename(root, join(trash, `settings-${root.split('/').at(-1)}`));
+  });
+
+  const serverUrl = 'https://dsh-settings-fixture.invalid';
+  const configInput = { serverUrl, role: 'client', hostControl: { enabled: false } };
+  const config = dsh.resolveConfig(configInput);
+  const identitiesRoot = join(root, 'identities');
+  const identities = new dsh.IdentityStore({ directory: dsh.serverStorageDirectory(identitiesRoot, serverUrl, 'client'), role: 'client' });
+  const identity = await identities.loadOrCreate('隔离客户端');
+  const store = new dsh.ServerCredentialStore(identities.directory);
+  const tokens = label => ({ accessToken: `${label}-fixture-access-token`, refreshToken: `${label}-fixture-refresh-token`,
+    accessTokenExpiresAt: Date.now() + 120_000, refreshTokenExpiresAt: Date.now() + 180_000 });
+  const prior = { serverUrl, deviceId: identity.deviceId, authorizationMethod: 'account', account: 'original@example.invalid' };
+  await store.save({ ...prior, ...tokens('original') });
+  const api = new dsh.ClientServerApi(serverUrl, store);
+  const logger = { debug() {}, info() {}, warn() {}, error() {} };
+  const unexpectedGatewayCall = () => { throw new Error('设置测试不访问本地 Gateway'); };
+  const gateway = { invoke: unexpectedGatewayCall, dispatchRpc: unexpectedGatewayCall,
+    openWireStream: unexpectedGatewayCall, failure: unexpectedGatewayCall };
+  const client = new dsh.ClientModeRuntime(config, identities, api, gateway, logger);
+  await client.start();
+  t.after(() => client.close());
+
+  const fetchStarted = Promise.withResolvers();
+  const admitRegistration = Promise.withResolvers();
+  const settingsStarted = Promise.withResolvers();
+  const finishSettings = Promise.withResolvers();
+  const listStarted = Promise.withResolvers();
+  const finishList = Promise.withResolvers();
+  const nextAccount = 'replacement@example.invalid';
+  let loginCalls = 0;
+  globalThis.fetch = async (input, options) => {
+    const url = new URL(input);
+    assert.equal(url.origin, serverUrl);
+    if (url.pathname === '/api/v1/auth/login') {
+      loginCalls++;
+      const { email } = JSON.parse(options.body);
+      if (email !== nextAccount) return Response.json({ error: { code: 'AUTH_INVALID', message: '隔离登录拒绝', retryable: false } }, { status: 401 });
+      return Response.json({ token: 'fixture-local-account-token', account: nextAccount, expiresAt: Date.now() + 120_000, isAdmin: false });
+    }
+    assert.equal(url.pathname, '/api/v1/devices/register');
+    assert.equal(JSON.parse(options.body).device.deviceId, identity.deviceId);
+    fetchStarted.resolve();
+    await admitRegistration.promise;
+    return Response.json(tokens('replacement'));
+  };
+  const settings = { get: () => configInput, async replace() {
+    settingsStarted.resolve();
+    await finishSettings.promise;
+    throw new Error('隔离设置保存失败');
+  } };
+  const control = new dsh.PluginControlRuntime(config, identitiesRoot, settings, client);
+  await ctx.plugin(WebServer, { host: '127.0.0.1', port: 0, compression: 'none' });
+  const webServer = ctx.get('webServer');
+  const connection = { requestRejection: req => req.headers['x-fixture-control'] === 'authorized' ? undefined : 401 };
+  const disposeControl = control.register(connection, webServer);
+  t.after(disposeControl);
+  await ctx.provide('dshRemoteClient', client);
+  await ctx.provide('connection', connection);
+  const privateConfigPath = join(root, 'private', 'mcp.json');
+  await ctx.plugin({ name, inject, apply }, { privateConfigPath });
+  const env = JSON.parse(await readFile(privateConfigPath, 'utf8')).mcpServers['oai-android'].env;
+  const bridgeCall = (op) => originalFetch(`${env.OAI_ANDROID_BRIDGE_URL}/oai-android-mcp/v1/${op}`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${env.OAI_ANDROID_BRIDGE_BEARER}` }, body: '{}',
+    signal: AbortSignal.timeout(5_000),
+  });
+  const rpc = (method, payload, authorized = true) => originalFetch(`${webServer.getOrigin()}/ds-harness-remote/${method}`, {
+    method: 'POST', headers: { 'content-type': 'application/json', ...(authorized ? { 'x-fixture-control': 'authorized' } : {}) },
+    body: JSON.stringify({ type: 'client-request', rpcId: method, method, payload }), signal: AbortSignal.timeout(5_000),
+  });
+  const configure = (email, authorized) => rpc('settings.configure', { serverUrl, role: 'client', email, password: 'fixture-password' }, authorized);
+
+  try {
+    const unauthorized = await configure(nextAccount, false);
+    assert.equal(unauthorized.status, 401);
+    assert.equal(loginCalls, 0);
+    const withoutAuthorization = await rpc('settings.configure', { serverUrl, role: 'client' });
+    assert.equal((await withoutAuthorization.json()).result.ok, false);
+    assert.equal(loginCalls, 0);
+    const denied = await configure('denied@example.invalid');
+    const deniedResult = (await denied.json()).result;
+    assert.equal(deniedResult.error?.details?.remoteCode, 'AUTH_INVALID', deniedResult.error?.message);
+    assert.equal((await store.load(serverUrl, identity.deviceId)).account, prior.account);
+    assert.equal((await bridgeCall('status')).status, 200);
+
+    client.devices = async () => {
+      listStarted.resolve();
+      await finishList.promise;
+      return [];
+    };
+    const listing = bridgeCall('list_devices');
+    await listStarted.promise;
+    const switching = configure(nextAccount);
+    await fetchStarted.promise;
+    const blocked = await bridgeCall('status');
+    assert.equal(blocked.status, 409);
+    assert.equal((await blocked.json()).error.code, 'BRIDGE_AUTHORITY_UNAVAILABLE');
+    const signing = createRuntimeAuthority();
+    try {
+      await assert.rejects(new PhoneMcpBridge(client, signing).bind(), /BRIDGE_AUTHORITY_UNAVAILABLE/u);
+    } finally { signing.dispose(); }
+
+    admitRegistration.resolve();
+    await settingsStarted.promise;
+    assert.equal(client.status().deviceId, identity.deviceId);
+    assert.equal(client.status().serverUrl, serverUrl);
+    assert.equal((await store.load(serverUrl, identity.deviceId)).account, nextAccount);
+    finishList.resolve();
+    const response = await listing;
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.code, 'BRIDGE_AUTHORITY_CHANGED');
+    finishSettings.resolve();
+    assert.equal((await (await switching).json()).result.ok, false);
+    assert.notEqual((await bridgeCall('status')).status, 200);
+  } finally {
+    admitRegistration.resolve();
+    finishList.resolve();
+    finishSettings.resolve();
   }
 });

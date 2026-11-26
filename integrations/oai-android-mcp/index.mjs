@@ -34,6 +34,65 @@ function authoritySnapshot(runtime) {
   };
 }
 
+const configuredClientObservers = new WeakMap();
+
+function clientAuthorizationScope(api) {
+  if (api?.role !== 'client' || typeof api.baseUrl !== 'string' || typeof api.store?.path !== 'string') return undefined;
+  return JSON.stringify([api.baseUrl, api.store.path]);
+}
+
+/** 固定 DSH 0.6.5 的 settings.configure 通过新建的 ClientServerApi 签发凭据。 */
+function observeConfiguredClientAuthorization(server, revoke) {
+  const scope = clientAuthorizationScope(server);
+  const prototype = scope === undefined ? undefined : Object.getPrototypeOf(server);
+  if (typeof prototype?.authorizeWithAccount !== 'function') throw new Error('DSH_AUTHORIZATION_CONTROL_REQUIRED');
+  let scopes = configuredClientObservers.get(prototype);
+  if (!scopes) {
+    scopes = new Map();
+    const own = Object.getOwnPropertyDescriptor(prototype, 'authorizeWithAccount');
+    const original = prototype.authorizeWithAccount;
+    const wrapped = async function (...args) {
+      const observed = scopes.get(clientAuthorizationScope(this));
+      if (!observed) return original.apply(this, args);
+      observed.pending++;
+      try {
+        const result = await original.apply(this, args);
+        // 此时授权已保存，后续 settings.replace 失败也不能恢复旧桥。
+        for (const listener of [...observed.listeners]) listener();
+        return result;
+      } finally {
+        observed.pending--;
+        observed.detach();
+      }
+    };
+    Object.defineProperty(prototype, 'authorizeWithAccount', {
+      value: wrapped, configurable: true, writable: true, enumerable: own?.enumerable ?? false,
+    });
+    configuredClientObservers.set(prototype, scopes);
+    scopes.restore = () => {
+      if (prototype.authorizeWithAccount === wrapped) {
+        if (own) Object.defineProperty(prototype, 'authorizeWithAccount', own);
+        else delete prototype.authorizeWithAccount;
+      }
+      configuredClientObservers.delete(prototype);
+    };
+  }
+  let observed = scopes.get(scope);
+  if (!observed) {
+    observed = { pending: 0, listeners: new Set(), detach() {
+      if (observed.pending > 0 || observed.listeners.size > 0 || scopes.get(scope) !== observed) return;
+      scopes.delete(scope);
+      if (scopes.size === 0) scopes.restore();
+    } };
+    scopes.set(scope, observed);
+  }
+  observed.listeners.add(revoke);
+  return {
+    get transitioning() { return observed.pending > 0; },
+    dispose() { if (observed.listeners.delete(revoke)) observed.detach(); },
+  };
+}
+
 const runtimeAuthObservers = new WeakMap();
 
 /** 固定 DSH 0.6.5 的控制入口动态调用这些方法。每个 runtime 只挂一组包装。 */
@@ -92,6 +151,7 @@ function observeRuntimeAuthTransitions(runtime, revoke) {
 /** 授权绑定当前注入的 runtime 与公开身份字段，不保存 token 或 Cookie。 */
 export function createRuntimeAuthority(onRevoke) {
   let observation;
+  let configuredClientObservation;
   let observedRuntime;
   let bound;
   let boundHostDeviceId = null;
@@ -100,6 +160,8 @@ export function createRuntimeAuthority(onRevoke) {
   const dispose = () => {
     observation?.dispose();
     observation = undefined;
+    configuredClientObservation?.dispose();
+    configuredClientObservation = undefined;
   };
   const revoke = () => {
     if (revoked) return;
@@ -110,7 +172,7 @@ export function createRuntimeAuthority(onRevoke) {
   function checkTransition(signal) {
     if (signal?.aborted) throw abortError(signal);
     if (revoked) throw new Error('BRIDGE_AUTHORITY_CHANGED');
-    if (observation?.transitioning) throw new Error('BRIDGE_AUTHORITY_UNAVAILABLE');
+    if (observation?.transitioning || configuredClientObservation?.transitioning) throw new Error('BRIDGE_AUTHORITY_UNAVAILABLE');
   }
   function fail(error) {
     if (bound !== undefined) { revoke(); throw new Error('BRIDGE_AUTHORITY_CHANGED'); }
@@ -130,6 +192,8 @@ export function createRuntimeAuthority(onRevoke) {
       // 先观察登录变化，再读取异步凭据状态，避免把上一代的迟到结果用于签发。
       if (!observation) {
         observation = observeRuntimeAuthTransitions(runtime, revoke);
+        try { configuredClientObservation = observeConfiguredClientAuthorization(runtime.server, revoke); }
+        catch { dispose(); throw new Error('DSH_AUTHORIZATION_CONTROL_REQUIRED'); }
         observedRuntime = runtime;
         checkTransition(signal);
       }
@@ -170,14 +234,15 @@ export function createRuntimeAuthority(onRevoke) {
 }
 
 /** Cordis 安装入口；所有服务均由现有 DSH 注入，插件不创建监听器或读取 Remote 密钥。 */
-export function apply(ctx, config) {
+export async function apply(ctx, config) {
   if (!config || typeof config.privateConfigPath !== 'string' || !config.privateConfigPath) throw new Error('PRIVATE_MCP_CONFIG_PATH_REQUIRED');
   if (!isAbsolute(config.privateConfigPath)) throw new Error('PRIVATE_MCP_CONFIG_PATH_ABSOLUTE_REQUIRED');
   const webServer = ctx.get('webServer');
   const connection = ctx.get('connection');
   if (!webServer || !connection) throw new Error('DSH_WEB_SERVICES_REQUIRED');
   if (!Number.isInteger(webServer.port) || webServer.port < 1 || webServer.port > 65535) throw new Error('DSH_WEB_SERVER_PORT_UNAVAILABLE');
-  const lifecycle = ctx.effect(async () => {
+  // Cordis effect 返回可等待的释放函数，显式等待初始化才会报告真实启用状态。
+  await ctx.effect(async () => {
     let registration;
     const authority = createRuntimeAuthority(() => {
       if (registration) void registration.revoke().catch(() => {});
@@ -210,5 +275,4 @@ export function apply(ctx, config) {
       await registration.close();
     };
   });
-  return lifecycle;
 }

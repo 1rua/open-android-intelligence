@@ -393,32 +393,59 @@ test('旧任务退出目录报 SESSION_NOT_IN_WORKSPACE 时回查同一目标 co
   assert.equal(racingRuntime.calls.some(call => call.operation === 'remote_send_message'), false);
 });
 
-test('回查 control-bus 未完成或传输未知时忠实保留 accepted 或 outcome_unknown，不误抛身份不匹配', async () => {
-  // 1. control-bus 尚未可见 request.status 回复 -> 返回 accepted / resultAvailable: false
-  const pendingBusRuntime = receiptRuntime({ taskStatus: 'idle', taskHistory: [] });
-  const pendingResult = await new PhoneMcpBridge(pendingBusRuntime, authority).call('request_result', {
-    ...fixed, taskSessionId: 'task-1', targetRequestId: 'target-bus-pending01',
-  });
-  assert.equal(pendingResult.request_id, 'target-bus-pending01');
-  assert.equal(pendingResult.taskSessionId, 'task-1');
-  assert.equal(pendingResult.state, 'accepted');
-  assert.equal(pendingResult.resultAvailable, false);
+test('control-bus 查询未完成、失败或传输未知时，只返回查询自身状态', async () => {
+  const fixedInput = { ...fixed, taskSessionId: 'task-1', targetRequestId: 'target-bus-state0001' };
+  const pendingRuntime = receiptRuntime();
+  const pending = await new PhoneMcpBridge(pendingRuntime, authority).call('request_result', fixedInput);
+  assert.equal(pending.query.state, 'accepted');
 
-  // 2. control-bus 的 remote_send_message 返回非 accepted（如 unknown）-> 忠实保留 outcome_unknown
-  const unknownBusRuntime = receiptRuntime({ taskStatus: 'idle', taskHistory: [] });
-  const origRun = unknownBusRuntime.runSessionTool.bind(unknownBusRuntime);
-  unknownBusRuntime.runSessionTool = async (operation, args) => {
+  const failure = { code: 'PERMISSION_DENIED', message: '查询无权访问回执。' };
+  const failedRuntime = receiptRuntime({ busStatusReply: query => ({
+    request_id: query.request_id,
+    taskSessionId: 'control-bus',
+    state: 'failed',
+    execution: { status: 'not_started' },
+    error: failure,
+  }) });
+  const failed = await new PhoneMcpBridge(failedRuntime, authority).call('request_result', fixedInput);
+  assert.equal(failed.query.state, 'failed');
+  assert.deepEqual(failed.query.error, failure);
+  assert.deepEqual(failed.query.execution, { status: 'not_started' });
+
+  const unknownRuntime = receiptRuntime();
+  const run = unknownRuntime.runSessionTool;
+  unknownRuntime.runSessionTool = async (operation, args) => {
     if (operation === 'remote_send_message' && args.sessionId === 'control-bus') {
-      unknownBusRuntime.calls.push({ operation, args });
-      return { status: 'unknown' };
+      unknownRuntime.calls.push({ operation, args });
+      return { status: 'unknown', operationId: args.operationId };
     }
-    return origRun(operation, args);
+    return run(operation, args);
   };
-  const unknownResult = await new PhoneMcpBridge(unknownBusRuntime, authority).call('request_result', {
-    ...fixed, taskSessionId: 'task-1', targetRequestId: 'target-bus-unknown01',
-  });
-  assert.equal(unknownResult.request_id, 'target-bus-unknown01');
-  assert.equal(unknownResult.taskSessionId, 'task-1');
-  assert.equal(unknownResult.state, 'outcome_unknown');
-  assert.equal(unknownResult.resultAvailable, false);
+  const unknown = await new PhoneMcpBridge(unknownRuntime, authority).call('request_result', fixedInput);
+  assert.equal(unknown.query.state, 'outcome_unknown');
+  assert.equal(unknown.query.receipt.status, 'unknown');
+
+  for (const [runtime, result] of [[pendingRuntime, pending], [failedRuntime, failed], [unknownRuntime, unknown]]) {
+    const rpc = runtime.calls.find(call => call.operation === 'remote_send_message');
+    assert.equal(result.request_id, fixedInput.targetRequestId);
+    assert.equal(result.taskSessionId, fixedInput.taskSessionId);
+    assert.equal(result.resultAvailable, false);
+    assert.equal(Object.hasOwn(result, 'state'), false);
+    assert.equal(Object.hasOwn(result, 'error'), false);
+    assert.equal(result.query.taskSessionId, 'control-bus');
+    assert.equal(result.query.request_id, rpc.args.operationId);
+    assert.notEqual(result.query.request_id, result.request_id);
+  }
+
+  const matched = receiptRuntime({ busStatusReply: query => ({
+    request_id: query.request_id,
+    taskSessionId: 'control-bus',
+    state: 'completed',
+    result: { request_id: fixedInput.targetRequestId, taskSessionId: fixedInput.taskSessionId,
+      state: 'failed', error: { code: 'EXECUTION_FAILED' } },
+  }) });
+  const result = await new PhoneMcpBridge(matched, authority).call('request_result', fixedInput);
+  assert.equal(result.state, 'failed');
+  assert.deepEqual(result.error, { code: 'EXECUTION_FAILED' });
+  assert.equal(Object.hasOwn(result, 'query'), false);
 });

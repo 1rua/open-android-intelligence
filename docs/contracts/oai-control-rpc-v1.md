@@ -331,15 +331,15 @@ Bridge 是安装在电脑 DSH 进程内的 OAI 适配插件。Stdio MCP 由各 A
 
 Bridge 专属 bearer 通过 `0700` 目录、`0600` 权限的用户私有配置交给 Stdio 客户端，不进入 URL、浏览器、Prompt 或日志。
 签发桥凭据时即绑定当前登录身份代次、Remote Server origin 与活动账号；退出登录、切换 Server 或卸载插件时旧凭据立即永久失效，
-尚未首次使用的旧配置也不得绑定到后续新登录。HTTP `Host` 与浏览器跨站头校验不因“本机调用”关闭，
-本机接口不跨源开放，也不成为对外发布的鉴权服务。
+同一设备重新授权也会开始新的登录代次。HTTP `Host` 与浏览器跨站头校验适用于所有本机请求。
 
 固定本机操作为 `status`、`list_endpoints`、`start`、`request_status`、`cancel`、
 `read_artifact`，分别用于版本/可用性、已授权目标、受理有类型请求、查询原回执、请求取消、
 读取本任务产物。`start` 在发送前返回或持久保存调用者可查询的 request_id 与任务关联；
 RPC 等待中断后仍能用同一标识查状态。`request_status` 通过当前 control-bus 的
-`session/prompt` 发送 `request.status`，原 task ID 只核对原回执归属；旧任务不必且不得恢复。
-`read_artifact` 不接受任意文件路径。
+`session/prompt` 发送 `request.status`，原 task ID 核对原回执归属。`android_request_result` 遇到已退出目录的任务时，
+也经同一手机的控制总线回查。回查未完成时，查询自身的状态记录在 `query` 中，原请求状态留空。
+长回执在内存中按任务范围读取并核验。显式 `read_artifact` 只下载相同任务的产物。
 接口只接受本契约的手机操作，不提供任意 namespace/method 代理，也不定义
 `remote_agent_delegate` 或其他后台 Agent 委派操作。非手机操作按未知/不支持操作拒绝，
 这项通用边界不构成后台委派功能或验收要求。

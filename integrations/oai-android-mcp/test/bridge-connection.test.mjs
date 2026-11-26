@@ -95,7 +95,7 @@ test('连接代次变化或调用中断开后旧结果保留未知含义且不�
   assert.equal(sendCalls, 1);
 });
 
-test('发现结果区分 workspaceId、not_probed、unavailable、missing 与 offline，并保留其他健康手机', async () => {
+test('发现隐藏已确认无手机工作区的主机，保留手机与 not_probed、unavailable、offline 候选', async () => {
   const runtime = runtimeFor({ workspaces: [{ backend: 'harness', workspaceId: 'phone-capabilities' }], unavailable: [], connected: 'phone-a' });
   const bridge = new PhoneMcpBridge(runtime, authority);
   const listed = await bridge.call('list_devices', {});
@@ -104,21 +104,21 @@ test('发现结果区分 workspaceId、not_probed、unavailable、missing 与 of
   assert.equal(listed.devices.find(item => item.hostId === 'phone-b').state, 'not_probed');
   assert.deepEqual(runtime.calls, [['discover', 'phone-a']]);
 
-  // 未绑定活动连接时逐台发现：区分健康、unavailable、missing、offline
+  // 未绑定活动连接时逐台发现，区分已确认无手机工作区与暂时无法确认。
   const multiRuntime = {
     status: () => ({ connected: false, connectedTargetDeviceId: undefined, recoveryGeneration: 0 }),
     async devices() {
       return [
         { deviceId: 'phone-ok', name: 'OK', online: true },
         { deviceId: 'phone-unavail', name: 'Unavail', online: true },
-        { deviceId: 'phone-missing', name: 'Missing', online: true },
+        { deviceId: 'desktop', name: 'Desktop', online: true },
         { deviceId: 'phone-offline', name: 'Offline', online: false },
       ];
     },
     async discoverToolWorkspaces(hostId) {
       if (hostId === 'phone-ok') return { workspaces: [{ backend: 'harness', workspaceId: 'phone-capabilities' }], unavailable: [] };
       if (hostId === 'phone-unavail') return { workspaces: [], unavailable: [{ backend: 'harness', code: 'BACKEND_UNAVAILABLE' }] };
-      if (hostId === 'phone-missing') return { workspaces: [], unavailable: [] };
+      if (hostId === 'desktop') return { workspaces: [{ backend: 'harness', workspaceId: 'desktop-workspace' }], unavailable: [] };
       throw new Error('SHOULD_NOT_PROBE_OFFLINE');
     },
   };
@@ -126,7 +126,8 @@ test('发现结果区分 workspaceId、not_probed、unavailable、missing 与 of
   const multiListed = await multiBridge.call('list_devices', {});
   assert.equal(multiListed.devices.find(item => item.hostId === 'phone-ok').workspaceId, 'phone-capabilities');
   assert.equal(multiListed.devices.find(item => item.hostId === 'phone-unavail').state, 'unavailable');
-  assert.equal(multiListed.devices.find(item => item.hostId === 'phone-missing').state, 'missing');
+  assert.deepEqual(multiListed.devices.map(item => item.hostId), ['phone-ok', 'phone-unavail', 'phone-offline']);
+  await assert.rejects(multiBridge.call('capabilities', { ...fixed, hostId: 'desktop' }), /PHONE_WORKSPACE_MISSING/u);
   assert.equal(multiListed.devices.find(item => item.hostId === 'phone-offline').state, 'offline');
 });
 
