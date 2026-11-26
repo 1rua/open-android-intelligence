@@ -41,41 +41,55 @@ function clientAuthorizationScope(api) {
   return JSON.stringify([api.baseUrl, api.store.path]);
 }
 
-/** 固定 DSH 0.6.5 的 settings.configure 通过新建的 ClientServerApi 签发凭据。 */
+/** 固定 DSH 0.6.5 用新的 ClientServerApi 处理设置页授权；凭据续期不调用 saveTokens。 */
 function observeConfiguredClientAuthorization(server, revoke) {
   const scope = clientAuthorizationScope(server);
   const prototype = scope === undefined ? undefined : Object.getPrototypeOf(server);
-  if (typeof prototype?.authorizeWithAccount !== 'function') throw new Error('DSH_AUTHORIZATION_CONTROL_REQUIRED');
+  const methods = ['authorizeWithAccount', 'saveTokens'];
+  if (!prototype || methods.some(key => typeof prototype[key] !== 'function')) {
+    throw new Error('DSH_AUTHORIZATION_CONTROL_REQUIRED');
+  }
   let scopes = configuredClientObservers.get(prototype);
   if (!scopes) {
     scopes = new Map();
-    const own = Object.getOwnPropertyDescriptor(prototype, 'authorizeWithAccount');
-    const original = prototype.authorizeWithAccount;
-    const wrapped = async function (...args) {
-      const observed = scopes.get(clientAuthorizationScope(this));
-      if (!observed) return original.apply(this, args);
-      observed.pending++;
-      try {
-        const result = await original.apply(this, args);
-        // 此时授权已保存，后续 settings.replace 失败也不能恢复旧桥。
-        for (const listener of [...observed.listeners]) listener();
-        return result;
-      } finally {
-        observed.pending--;
-        observed.detach();
-      }
-    };
-    Object.defineProperty(prototype, 'authorizeWithAccount', {
-      value: wrapped, configurable: true, writable: true, enumerable: own?.enumerable ?? false,
-    });
-    configuredClientObservers.set(prototype, scopes);
-    scopes.restore = () => {
-      if (prototype.authorizeWithAccount === wrapped) {
-        if (own) Object.defineProperty(prototype, 'authorizeWithAccount', own);
-        else delete prototype.authorizeWithAccount;
-      }
+    const restoreMethods = [];
+    const restore = () => {
+      for (const restoreMethod of restoreMethods) restoreMethod();
       configuredClientObservers.delete(prototype);
     };
+    try {
+      for (const key of methods) {
+        const own = Object.getOwnPropertyDescriptor(prototype, key);
+        const original = prototype[key];
+        const wrapped = async function (...args) {
+          const observed = scopes.get(clientAuthorizationScope(this));
+          if (!observed) return original.apply(this, args);
+          observed.pending++;
+          try {
+            const result = await original.apply(this, args);
+            // 保存入口也覆盖启用桥前已发出、随后才收到授权响应的设置请求。
+            if (key === 'saveTokens') {
+              for (const listener of [...observed.listeners]) listener();
+            }
+            return result;
+          } finally {
+            observed.pending--;
+            observed.detach();
+          }
+        };
+        Object.defineProperty(prototype, key, { value: wrapped, configurable: true, writable: true, enumerable: own?.enumerable ?? false });
+        restoreMethods.push(() => {
+          if (prototype[key] !== wrapped) return;
+          if (own) Object.defineProperty(prototype, key, own);
+          else delete prototype[key];
+        });
+      }
+    } catch (error) {
+      restore();
+      throw error;
+    }
+    configuredClientObservers.set(prototype, scopes);
+    scopes.restore = restore;
   }
   let observed = scopes.get(scope);
   if (!observed) {

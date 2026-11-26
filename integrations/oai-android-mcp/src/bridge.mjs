@@ -169,24 +169,15 @@ export class PhoneMcpBridge {
       const devices = await runtime.devices(signal); await this.#current(signal, fence);
       const items = [];
       for (const device of devices) {
-        if (device.online === false) {
-          items.push({ hostId: device.deviceId, name: device.name, backend: 'harness', state: 'offline' });
-          continue;
-        }
         const connected = liveConnectedTarget(runtime.status?.());
-        if (connected !== undefined && connected !== device.deviceId) {
-          // 已有控制连接时不探测另一个 Host，避免抢掉现有连接；保留脱敏的未检查类别。
-          items.push({ hostId: device.deviceId, name: device.name, backend: 'harness', state: 'not_probed' });
-          continue;
-        }
-        try { await this.#target({ hostId: device.deviceId }, signal, false, fence); items.push({ hostId: device.deviceId, name: device.name, backend: 'harness', workspaceId: 'phone-capabilities' }); }
-        catch (error) {
+        // 只公开已验证的手机目录。已有连接时不另建探测连接。
+        if (device.online === false || (connected !== undefined && connected !== device.deviceId)) continue;
+        try {
+          await this.#target({ hostId: device.deviceId }, signal, false, fence);
+          items.push({ hostId: device.deviceId, name: device.name, backend: 'harness', workspaceId: 'phone-capabilities' });
+        } catch (error) {
           if (signal.aborted) throw error;
           await this.#current(signal, fence);
-          // 已完成目录探测且确认没有手机工作区时，不向 MCP 暴露该主机。
-          if (error?.category !== 'target_missing') {
-            items.push({ hostId: device.deviceId, name: device.name, backend: 'harness', state: 'unavailable' });
-          }
         }
       }
       return { devices: items };

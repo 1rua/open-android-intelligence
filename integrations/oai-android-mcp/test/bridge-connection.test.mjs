@@ -47,7 +47,7 @@ test('切换桌面目标后旧目标读写均受限且新目标仍可正常使�
   assert.deepEqual(runtime.calls, []);
   const listed = await bridge.call('list_devices', {});
   assert.equal(listed.devices.find(item => item.hostId === 'phone-b').workspaceId, 'phone-capabilities');
-  assert.equal(listed.devices.find(item => item.hostId === 'phone-a').state, 'not_probed');
+  assert.deepEqual(listed.devices.map(item => item.hostId), ['phone-b']);
 });
 
 test('连接代次变化或调用中断开后旧结果保留未知含义且不自动重投，重连后允许查询原请求', async () => {
@@ -95,13 +95,12 @@ test('连接代次变化或调用中断开后旧结果保留未知含义且不�
   assert.equal(sendCalls, 1);
 });
 
-test('发现隐藏已确认无手机工作区的主机，保留手机与 not_probed、unavailable、offline 候选', async () => {
+test('发现只返回确认为手机的目标，隐藏离线、探测失败及未探测的主机', async () => {
   const runtime = runtimeFor({ workspaces: [{ backend: 'harness', workspaceId: 'phone-capabilities' }], unavailable: [], connected: 'phone-a' });
   const bridge = new PhoneMcpBridge(runtime, authority);
   const listed = await bridge.call('list_devices', {});
-  assert.equal(listed.devices.length, 2);
   assert.equal(listed.devices.find(item => item.hostId === 'phone-a').workspaceId, 'phone-capabilities');
-  assert.equal(listed.devices.find(item => item.hostId === 'phone-b').state, 'not_probed');
+  assert.deepEqual(listed.devices.map(item => item.hostId), ['phone-a']);
   assert.deepEqual(runtime.calls, [['discover', 'phone-a']]);
 
   // 未绑定活动连接时逐台发现，区分已确认无手机工作区与暂时无法确认。
@@ -125,10 +124,8 @@ test('发现隐藏已确认无手机工作区的主机，保留手机与 not_pro
   const multiBridge = new PhoneMcpBridge(multiRuntime, authority);
   const multiListed = await multiBridge.call('list_devices', {});
   assert.equal(multiListed.devices.find(item => item.hostId === 'phone-ok').workspaceId, 'phone-capabilities');
-  assert.equal(multiListed.devices.find(item => item.hostId === 'phone-unavail').state, 'unavailable');
-  assert.deepEqual(multiListed.devices.map(item => item.hostId), ['phone-ok', 'phone-unavail', 'phone-offline']);
+  assert.deepEqual(multiListed.devices.map(item => item.hostId), ['phone-ok']);
   await assert.rejects(multiBridge.call('capabilities', { ...fixed, hostId: 'desktop' }), /PHONE_WORKSPACE_MISSING/u);
-  assert.equal(multiListed.devices.find(item => item.hostId === 'phone-offline').state, 'offline');
 });
 
 test('外部写入门禁不把未连接的只读候选当成可写入目标', async () => {

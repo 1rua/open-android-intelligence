@@ -24,6 +24,7 @@ class FixtureClientServerApi {
   baseUrl = 'https://remote.invalid';
   constructor(path) { this.store = { path }; }
   async authorizeWithAccount(_identity, _account, authorize) { return authorize(); }
+  async saveTokens() { return {}; }
 }
 
 function fakeRuntime(deviceId, overrides = {}) {
@@ -478,10 +479,18 @@ test('可选真实 DSH 组件：requestRejection 无 Cookie 返回 401，真实 
 });
 
 
-test('固定 DSH 0.6.5 settings.configure 换同服同设备的凭据时拦截签发、丢弃在途结果，并保留上游失败语义', {
+const fixedSettingsTest = {
   skip: !process.env.OAI_DSH_REMOTE_ENTRY || !process.env.OAI_DSH_FIXTURES_NODE_MODULES,
   timeout: 10_000,
-}, async (t) => {
+};
+
+test('固定 DSH 0.6.5 设置页重授权拦截签发、丢弃在途结果，并保留上游失败语义', fixedSettingsTest,
+  t => assertSettingsReauthorizationRevokesBridge(t));
+
+test('桥启用前已发出的设置页重授权响应也能吊销首次签发的凭据', fixedSettingsTest,
+  t => assertSettingsReauthorizationRevokesBridge(t, true));
+
+async function assertSettingsReauthorizationRevokesBridge(t, startedBeforeBridge = false) {
   const entry = pathToFileURL(process.env.OAI_DSH_REMOTE_ENTRY);
   const manifest = JSON.parse(await readFile(new URL('../package.json', entry), 'utf8'));
   assert.equal(manifest.name, 'ds-harness-remote');
@@ -527,7 +536,7 @@ test('固定 DSH 0.6.5 settings.configure 换同服同设备的凭据时拦截�
   const finishSettings = Promise.withResolvers();
   const listStarted = Promise.withResolvers();
   const finishList = Promise.withResolvers();
-  const nextAccount = 'replacement@example.invalid';
+  const nextAccount = startedBeforeBridge ? prior.account : 'replacement@example.invalid';
   let loginCalls = 0;
   globalThis.fetch = async (input, options) => {
     const url = new URL(input);
@@ -557,13 +566,6 @@ test('固定 DSH 0.6.5 settings.configure 换同服同设备的凭据时拦截�
   t.after(disposeControl);
   await ctx.provide('dshRemoteClient', client);
   await ctx.provide('connection', connection);
-  const privateConfigPath = join(root, 'private', 'mcp.json');
-  await ctx.plugin({ name, inject, apply }, { privateConfigPath });
-  const env = JSON.parse(await readFile(privateConfigPath, 'utf8')).mcpServers['oai-android'].env;
-  const bridgeCall = (op) => originalFetch(`${env.OAI_ANDROID_BRIDGE_URL}/oai-android-mcp/v1/${op}`, {
-    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${env.OAI_ANDROID_BRIDGE_BEARER}` }, body: '{}',
-    signal: AbortSignal.timeout(5_000),
-  });
   const rpc = (method, payload, authorized = true) => originalFetch(`${webServer.getOrigin()}/ds-harness-remote/${method}`, {
     method: 'POST', headers: { 'content-type': 'application/json', ...(authorized ? { 'x-fixture-control': 'authorized' } : {}) },
     body: JSON.stringify({ type: 'client-request', rpcId: method, method, payload }), signal: AbortSignal.timeout(5_000),
@@ -571,17 +573,32 @@ test('固定 DSH 0.6.5 settings.configure 换同服同设备的凭据时拦截�
   const configure = (email, authorized) => rpc('settings.configure', { serverUrl, role: 'client', email, password: 'fixture-password' }, authorized);
 
   try {
-    const unauthorized = await configure(nextAccount, false);
-    assert.equal(unauthorized.status, 401);
-    assert.equal(loginCalls, 0);
-    const withoutAuthorization = await rpc('settings.configure', { serverUrl, role: 'client' });
-    assert.equal((await withoutAuthorization.json()).result.ok, false);
-    assert.equal(loginCalls, 0);
-    const denied = await configure('denied@example.invalid');
-    const deniedResult = (await denied.json()).result;
-    assert.equal(deniedResult.error?.details?.remoteCode, 'AUTH_INVALID', deniedResult.error?.message);
-    assert.equal((await store.load(serverUrl, identity.deviceId)).account, prior.account);
-    assert.equal((await bridgeCall('status')).status, 200);
+    let switching;
+    if (startedBeforeBridge) {
+      switching = configure(nextAccount);
+      await fetchStarted.promise;
+    }
+    const privateConfigPath = join(root, 'private', 'mcp.json');
+    await ctx.plugin({ name, inject, apply }, { privateConfigPath });
+    const env = JSON.parse(await readFile(privateConfigPath, 'utf8')).mcpServers['oai-android'].env;
+    const bridgeCall = (op) => originalFetch(`${env.OAI_ANDROID_BRIDGE_URL}/oai-android-mcp/v1/${op}`, {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${env.OAI_ANDROID_BRIDGE_BEARER}` }, body: '{}',
+      signal: AbortSignal.timeout(5_000),
+    });
+
+    if (!startedBeforeBridge) {
+      const unauthorized = await configure(nextAccount, false);
+      assert.equal(unauthorized.status, 401);
+      assert.equal(loginCalls, 0);
+      const withoutAuthorization = await rpc('settings.configure', { serverUrl, role: 'client' });
+      assert.equal((await withoutAuthorization.json()).result.ok, false);
+      assert.equal(loginCalls, 0);
+      const denied = await configure('denied@example.invalid');
+      const deniedResult = (await denied.json()).result;
+      assert.equal(deniedResult.error?.details?.remoteCode, 'AUTH_INVALID', deniedResult.error?.message);
+      assert.equal((await store.load(serverUrl, identity.deviceId)).account, prior.account);
+      assert.equal((await bridgeCall('status')).status, 200);
+    }
 
     client.devices = async () => {
       listStarted.resolve();
@@ -590,21 +607,25 @@ test('固定 DSH 0.6.5 settings.configure 换同服同设备的凭据时拦截�
     };
     const listing = bridgeCall('list_devices');
     await listStarted.promise;
-    const switching = configure(nextAccount);
-    await fetchStarted.promise;
-    const blocked = await bridgeCall('status');
-    assert.equal(blocked.status, 409);
-    assert.equal((await blocked.json()).error.code, 'BRIDGE_AUTHORITY_UNAVAILABLE');
-    const signing = createRuntimeAuthority();
-    try {
-      await assert.rejects(new PhoneMcpBridge(client, signing).bind(), /BRIDGE_AUTHORITY_UNAVAILABLE/u);
-    } finally { signing.dispose(); }
+    if (!startedBeforeBridge) {
+      switching = configure(nextAccount);
+      await fetchStarted.promise;
+      const blocked = await bridgeCall('status');
+      assert.equal(blocked.status, 409);
+      assert.equal((await blocked.json()).error.code, 'BRIDGE_AUTHORITY_UNAVAILABLE');
+      const signing = createRuntimeAuthority();
+      try {
+        await assert.rejects(new PhoneMcpBridge(client, signing).bind(), /BRIDGE_AUTHORITY_UNAVAILABLE/u);
+      } finally { signing.dispose(); }
+    }
 
     admitRegistration.resolve();
     await settingsStarted.promise;
     assert.equal(client.status().deviceId, identity.deviceId);
     assert.equal(client.status().serverUrl, serverUrl);
-    assert.equal((await store.load(serverUrl, identity.deviceId)).account, nextAccount);
+    const current = await store.load(serverUrl, identity.deviceId);
+    assert.equal(current.account, nextAccount);
+    assert.equal(current.accessToken, tokens('replacement').accessToken);
     finishList.resolve();
     const response = await listing;
     assert.equal(response.status, 409);
@@ -617,4 +638,4 @@ test('固定 DSH 0.6.5 settings.configure 换同服同设备的凭据时拦截�
     finishList.resolve();
     finishSettings.resolve();
   }
-});
+}
