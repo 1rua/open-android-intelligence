@@ -633,20 +633,22 @@ class RemoteAccountRuntime(
         if (mutableClientFailure.value != null) return
         var closing: RemoteSignalService? = null
         var closingSupervisor: CompletableJob? = null
-        var restarted = false
         synchronized(selectionLock) {
             if (mutableAccount.value != active || standbyAwaitingForeground == active) return
             closing = client.also { client = null }
             closingSupervisor = detachClientControlLocked()
             clientAvailable = CompletableDeferred()
             mutableState.value = RemoteAccountConnectionState.CONNECTING
-            startClient(active)
-            restarted = true
         }
-        if (!restarted) return
+        // 必须先取消旧保持器并关闭旧控制 WS，再启动新一轮，禁止新旧 Client 控制面并存。
         closingSupervisor?.cancel()
         runCatching { closing?.close() }.onFailure {
             android.util.Log.w("RemoteAccountRuntime", "CLIENT_FORCED_RECONNECT_CLOSE_FAILED")
+        }
+        synchronized(selectionLock) {
+            if (mutableAccount.value == active && mutableClientFailure.value == null && clientJob?.isActive != true) {
+                startClient(active)
+            }
         }
     }
     private fun startHost(active: RemoteActiveAccount, server: RemoteServerApi) {

@@ -30,6 +30,8 @@ data class RemoteReconnectPolicy(
      *
      * [randomFraction] 必须返回 0.0 到 1.0 之间的对称随机样本；0.0 对应负向抖动边界，
      * 0.5 对应无抖动，1.0 对应正向抖动边界。默认使用 [Random.Default]。
+     * 指数基准先封顶 30 秒，抖动后的结果再钳制到 1～30 秒硬边界，确保首个等待不少于
+     * 1 秒且任何一次等待都不突破 30 秒上限。
      */
     fun delayMs(
         attempt: Int,

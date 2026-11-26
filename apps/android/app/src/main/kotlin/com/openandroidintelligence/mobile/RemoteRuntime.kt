@@ -1755,7 +1755,7 @@ class RemoteRuntime(
 
     private fun reconnectInPlaceInternal(forceClientControl: Boolean): Job {
         val currentAgentState = agentConnection.value
-        if (currentAgentState.reconnectingInPlace) {
+        if (currentAgentState.reconnectingInPlace && !forceClientControl) {
             activeOperationJob?.takeIf { it.isActive }?.let { return it }
         }
         val activeKey = workspaceContext.value.activeWorkspace ?: return refreshHosts()
