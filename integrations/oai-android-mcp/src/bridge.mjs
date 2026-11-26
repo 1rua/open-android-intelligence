@@ -1,13 +1,24 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 
 export const BRIDGE_PREFIX = '/oai-android-mcp/v1';
+const MAX_RESULT_ARTIFACT_BYTES = 50 * 1024 * 1024;
+const RESULT_ARTIFACT_CHUNK_BYTES = 256 * 1024;
 const id = z.string().min(1).max(256);
 const requestId = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/u);
 const target = z.object({ hostId: id, backend: z.literal('harness'), workspaceId: z.literal('phone-capabilities') }).strict();
 const binding = target.extend({ taskSessionId: id });
 const envelope = z.object({ request_id: requestId, op: z.string(), args: z.record(z.string(), z.unknown()) }).strict();
+const scopedFileIdentity = z.object({
+  absolutePath: z.string().min(1),
+  version: z.string().min(1),
+  bytes: z.number().int().min(0).max(MAX_RESULT_ARTIFACT_BYTES),
+});
+const scopedFileChunk = scopedFileIdentity.extend({
+  offset: z.number().int().min(0),
+  data: z.instanceof(Uint8Array),
+  eof: z.boolean(),
+});
 const inputs = {
   status: z.object({}).strict(),
   list_devices: z.object({}).strict(),
@@ -24,6 +35,41 @@ const operations = new Set(['ui.dump_tree', 'ui.capture_som', 'ui.tap', 'ui.long
 const diagnosticOperations = new Set(['status', 'list_devices', 'capabilities', 'request_status', 'request_result', 'read_artifact']);
 const loopbackAddresses = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const loopbackHosts = new Set(['127.0.0.1', '::1', '[::1]']);
+const LOOPBACK_HTTP_ORIGIN_PATTERN = /^http:\/\/(127\.0\.0\.1|\[::1\])(?::([1-9]\d{0,4}))?\/?$/u;
+const PASSTHROUGH_BRIDGE_ERRORS = new Set([
+  'BRIDGE_AUTHORITY_CHANGED',
+  'BRIDGE_AUTHORITY_UNAVAILABLE',
+  'BRIDGE_CONNECTION_CHANGED',
+  'BRIDGE_RUNTIME_UNAVAILABLE',
+  'DSH_AUTHORIZATION_CONTROL_REQUIRED',
+]);
+
+/** 解析并严格校验本机回环 HTTP origin；http 默认端口 80 在 WHATWG URL 中规范化为空串。 */
+export function parseLoopbackHttpOrigin(origin) {
+  if (typeof origin !== 'string' || !origin) return undefined;
+  const match = LOOPBACK_HTTP_ORIGIN_PATTERN.exec(origin);
+  if (!match || match[0] !== origin) return undefined;
+  const [, urlHost, explicitPort] = match;
+  let parsed;
+  try { parsed = new URL(origin); } catch { return undefined; }
+  if (parsed.protocol !== 'http:' || parsed.hostname !== urlHost
+    || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) {
+    return undefined;
+  }
+  const port = parsed.port === '' ? 80 : Number(parsed.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+  if (explicitPort !== undefined && Number(explicitPort) !== port) return undefined;
+  return {
+    url: parsed,
+    host: urlHost === '[::1]' ? '::1' : urlHost,
+    urlHost,
+    port,
+  };
+}
+
+function isSessionNotInWorkspaceError(error) {
+  return error instanceof Error && (error.code ?? error.message) === 'SESSION_NOT_IN_WORKSPACE';
+}
 
 function liveConnectedTarget(status) {
   if (!status || status.connected === false) return undefined;
@@ -49,18 +95,38 @@ function sameConnection(before, after) {
     && before.recoveryGeneration === after.recoveryGeneration;
 }
 
-/** 仅调用固定上游公开 runSessionTool，始终显式传手机 target，不选择或切换桌面工作区。 */
+/** 经固定上游公开 runSessionTool 与受限 scoped 文件载体访问手机，始终显式传手机 target，不选择或切换桌面工作区。 */
 export class PhoneMcpBridge {
   #closed = false;
   #ledger = new Map();
   constructor(runtime, authority) { this.runtime = runtime; this.authority = authority; this.epoch = undefined; }
+  async bind(signal = new AbortController().signal) {
+    await this.#current(signal);
+    return this.epoch;
+  }
   async #current(signal, fence) {
     if (this.#closed) throw new Error('BRIDGE_AUTHORITY_CHANGED');
     const runtime = typeof this.runtime === 'function' ? this.runtime() : this.runtime;
-    if (!runtime) throw new Error('BRIDGE_RUNTIME_UNAVAILABLE');
+    if (!runtime) {
+      if (this.epoch !== undefined) {
+        this.#closed = true;
+        this.authority.revoke?.();
+        throw new Error('BRIDGE_AUTHORITY_CHANGED');
+      }
+      throw new Error('BRIDGE_RUNTIME_UNAVAILABLE');
+    }
     const epoch = await this.authority.snapshot(runtime, signal);
+    if (this.#closed || (typeof this.runtime === 'function' && this.runtime() !== runtime)) {
+      this.#closed = true;
+      this.authority.revoke?.();
+      throw new Error('BRIDGE_AUTHORITY_CHANGED');
+    }
     if (this.epoch === undefined) this.epoch = epoch;
-    else if (epoch !== this.epoch) throw new Error('BRIDGE_AUTHORITY_CHANGED');
+    else if (epoch !== this.epoch) {
+      this.#closed = true;
+      this.authority.revoke?.();
+      throw new Error('BRIDGE_AUTHORITY_CHANGED');
+    }
     // 单次调用内锁住连接目标与恢复代次，断开、换目标或重连时立即中止；不永久锁死后续新连接上的回执查询。
     if (fence !== undefined) {
       const current = connectionSnapshot(runtime);
@@ -194,6 +260,77 @@ export class PhoneMcpBridge {
     await this.#tool('remote_wait_sessions', { targets: [{ ...fixed, sessionId: taskSessionId }], timeoutMs: 30000 }, signal, fence);
     return this.#readResult(fixed, taskSessionId, request.request_id, signal, fence);
   }
+  async #readResultArtifactBytes(fixed, taskSessionId, path, expectedBytes, expectedVersion, signal, fence) {
+    const runtime = await this.#current(signal, fence);
+    if (typeof runtime.withToolRemote !== 'function' || typeof runtime.remoteTypertGateway !== 'function'
+      || typeof runtime.sessionTools?.requireSession !== 'function') {
+      throw Object.assign(new Error('BRIDGE_ARTIFACT_INTEGRITY_FAILED'), { taskSessionId, state: 'outcome_unknown' });
+    }
+    // 自动读取长回执只通过受限 workspaceFiles 载体在内存中读块校验，绝不调用 remote_download_file 在用户 Downloads 留下副本。
+    try {
+      const bytes = await runtime.withToolRemote(fixed.hostId, signal, async (remote, active) => {
+        active.throwIfAborted();
+        await this.#current(signal, fence);
+        if (!remote?.features?.remoteGateway) {
+          throw Object.assign(new Error('BRIDGE_ARTIFACT_INTEGRITY_FAILED'), { taskSessionId, state: 'outcome_unknown' });
+        }
+        const gateway = runtime.remoteTypertGateway(remote);
+        if (!gateway || typeof gateway.invoke !== 'function') {
+          throw Object.assign(new Error('BRIDGE_ARTIFACT_INTEGRITY_FAILED'), { taskSessionId, state: 'outcome_unknown' });
+        }
+        await runtime.sessionTools.requireSession(gateway, { ...fixed, sessionId: taskSessionId }, active);
+        const call = async (method, extra = {}) => {
+          active.throwIfAborted();
+          await this.#current(signal, fence);
+          const value = await gateway.invoke({
+            namespace: 'workspaceFiles',
+            method,
+            args: { workspaceFileScopeId: taskSessionId, path, ...extra },
+            signal: active,
+          });
+          active.throwIfAborted();
+          await this.#current(signal, fence);
+          return value;
+        };
+        const before = scopedFileIdentity.parse(await call('stat'));
+        if (before.bytes !== expectedBytes || before.version !== expectedVersion) {
+          throw Object.assign(new Error('BRIDGE_ARTIFACT_INTEGRITY_FAILED'), { taskSessionId, state: 'outcome_unknown' });
+        }
+        const chunks = [];
+        let offset = 0;
+        for (;;) {
+          const length = Math.min(RESULT_ARTIFACT_CHUNK_BYTES, Math.max(1, before.bytes - offset));
+          const chunk = scopedFileChunk.parse(await call('readBytes', { range: { offset, length } }));
+          if (chunk.absolutePath !== before.absolutePath
+            || chunk.version !== before.version
+            || chunk.bytes !== before.bytes
+            || chunk.offset !== offset
+            || chunk.data.length > length
+            || offset + chunk.data.length > before.bytes
+            || (chunk.eof ? offset + chunk.data.length !== before.bytes : chunk.data.length === 0)) {
+            throw Object.assign(new Error('BRIDGE_ARTIFACT_INTEGRITY_FAILED'), { taskSessionId, state: 'outcome_unknown' });
+          }
+          chunks.push(Buffer.from(chunk.data.buffer, chunk.data.byteOffset, chunk.data.byteLength));
+          offset += chunk.data.length;
+          if (chunk.eof) break;
+        }
+        const after = scopedFileIdentity.parse(await call('stat'));
+        if (after.absolutePath !== before.absolutePath || after.version !== before.version || after.bytes !== before.bytes) {
+          throw Object.assign(new Error('BRIDGE_ARTIFACT_INTEGRITY_FAILED'), { taskSessionId, state: 'outcome_unknown' });
+        }
+        active.throwIfAborted();
+        await this.#current(signal, fence);
+        return Buffer.concat(chunks, before.bytes);
+      });
+      await this.#current(signal, fence);
+      return bytes;
+    } catch (error) {
+      if (signal.aborted) throw error;
+      if (error instanceof Error && PASSTHROUGH_BRIDGE_ERRORS.has(error.message)) throw error;
+      await this.#current(signal, fence);
+      throw Object.assign(new Error('BRIDGE_ARTIFACT_INTEGRITY_FAILED'), { taskSessionId, state: 'outcome_unknown' });
+    }
+  }
   async #resolveResultArtifact(fixed, taskSessionId, request_id, summary, signal, fence) {
     const ref = summary.resultArtifact;
     if (!ref || typeof ref !== 'object') return { ...fixed, taskSessionId, ...summary };
@@ -202,17 +339,11 @@ export class PhoneMcpBridge {
     const expectedVersion = ref.version;
     if (typeof path !== 'string' || !/^artifacts\/[A-Za-z0-9_-]+$/u.test(path)
       || (ref.artifactId !== undefined && path !== `artifacts/${ref.artifactId}`)
-      || !Number.isSafeInteger(expectedBytes) || expectedBytes < 0
+      || !Number.isSafeInteger(expectedBytes) || expectedBytes < 0 || expectedBytes > MAX_RESULT_ARTIFACT_BYTES
       || typeof expectedVersion !== 'string' || !/^sha256:[0-9a-f]{64}$/u.test(expectedVersion)) {
       throw Object.assign(new Error('BRIDGE_ARTIFACT_INTEGRITY_FAILED'), { taskSessionId, state: 'outcome_unknown' });
     }
-    const downloaded = await this.#tool('remote_download_file', { ...fixed, sessionId: taskSessionId, path }, signal, fence);
-    if (downloaded?.status !== 'downloaded' || downloaded.bytes !== expectedBytes || typeof downloaded.localPath !== 'string' || !downloaded.localPath) {
-      throw Object.assign(new Error('BRIDGE_ARTIFACT_INTEGRITY_FAILED'), { taskSessionId, state: 'outcome_unknown' });
-    }
-    let rawBytes;
-    try { rawBytes = await readFile(downloaded.localPath); }
-    catch { throw Object.assign(new Error('BRIDGE_ARTIFACT_INTEGRITY_FAILED'), { taskSessionId, state: 'outcome_unknown' }); }
+    const rawBytes = await this.#readResultArtifactBytes(fixed, taskSessionId, path, expectedBytes, expectedVersion, signal, fence);
     if (rawBytes.length !== expectedBytes) {
       throw Object.assign(new Error('BRIDGE_ARTIFACT_INTEGRITY_FAILED'), { taskSessionId, state: 'outcome_unknown' });
     }
@@ -235,8 +366,20 @@ export class PhoneMcpBridge {
     let history;
     let initialStatus;
     let sawTruncated = false;
+    let sessionMissing = false;
     do {
-      history = await this.#tool('remote_read_session', { ...fixed, sessionId: taskSessionId, ...(cursor ? { cursor } : {}) }, signal, fence);
+      try {
+        history = await this.#tool('remote_read_session', { ...fixed, sessionId: taskSessionId, ...(cursor ? { cursor } : {}) }, signal, fence);
+      } catch (error) {
+        if (signal.aborted) throw error;
+        if (taskSessionId !== 'control-bus' && isSessionNotInWorkspaceError(error)) {
+          // 手机重启后旧任务退出活动目录，但原最小回执仍在账本中；先复核授权与连接栅栏，再转同一目标的 control-bus 回查。
+          await this.#current(signal, fence);
+          sessionMissing = true;
+          break;
+        }
+        throw error;
+      }
       if (initialStatus === undefined) initialStatus = history.status;
       for (const record of [...(history.records ?? [])].reverse()) {
         if (record.truncated) { sawTruncated = true; continue; }
@@ -253,11 +396,13 @@ export class PhoneMcpBridge {
       }
       cursor = history.nextCursor;
     } while (cursor);
-    const status = initialStatus ?? history.status;
-    const settled = status === 'idle' || status === 'failed';
-    // 控制总线自身不再递归查询状态；未见截断且会话未进入终态（running/needs_user_input 等）时只返回原状态，不回退 request.status。
-    if (taskSessionId === 'control-bus' || (!sawTruncated && !settled)) {
-      return { ...fixed, taskSessionId, request_id, state: status === 'needs_user_input' ? 'awaiting_confirmation' : 'accepted', resultAvailable: false };
+    if (!sessionMissing) {
+      const status = initialStatus ?? history.status;
+      const settled = status === 'idle' || status === 'failed';
+      // 控制总线自身不再递归查询状态；未见截断且会话未进入终态（running/needs_user_input 等）时只返回原状态，不回退 request.status。
+      if (taskSessionId === 'control-bus' || (!sawTruncated && !settled)) {
+        return { ...fixed, taskSessionId, request_id, state: status === 'needs_user_input' ? 'awaiting_confirmation' : 'accepted', resultAvailable: false };
+      }
     }
     const fallbackId = `receipt-${randomUUID()}`;
     const receipt = await this.#send(fixed, 'control-bus', { request_id: fallbackId, op: 'request.status',
@@ -265,6 +410,10 @@ export class PhoneMcpBridge {
     // 仅在 request.status 查询自身已完成时校验内层原回执身份；未完成或传输未知须忠实保留原状态，不误报伪造。
     if (receipt?.state === 'outcome_unknown') {
       return { ...fixed, taskSessionId, request_id, state: 'outcome_unknown', resultAvailable: false, ...(receipt.receipt !== undefined ? { receipt: receipt.receipt } : {}) };
+    }
+    if (['failed', 'denied', 'cancelled'].includes(receipt?.state)) {
+      return { ...fixed, taskSessionId, request_id, state: receipt.state, resultAvailable: false,
+        ...(receipt.error !== undefined ? { error: receipt.error } : {}) };
     }
     if (receipt?.state !== 'completed') {
       return { ...fixed, taskSessionId, request_id, state: receipt?.state === 'awaiting_confirmation' ? 'awaiting_confirmation' : 'accepted', resultAvailable: false };
@@ -291,8 +440,17 @@ function writeJson(res, status, payload) {
   res.end(JSON.stringify(payload));
 }
 
+function failureCode(error) {
+  if (error instanceof z.ZodError) return 'BRIDGE_INPUT_INVALID';
+  if (error instanceof Error) {
+    const code = error.code ?? error.message;
+    if (typeof code === 'string' && /^[A-Z0-9_]+$/u.test(code)) return code;
+  }
+  return 'BRIDGE_CALL_FAILED';
+}
+
 function bridgeFailure(res, status, error) {
-  const code = error instanceof z.ZodError ? 'BRIDGE_INPUT_INVALID' : error instanceof Error && /^[A-Z0-9_]+$/u.test(error.message) ? error.message : 'BRIDGE_CALL_FAILED';
+  const code = failureCode(error);
   writeJson(res, status, { ok: false, error: { code, message: '手机工具调用失败，请核对授权与原请求状态。', ...(typeof error?.taskSessionId === 'string' ? { taskSessionId: error.taskSessionId } : {}) } });
 }
 
@@ -300,16 +458,28 @@ function bridgeFailure(res, status, error) {
 export function registerPhoneMcpRoute({ webServer, connection, bridge, bearer = randomBytes(32).toString('base64url') }) {
   if (typeof connection.requestRejection !== 'function') throw new Error('DSH_LOCAL_REQUEST_VALIDATOR_REQUIRED');
   if (typeof webServer.register !== 'function' || typeof webServer.getOrigin !== 'function') throw new Error('DSH_WEB_SERVER_REQUIRED');
-  if (!Number.isInteger(webServer.port) || webServer.port <= 0 || !loopbackHosts.has(webServer.host)) throw new Error('DSH_WEB_SERVER_LOOPBACK_REQUIRED');
+  if (!Number.isInteger(webServer.port) || webServer.port < 1 || webServer.port > 65535 || !loopbackHosts.has(webServer.host)) throw new Error('DSH_WEB_SERVER_LOOPBACK_REQUIRED');
   if (typeof bearer !== 'string' || !/^[A-Za-z0-9._~-]{16,256}$/u.test(bearer)) throw new Error('BRIDGE_BEARER_INVALID');
   const origin = webServer.getOrigin();
-  if (typeof origin !== 'string' || !origin) throw new Error('DSH_WEB_SERVER_ORIGIN_INVALID');
-  let parsed; try { parsed = new URL(origin); } catch { throw new Error('DSH_WEB_SERVER_ORIGIN_INVALID'); }
-  const normalizedOriginHost = parsed.hostname === '[::1]' ? '::1' : parsed.hostname;
-  if (parsed.protocol !== 'http:' || parsed.protocol !== webServer.protocol || normalizedOriginHost !== webServer.host
-    || parsed.port !== String(webServer.port) || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) throw new Error('DSH_WEB_SERVER_ORIGIN_INVALID');
+  const parsedOrigin = parseLoopbackHttpOrigin(origin);
+  const expectedServerHost = webServer.host === '[::1]' ? '::1' : webServer.host;
+  if (!parsedOrigin || parsedOrigin.url.protocol !== webServer.protocol
+    || parsedOrigin.host !== expectedServerHost || parsedOrigin.port !== webServer.port) {
+    throw new Error('DSH_WEB_SERVER_ORIGIN_INVALID');
+  }
+  const normalizedUrlHost = parsedOrigin.urlHost.toLowerCase();
+  const allowedHosts = parsedOrigin.port === 80
+    ? new Set([normalizedUrlHost, `${normalizedUrlHost}:80`])
+    : new Set([`${normalizedUrlHost}:${parsedOrigin.port}`]);
   const token = Buffer.from(bearer, 'utf8');
   let closed = false;
+  let revoked = false;
+  let disposed = false;
+  const disposeOnce = async () => {
+    if (disposed) return;
+    disposed = true;
+    await dispose();
+  };
   const dispose = webServer.register({ kind: 'prefix', path: BRIDGE_PREFIX, async handler(req, res) {
     // 本路由服务 OAI 自己的本机 Stdio，而不是浏览器；不能把 DSH 的 Cookie/API Peer
     // 校验结果当作本通道认证。DSH 通用/Remote 路由的 requestRejection 保持不变。
@@ -319,9 +489,10 @@ export function registerPhoneMcpRoute({ webServer, connection, bridge, bearer = 
     const fetchSite = headerValue(req, 'sec-fetch-site');
     const local = loopbackAddresses.has(req.socket?.remoteAddress);
     if (!local) { bridgeFailure(res, 403, new Error('BRIDGE_LOOPBACK_REQUIRED')); return; }
-    if (host === undefined || host.toLowerCase() !== parsed.host.toLowerCase()) { bridgeFailure(res, 403, new Error('BRIDGE_HOST_REJECTED')); return; }
+    if (host === undefined || !allowedHosts.has(host.toLowerCase())) { bridgeFailure(res, 403, new Error('BRIDGE_HOST_REJECTED')); return; }
     if (webOrigin !== undefined || fetchSite !== undefined) { bridgeFailure(res, 403, new Error('BRIDGE_WEB_ORIGIN_REJECTED')); return; }
     if (closed) { bridgeFailure(res, 410, new Error('BRIDGE_CLOSED')); return; }
+    if (revoked) { bridgeFailure(res, 409, new Error('BRIDGE_AUTHORITY_CHANGED')); return; }
     if (supplied === undefined || !/^Bearer [A-Za-z0-9._~-]+$/u.test(supplied)) { bridgeFailure(res, 401, new Error('BRIDGE_AUTHORIZATION_REJECTED')); return; }
     const actual = Buffer.from(supplied.slice(7), 'utf8');
     if (actual.length !== token.length || !timingSafeEqual(actual, token)) { bridgeFailure(res, 401, new Error('BRIDGE_AUTHORIZATION_REJECTED')); return; }
@@ -343,7 +514,7 @@ export function registerPhoneMcpRoute({ webServer, connection, bridge, bearer = 
       writeJson(res, 200, { ok: true, value });
     } catch (error) {
       if (abort.signal.aborted && !res.headersSent) return;
-      const code = error instanceof z.ZodError ? 'BRIDGE_INPUT_INVALID' : error instanceof Error && /^[A-Z0-9_]+$/u.test(error.message) ? error.message : 'BRIDGE_CALL_FAILED';
+      const code = failureCode(error);
       // 诊断保留真实安全 HTTP 状态；固定工具操作维持既有 200 + ok:false 结果映射。
       const status = diagnosticOperations.has(operation)
         ? code === 'BRIDGE_AUTHORIZATION_REJECTED' ? 401 : ['BRIDGE_HOST_REJECTED', 'BRIDGE_WEB_ORIGIN_REJECTED', 'BRIDGE_LOOPBACK_REQUIRED'].includes(code) ? 403
@@ -352,5 +523,10 @@ export function registerPhoneMcpRoute({ webServer, connection, bridge, bearer = 
       bridgeFailure(res, status, error);
     }
   } });
-  return { bearer, origin, close: async () => { closed = true; bridge.close(); token.fill(0); await dispose(); } };
+  return {
+    bearer,
+    origin,
+    close: async () => { closed = true; bridge.close(); token.fill(0); await disposeOnce(); },
+    revoke: async () => { revoked = true; bridge.close(); token.fill(0); await disposeOnce(); },
+  };
 }

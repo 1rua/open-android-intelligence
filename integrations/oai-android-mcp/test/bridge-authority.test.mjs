@@ -22,6 +22,7 @@ function identityStatus(deviceId, overrides = {}) {
 function fakeRuntime(deviceId, overrides = {}) {
   let hasCredentials = true;
   let status = identityStatus(deviceId, overrides);
+  let logoutCount = 0;
   return {
     status: () => status,
     async handleControl(endpoint) {
@@ -31,6 +32,18 @@ function fakeRuntime(deviceId, overrides = {}) {
     async devices() { return []; },
     async discoverToolWorkspaces() { return { workspaces: [{ backend: 'harness', workspaceId: 'phone-capabilities' }] }; },
     async runSessionTool() { return { status: 'idle', records: [] }; },
+    async clearClientAuthorization() {
+      logoutCount += 1;
+      hasCredentials = false;
+    },
+    async authorizeClientWithAccount() {
+      hasCredentials = true;
+      return { method: 'account', account: status.host?.account ?? 'owner' };
+    },
+    async pollClientOAuthQrLogin() {
+      return { status: 'pending' };
+    },
+    getLogoutCount: () => logoutCount,
     setCredentials(value) { hasCredentials = value; },
     setDeviceId(value) { status = identityStatus(value); },
     setStatus(next) { status = next; },
@@ -256,6 +269,163 @@ test('apply 原子写入用户指定的 privateConfigPath（0700/0600），卸�
   });
   assert.equal(closedResp.status, 410);
   assert.equal(JSON.parse(closedResp.body).error.code, 'BRIDGE_CLOSED');
+});
+
+test('签发桥凭据前必须身份就绪并绑定登录代次；首次使用前注销并重新登录必须拒绝旧配置', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'oai-android-mcp-preuse-logout-'));
+  t.after(async () => {
+    const trash = join(tmpdir(), 'oai-android-mcp-trash');
+    await mkdir(trash, { recursive: true });
+    await rename(dir, join(trash, `preuse-logout-${Date.now()}`));
+  });
+  const createCtx = (getRuntime) => {
+    let handler;
+    let registerCalls = 0;
+    let disposedRoute = false;
+    let cleanup;
+    const ctx = {
+      get(service) {
+        if (service === 'dshRemoteClient') return getRuntime();
+        if (service === 'connection') return { requestRejection: () => 401 };
+        if (service === 'webServer') return {
+          host: '127.0.0.1', port: 43123, protocol: 'http:',
+          getOrigin: () => 'http://127.0.0.1:43123',
+          register(route) { registerCalls += 1; handler = route.handler; return () => { disposedRoute = true; }; },
+        };
+        return undefined;
+      },
+      effect(fn) { return Promise.resolve(fn()).then((dispose) => { cleanup = dispose; }); },
+    };
+    return { ctx, getHandler: () => handler, getRegisterCalls: () => registerCalls, isDisposed: () => disposedRoute, cleanup: () => cleanup?.() };
+  };
+
+  // 1. 身份未就绪或未登录时，绝不注册路由、不签发 bearer、不落盘配置文件
+  for (const [label, runtime] of [
+    ['identity-not-ready', fakeRuntime('client-unready', { identityReady: false })],
+    ['no-credentials', (() => { const rt = fakeRuntime('client-no-cred'); rt.setCredentials(false); return rt; })()],
+  ]) {
+    const configPath = join(dir, label, 'mcp.json');
+    const envCtx = createCtx(() => runtime);
+    await assert.rejects(apply(envCtx.ctx, { privateConfigPath: configPath }), /BRIDGE_AUTHORITY_UNAVAILABLE/u, label);
+    assert.equal(envCtx.getRegisterCalls(), 0, label);
+    await assert.rejects(stat(configPath), { code: 'ENOENT' });
+  }
+
+  // 2. 配置签发后、从未调用过 -> 注销并换新 deviceId 重新登录 -> 首次拿旧配置调用必须被拒绝（绝不懒绑定到新登录）
+  const rotatedRuntime = fakeRuntime('client-gen-1');
+  const rotatedConfigPath = join(dir, 'rotated', 'mcp.json');
+  const rotatedCtx = createCtx(() => rotatedRuntime);
+  await apply(rotatedCtx.ctx, { privateConfigPath: rotatedConfigPath });
+  const rotatedBearer = JSON.parse(await readFile(rotatedConfigPath, 'utf8')).mcpServers['oai-android'].env.OAI_ANDROID_BRIDGE_BEARER;
+  // 模拟在首次调用前发生注销 + 重登（不调用 status，且不经 clearClientAuthorization 包装，纯靠签发时已绑定的 bound 拦截）
+  rotatedRuntime.setCredentials(false);
+  rotatedRuntime.setDeviceId('client-gen-2');
+  rotatedRuntime.setCredentials(true);
+  const firstAfterRelogin = await invoke(rotatedCtx.getHandler(), '/oai-android-mcp/v1/status', {
+    headers: { authorization: `Bearer ${rotatedBearer}` },
+  });
+  assert.equal(firstAfterRelogin.status, 409);
+  assert.equal(JSON.parse(firstAfterRelogin.body).error.code, 'BRIDGE_AUTHORITY_CHANGED');
+  // 即使切回原 deviceId 也必须永久失效
+  rotatedRuntime.setDeviceId('client-gen-1');
+  const revertedResp = await invoke(rotatedCtx.getHandler(), '/oai-android-mcp/v1/status', {
+    headers: { authorization: `Bearer ${rotatedBearer}` },
+  });
+  assert.equal(revertedResp.status, 409);
+  assert.equal(JSON.parse(revertedResp.body).error.code, 'BRIDGE_AUTHORITY_CHANGED');
+  await rotatedCtx.cleanup();
+
+  // 3. 配置签发后、从未调用过 -> 调用 clearClientAuthorization 注销并同 deviceId 重新登录 -> 同一代次签发的全部凭据立即失效
+  const sameIdRuntime = fakeRuntime('client-same-id');
+  const configA = join(dir, 'same-a', 'mcp.json');
+  const configB = join(dir, 'same-b', 'mcp.json');
+  const ctxA = createCtx(() => sameIdRuntime);
+  const ctxB = createCtx(() => sameIdRuntime);
+  await apply(ctxA.ctx, { privateConfigPath: configA });
+  await apply(ctxB.ctx, { privateConfigPath: configB });
+  const bearerA = JSON.parse(await readFile(configA, 'utf8')).mcpServers['oai-android'].env.OAI_ANDROID_BRIDGE_BEARER;
+  const bearerB = JSON.parse(await readFile(configB, 'utf8')).mcpServers['oai-android'].env.OAI_ANDROID_BRIDGE_BEARER;
+  // 注销前从未调用过任何工具
+  await sameIdRuntime.clearClientAuthorization();
+  assert.equal(sameIdRuntime.getLogoutCount(), 1);
+  assert.equal(ctxA.isDisposed(), true);
+  assert.equal(ctxB.isDisposed(), true);
+  // 同一 deviceId 重新登录，旧配置首次使用仍必须被拒绝
+  await sameIdRuntime.authorizeClientWithAccount();
+  for (const [label, currentCtx, bearer] of [['A', ctxA, bearerA], ['B', ctxB, bearerB]]) {
+    const resp = await invoke(currentCtx.getHandler(), '/oai-android-mcp/v1/status', {
+      headers: { authorization: `Bearer ${bearer}` },
+    });
+    assert.equal(resp.status, 409, label);
+    assert.equal(JSON.parse(resp.body).error.code, 'BRIDGE_AUTHORITY_CHANGED', label);
+    await currentCtx.cleanup();
+  }
+});
+
+test('回环 HTTP 使用默认端口 80 时可注册并按精确 Host 放行，同时保留端口与回环严格校验', async () => {
+  for (const [host, origin, validHosts, rejectedHosts] of [
+    ['127.0.0.1', 'http://127.0.0.1:80', ['127.0.0.1', '127.0.0.1:80'], ['127.0.0.1:8080', '127.0.0.1:080', 'localhost', 'localhost:80', '[::1]', 'evil.invalid']],
+    ['127.0.0.1', 'http://127.0.0.1', ['127.0.0.1', '127.0.0.1:80'], ['127.0.0.1:8080', 'localhost:80']],
+    ['::1', 'http://[::1]:80', ['[::1]', '[::1]:80'], ['[::1]:8080', '127.0.0.1', '127.0.0.1:80', 'localhost']],
+    ['::1', 'http://[::1]', ['[::1]', '[::1]:80'], ['[::1]:3080', '127.0.0.1']],
+  ]) {
+    let handler;
+    const bridge = new PhoneMcpBridge(fakeRuntime('client-port-80'), createRuntimeAuthority());
+    const webServer = {
+      host, port: 80, protocol: 'http:',
+      getOrigin: () => origin,
+      register(route) { handler = route.handler; return () => {}; },
+    };
+    const registration = registerPhoneMcpRoute({ bridge, bearer: 'port80-test-bearer-001', connection: { requestRejection: () => 401 }, webServer });
+    try {
+      const remoteAddress = host === '::1' ? '::1' : '127.0.0.1';
+      for (const validHost of validHosts) {
+        const resp = await invoke(handler, '/oai-android-mcp/v1/status', {
+          remoteAddress,
+          headers: { host: validHost, authorization: 'Bearer port80-test-bearer-001' },
+        });
+        assert.equal(resp.status, 200, `${origin} host=${validHost}`);
+      }
+      for (const badHost of rejectedHosts) {
+        const resp = await invoke(handler, '/oai-android-mcp/v1/status', {
+          remoteAddress,
+          headers: { host: badHost, authorization: 'Bearer port80-test-bearer-001' },
+        });
+        assert.equal(resp.status, 403, `${origin} badHost=${badHost}`);
+        assert.equal(JSON.parse(resp.body).error.code, 'BRIDGE_HOST_REJECTED');
+      }
+    } finally {
+      await registration.close();
+    }
+  }
+
+  // 非默认端口仍拒绝省略端口的 Host，且拒绝 :0 / 超界端口 / https / 非回环域名
+  const nonDefaultBridge = new PhoneMcpBridge(fakeRuntime('client-port-43123'), createRuntimeAuthority());
+  const { handler, registration } = routeFixture(nonDefaultBridge);
+  try {
+    for (const badHost of ['127.0.0.1', '127.0.0.1:80']) {
+      const resp = await invoke(handler, '/oai-android-mcp/v1/status', { headers: { host: badHost } });
+      assert.equal(resp.status, 403);
+      assert.equal(JSON.parse(resp.body).error.code, 'BRIDGE_HOST_REJECTED');
+    }
+  } finally {
+    await registration.close();
+  }
+
+  for (const invalidServer of [
+    { host: '127.0.0.1', port: 0, protocol: 'http:', getOrigin: () => 'http://127.0.0.1:0' },
+    { host: '127.0.0.1', port: 65536, protocol: 'http:', getOrigin: () => 'http://127.0.0.1:65536' },
+    { host: '127.0.0.1', port: 80, protocol: 'https:', getOrigin: () => 'https://127.0.0.1:80' },
+    { host: '127.0.0.1', port: 80, protocol: 'http:', getOrigin: () => 'http://localhost:80' },
+    { host: '127.0.0.1', port: 80, protocol: 'http:', getOrigin: () => 'http://127.0.0.1:8080' },
+  ]) {
+    assert.throws(() => registerPhoneMcpRoute({
+      bridge: nonDefaultBridge,
+      bearer: 'port80-test-bearer-001',
+      connection: { requestRejection: () => 401 },
+      webServer: { ...invalidServer, register: () => () => {} },
+    }), /DSH_WEB_SERVER_(?:LOOPBACK_REQUIRED|ORIGIN_INVALID)/u);
+  }
 });
 
 test('可选真实 DSH 组件：requestRejection 无 Cookie 返回 401，真实 WebServer 上 OAI bearer 仍可走严格回环路由', { skip: !process.env.OAI_DSH_FIXTURES_NODE_MODULES }, async () => {

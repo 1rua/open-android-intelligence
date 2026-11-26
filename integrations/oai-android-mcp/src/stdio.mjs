@@ -2,16 +2,16 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { BRIDGE_PREFIX } from './bridge.mjs';
+import { BRIDGE_PREFIX, parseLoopbackHttpOrigin } from './bridge.mjs';
 
 const id = z.string().min(1).max(256);
 const requestId = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/u);
 const fixed = { hostId: id, backend: z.literal('harness'), workspaceId: z.literal('phone-capabilities') };
 const task = { ...fixed, taskSessionId: id };
 const server = new McpServer({ name: 'oai-android-mcp-server', version: '1.0.0' });
-const base = new URL(process.env.OAI_ANDROID_BRIDGE_URL ?? 'http://127.0.0.1:0');
-const port = Number(base.port);
-if (base.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(base.hostname) || !Number.isInteger(port) || port < 1 || port > 65535 || base.username || base.password || base.pathname !== '/' || base.search || base.hash) throw new Error('BRIDGE_LOOPBACK_URL_REQUIRED');
+const parsedBase = parseLoopbackHttpOrigin(process.env.OAI_ANDROID_BRIDGE_URL);
+if (!parsedBase) throw new Error('BRIDGE_LOOPBACK_URL_REQUIRED');
+const base = parsedBase.url;
 const bearer = process.env.OAI_ANDROID_BRIDGE_BEARER;
 if (!bearer || !/^[A-Za-z0-9._~-]{16,256}$/u.test(bearer)) throw new Error('BRIDGE_BEARER_REQUIRED');
 async function bridge(operation, args) {

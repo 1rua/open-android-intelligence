@@ -12,7 +12,7 @@ Android 后端保持独立 Client/Host 身份。扫码配对只导入 Client，�
 
 1. 独立实现手机虚拟工作区幂等打开、授权注册接口、角色凭据原子提交、握手重复帧处理、首帧订阅顺序和历史回执预算。每项用定向 Gateway 单测约束；回执溢出经同任务私有产物提供完整 JSON。
 2. 在注册接口与凭据提交就绪后补 Host 首次注册恢复。明确账号登录、同一代次、仍有效的 Client、暂态 Host 失败是补偿前提。冷启动待命保留已有 Host 恢复语义。
-3. 外部桥按本机 HTTP 准入、包安装、连接与发现、回执查询推进。本机 bearer 限于严格回环路由，桌面通用 Cookie/API Peer 鉴权仍由 DSH 处理。注销、换服、卸载必须让旧桥授权失效。历史缺失按原请求回查 `control-bus`，保留手机终态、权限与不重放语义。
+3. 外部桥按本机 HTTP 准入、包安装、连接与发现、回执查询推进。OAI 专用回环路由（`/oai-android-mcp/v1/*`）由桥自身校验回环地址与有效端口（含默认端口 `80`）、精确 `Host`、拒收浏览器跨站头及签发时即绑定当前登录身份代次的桥专属 bearer，桌面通用路由的 Cookie/API Peer 鉴权仍完全由 DSH `Connection.requestRejection` 负责（两类路由鉴权分工已同步至[控制契约](../contracts/oai-control-rpc-v1.md)第 6 节与[架构基线](../architecture/2026-11-13-dsh-remote-baseline.zh-CN.md)第 4 节）。注销、换服、卸载必须让旧桥授权立即永久失效。历史缺失按原请求回查 `control-bus`，保留手机终态、权限与不重放语义。
 4. 用固定客户端跨进程联测契约，然后在任务分支触发 `Android APK Artifact` 产出同一候选提交的 Full Debug APK，由用户安装到真机完成端到端验收。用户在真机手动登录后，分别验收 Host 注册在线、工作区幂等打开、独立任务、同请求终态不重放和回执产物文件字节校验。
 
 每批完成后执行定向回归与差异核对，发布就绪前运行 `npm run test:fast`、`npm run test:pr`、固定上游跨进程联测及独立双轴代码审查，并在任务分支触发 `Android APK Artifact` 产出 Full Debug APK，按候选提交记录 CI 与真机端到端验收状态。

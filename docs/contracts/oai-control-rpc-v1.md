@@ -318,12 +318,20 @@ Assistant 记录保留可完整读取的 request_id、执行结论和文件引�
 ## 6. 本机 Bridge 与手机 MCP
 
 Bridge 是安装在电脑 DSH 进程内的 OAI 适配插件。Stdio MCP 由各 Agent 启动，
-只调用 Bridge；不读出 Remote 私钥/token，不另建账号、穿透、Relay 或手机执行器。
-复用 DSH 既有 WebServer 注册 loopback 专用 `/oai-android-mcp/v1` 命名空间，
-沿用 Connection 的本地请求校验，并加当前 Bridge 运行期随机 bearer。
-token 通过用户私有配置交给 Stdio 客户端，不进入 URL、浏览器、Prompt 或日志。
-Bridge 绑定当前 Remote Server origin 与活动账号代际；退出、切换 Server 或卸载使旧授权失效。
-HTTP Host/Origin 校验不因“本机调用”关闭；无浏览器 Origin 的 Stdio 客户端仍必须提交 bearer。
+只调用 Bridge；不读出 Remote 私钥/token 或 DSH Cookie，不另建账号、穿透、Relay 或手机执行器。
+复用 DSH 既有 WebServer 注册 loopback 专用 `/oai-android-mcp/v1` 命名空间，并明确区分两类本地路由的鉴权归属：
+
+- **OAI 专用回环路由（`/oai-android-mcp/v1/*`）**：面向本机 Stdio MCP 客户端，由 OAI 桥自身在 `WebServer`
+  上执行严格回环准入校验，**不再复用**要求 DSH Cookie / API Peer 身份的 `Connection.requestRejection`。
+  准入规则固定包含：仅限 `http:` 回环地址与有效端口（含默认端口 `80`，拒绝 `:0` 与非法端口）、精确 `Host` 校验、
+  拒绝 `Origin` 与 `Sec-Fetch-Site` 浏览器跨站头、精确原始路径匹配（拒绝多余斜杠、查询串与片段以防路径走私），
+  以及常数时间校验当前 Bridge 专属的运行期随机 bearer。
+- **DSH 通用路由（非 `/oai-android-mcp/v1/*`）**：继续完全由 DSH 既有 `Connection.requestRejection`
+  （Cookie / API Peer 本地请求校验）保护；OAI 桥绝不修改、放宽或绕过 DSH 通用路由的本地鉴权。
+
+Bridge 专属 bearer 通过 `0700` 目录、`0600` 权限的用户私有配置交给 Stdio 客户端，不进入 URL、浏览器、Prompt 或日志。
+签发桥凭据时即绑定当前登录身份代次、Remote Server origin 与活动账号；退出登录、切换 Server 或卸载插件时旧凭据立即永久失效，
+尚未首次使用的旧配置也不得绑定到后续新登录。HTTP `Host` 与浏览器跨站头校验不因“本机调用”关闭，
 本机接口不跨源开放，也不成为对外发布的鉴权服务。
 
 固定本机操作为 `status`、`list_endpoints`、`start`、`request_status`、`cancel`、

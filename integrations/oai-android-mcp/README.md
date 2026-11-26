@@ -10,11 +10,15 @@
 `disabled: true`，安装本身不会启用手机桥；需要用户在自己的隔离 profile 的
 `cordis.patch.yml` 中为条目 `oai-android-mcp` 填写**非空且绝对**的
 `privateConfigPath`，并把 `disabled` 改为 `false`。模板中的空字符串只是必填槽位，不包含
-仓库路径或任何用户绝对路径。启用后，插件通过 DSH 注入的 `dshRemoteClient`、`connection`、
-`webServer` 注册已有本机服务的 `/oai-android-mcp/v1` 路由；生成目录权限为 `0700`、配置权限为 `0600`。
+仓库路径或任何用户绝对路径。启用后，插件通过 DSH 注入的 `dshRemoteClient`、`connection`、`webServer` 在登录身份就绪并绑定当前登录代次后，
+签发桥专属随机 bearer、注册已有本机服务的 `/oai-android-mcp/v1` 回环路由，并原子写入私有配置（目录 `0700`、文件 `0600`）。
+OAI 专用回环路由由桥自身执行回环地址、`http:` 有效端口（含默认端口 `80`）、精确 `Host`、跨站头拦截与 bearer 校验；
+DSH 通用路由继续完全由 `Connection.requestRejection` 保护，不受本插件影响。
 
 把生成的 `mcpServers.oai-android` 放入外部 Agent 的原生 MCP 配置。Stdio 只访问该桥，
-不用复制 Remote token 或私钥。注销、切服务及卸载后需要重新生成配置。
+不用复制 Remote token 或私钥。注销、切服务及卸载后旧配置（含尚未首次使用的配置）会立即失效，需要重新生成配置。
+`android_request_result` 读取超长结果时直接在内存中校验字节长度、SHA-256 与内层身份，不会在 `Downloads` 留存副本；
+长期保留下载文件仅由显式 `android_read_artifact` 触发。
 面向智能体的调用工作流与参数约束见 [OAI Phone Control Skill](../skills/oai-phone-control/SKILL.md)。
 
 调用 `android_list_devices` 确定手机目标，首次读树或截图可省略 taskSessionId 并返回新任务；

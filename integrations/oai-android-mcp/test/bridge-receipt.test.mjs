@@ -1,9 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rename, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { PhoneMcpBridge } from '../src/bridge.mjs';
 
 const fixed = { hostId: 'phone-a', backend: 'harness', workspaceId: 'phone-capabilities' };
@@ -21,12 +18,23 @@ function assistantRecord(payload, truncated = false) {
   };
 }
 
-function receiptRuntime({ taskHistory = [], taskStatus = 'idle', busStatusReply = undefined, downloadHandler = undefined } = {}) {
+function receiptRuntime({
+  taskHistory = [],
+  taskStatus = 'idle',
+  taskReadError = undefined,
+  busStatusReply = undefined,
+  downloadHandler = undefined,
+  scopedFiles = undefined,
+  requireSessionError = undefined,
+  statusOverrides = undefined,
+} = {}) {
   const calls = [];
   const busRecords = [];
-  return {
+  let state = { connected: true, connectedTargetDeviceId: 'phone-a', recoveryGeneration: 0, ...statusOverrides };
+  const runtime = {
     calls,
-    status: () => ({ connected: true, connectedTargetDeviceId: 'phone-a', recoveryGeneration: 0 }),
+    status: () => state,
+    setState(next) { state = { ...state, ...next }; },
     async discoverToolWorkspaces() { return { workspaces: [{ backend: 'harness', workspaceId: 'phone-capabilities' }] }; },
     async runSessionTool(operation, args) {
       calls.push({ operation, args });
@@ -43,12 +51,41 @@ function receiptRuntime({ taskHistory = [], taskStatus = 'idle', busStatusReply 
       }
       if (operation === 'remote_wait_sessions') return { sessions: [{ status: 'idle' }] };
       if (operation === 'remote_read_session') {
-        if (args.sessionId === 'control-bus') return { status: 'idle', records: busRecords };
+        if (args.sessionId === 'control-bus') {
+          if (typeof taskReadError === 'function') {
+            const maybeError = taskReadError(args);
+            if (maybeError) throw maybeError;
+          }
+          return { status: 'idle', records: busRecords };
+        }
+        if (taskReadError) {
+          const error = typeof taskReadError === 'function' ? taskReadError(args) : taskReadError;
+          if (error) throw error;
+        }
         return { status: taskStatus, records: taskHistory };
       }
       return {};
     },
   };
+  if (scopedFiles) {
+    runtime.sessionTools = {
+      async requireSession(_gateway, args) {
+        calls.push({ operation: 'requireSession', args });
+        if (requireSessionError) throw requireSessionError;
+      },
+    };
+    runtime.withToolRemote = async (hostId, signal, query) => {
+      calls.push({ operation: 'withToolRemote', args: { hostId } });
+      return query({ features: { remoteGateway: true } }, signal);
+    };
+    runtime.remoteTypertGateway = () => ({
+      async invoke(request) {
+        calls.push({ operation: `${request.namespace}/${request.method}`, args: request.args });
+        return scopedFiles(request.method, request.args);
+      },
+    });
+  }
+  return runtime;
 }
 
 test('普通历史缺失或遇到 truncated:true 时回查 control-bus request.status，解包并核对内层身份', async () => {
@@ -129,25 +166,18 @@ test('回执内层 taskSessionId 或 request_id 不一致时拒绝伪造结果�
   }
 });
 
-test('超长回执经同任务私有产物读取并严格校验字节长度、SHA-256 与内层身份', async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), 'oai-android-mcp-artifact-'));
-  t.after(async () => {
-    const trash = join(tmpdir(), 'oai-android-mcp-trash');
-    await mkdir(trash, { recursive: true });
-    await rename(dir, join(trash, `artifact-${Date.now()}`));
-  });
+test('超长回执直接在内存中分块读取并校验字节长度、SHA-256 与内层身份，不触发落盘下载；显式 read_artifact 保持下载交付', async () => {
+  const payloadLength = 300_000;
   const fullPayload = {
     request_id: 'target-oversized-001',
     taskSessionId: 'task-1',
     state: 'completed',
     execution: { status: 'succeeded' },
     resultAvailable: true,
-    result: { snapshotId: 'snap-long', payload: 'x'.repeat(20_000) },
+    result: { snapshotId: 'snap-long', payload: 'x'.repeat(payloadLength) },
   };
   const raw = Buffer.from(JSON.stringify(fullPayload), 'utf8');
   const version = `sha256:${createHash('sha256').update(raw).digest('hex')}`;
-  const validPath = join(dir, 'result-valid.json');
-  await writeFile(validPath, raw);
 
   const summary = {
     request_id: 'target-oversized-001',
@@ -164,29 +194,71 @@ test('超长回执经同任务私有产物读取并严格校验字节长度、SH
     },
   };
 
+  const memoryFileServer = (bytes, reportedVersion = version, { mutateOnSecondStat = false } = {}) => {
+    let statCalls = 0;
+    return (method, args) => {
+      assert.equal(args.workspaceFileScopeId, 'task-1');
+      assert.equal(args.path, 'artifacts/result-target-oversized-001');
+      const absolutePath = `/phone-capabilities/${args.workspaceFileScopeId}/${args.path}`;
+      if (method === 'stat') {
+        statCalls += 1;
+        return {
+          absolutePath,
+          version: mutateOnSecondStat && statCalls > 1 ? `sha256:${'0'.repeat(64)}` : reportedVersion,
+          bytes: bytes.length,
+        };
+      }
+      if (method === 'readBytes') {
+        const { offset, length } = args.range;
+        const end = Math.min(bytes.length, offset + length);
+        return {
+          absolutePath,
+          version: reportedVersion,
+          bytes: bytes.length,
+          offset,
+          data: new Uint8Array(bytes.subarray(offset, end)),
+          eof: end === bytes.length,
+        };
+      }
+      throw new Error(`UNEXPECTED_METHOD_${method}`);
+    };
+  };
+
+  let explicitDownloadCalls = 0;
   const validRuntime = receiptRuntime({
     taskHistory: [assistantRecord(summary)],
+    scopedFiles: memoryFileServer(raw),
     downloadHandler: async (args) => {
-      assert.equal(args.sessionId, 'task-1');
-      assert.equal(args.path, 'artifacts/result-target-oversized-001');
-      return { status: 'downloaded', localPath: validPath, bytes: raw.length };
+      explicitDownloadCalls += 1;
+      return { status: 'downloaded', localPath: `/tmp/explicit/${args.path}`, bytes: 18 };
     },
   });
-  const loaded = await new PhoneMcpBridge(validRuntime, authority).call('request_result', {
+  const validBridge = new PhoneMcpBridge(validRuntime, authority);
+  const loaded = await validBridge.call('request_result', {
     ...fixed, taskSessionId: 'task-1', targetRequestId: 'target-oversized-001',
   });
   assert.equal(loaded.result.snapshotId, 'snap-long');
-  assert.equal(loaded.result.payload.length, 20_000);
+  assert.equal(loaded.result.payload.length, payloadLength);
   assert.equal(loaded.resultArtifact.version, version);
+  // 自动读取长回执绝不调用落盘到 Downloads 的 remote_download_file，且应完成分块读取
+  assert.equal(explicitDownloadCalls, 0);
+  assert.equal(validRuntime.calls.some(call => call.operation === 'remote_download_file'), false);
+  assert.ok(validRuntime.calls.filter(call => call.operation === 'workspaceFiles/readBytes').length >= 2);
+  assert.equal(validRuntime.calls.filter(call => call.operation === 'workspaceFiles/stat').length, 2);
+
+  // 显式 android_read_artifact 仍保持既有 remote_download_file 下载交付语义
+  const explicitArtifact = await validBridge.call('read_artifact', {
+    ...fixed, taskSessionId: 'task-1', artifactId: 'som-shot-1',
+  });
+  assert.equal(explicitDownloadCalls, 1);
+  assert.equal(explicitArtifact.status, 'downloaded');
 
   // 篡改一个字节（长度不变但 SHA-256 变化）必须拒绝
   const tampered = Buffer.from(raw);
   tampered[tampered.length - 4] = tampered[tampered.length - 4] === 0x78 ? 0x79 : 0x78;
-  const tamperedPath = join(dir, 'result-tampered.json');
-  await writeFile(tamperedPath, tampered);
   const tamperedRuntime = receiptRuntime({
     taskHistory: [assistantRecord(summary)],
-    downloadHandler: async () => ({ status: 'downloaded', localPath: tamperedPath, bytes: raw.length }),
+    scopedFiles: memoryFileServer(tampered, version),
   });
   await assert.rejects(
     new PhoneMcpBridge(tamperedRuntime, authority).call('request_result', {
@@ -194,6 +266,131 @@ test('超长回执经同任务私有产物读取并严格校验字节长度、SH
     }),
     (error) => error.message === 'BRIDGE_ARTIFACT_INTEGRITY_FAILED' && error.state === 'outcome_unknown',
   );
+
+  // 读取期间远端文件版本发生变更必须拒绝
+  const changedDuringReadRuntime = receiptRuntime({
+    taskHistory: [assistantRecord(summary)],
+    scopedFiles: memoryFileServer(raw, version, { mutateOnSecondStat: true }),
+  });
+  await assert.rejects(
+    new PhoneMcpBridge(changedDuringReadRuntime, authority).call('request_result', {
+      ...fixed, taskSessionId: 'task-1', targetRequestId: 'target-oversized-001',
+    }),
+    (error) => error.message === 'BRIDGE_ARTIFACT_INTEGRITY_FAILED' && error.state === 'outcome_unknown',
+  );
+
+  // 内层 JSON 的 request_id 不匹配时必须拒绝伪造
+  const forgedRaw = Buffer.from(JSON.stringify({ ...fullPayload, request_id: 'other-request-99999' }), 'utf8');
+  const forgedVersion = `sha256:${createHash('sha256').update(forgedRaw).digest('hex')}`;
+  const forgedSummary = { ...summary, resultArtifact: { ...summary.resultArtifact, bytes: forgedRaw.length, version: forgedVersion } };
+  const forgedRuntime = receiptRuntime({
+    taskHistory: [assistantRecord(forgedSummary)],
+    scopedFiles: memoryFileServer(forgedRaw, forgedVersion),
+  });
+  await assert.rejects(
+    new PhoneMcpBridge(forgedRuntime, authority).call('request_result', {
+      ...fixed, taskSessionId: 'task-1', targetRequestId: 'target-oversized-001',
+    }),
+    (error) => error.message === 'BRIDGE_RECEIPT_IDENTITY_MISMATCH' && error.state === 'outcome_unknown',
+  );
+
+  // 缺少内存受限文件通道时绝不回退调用 remote_download_file
+  let fallbackDownloadCalled = false;
+  const noMemoryRuntime = receiptRuntime({
+    taskHistory: [assistantRecord(summary)],
+    downloadHandler: async () => { fallbackDownloadCalled = true; return { status: 'downloaded', localPath: '/tmp/should-not-run', bytes: raw.length }; },
+  });
+  await assert.rejects(
+    new PhoneMcpBridge(noMemoryRuntime, authority).call('request_result', {
+      ...fixed, taskSessionId: 'task-1', targetRequestId: 'target-oversized-001',
+    }),
+    (error) => error.message === 'BRIDGE_ARTIFACT_INTEGRITY_FAILED' && error.state === 'outcome_unknown',
+  );
+  assert.equal(fallbackDownloadCalled, false);
+});
+
+test('旧任务退出目录报 SESSION_NOT_IN_WORKSPACE 时回查同一目标 control-bus，同时保留授权与连接错误失败语义', async () => {
+  // 1. 手机重启后原任务退出目录，remote_read_session 抛出 SESSION_NOT_IN_WORKSPACE -> 回查 control-bus request.status
+  const retiredRuntime = receiptRuntime({
+    taskReadError: (args) => (args.sessionId === 'retired-task-1' ? new Error('SESSION_NOT_IN_WORKSPACE') : undefined),
+    busStatusReply: (query) => ({
+      request_id: query.request_id,
+      taskSessionId: 'control-bus',
+      state: 'completed',
+      execution: { status: 'succeeded' },
+      result: {
+        request_id: query.args.targetRequestId,
+        taskSessionId: query.args.targetTaskSessionId,
+        state: 'completed',
+        execution: { status: 'succeeded' },
+        resultAvailable: false,
+      },
+    }),
+  });
+  const retiredResult = await new PhoneMcpBridge(retiredRuntime, authority).call('request_result', {
+    ...fixed, taskSessionId: 'retired-task-1', targetRequestId: 'target-retired-0001',
+  });
+  assert.equal(retiredResult.request_id, 'target-retired-0001');
+  assert.equal(retiredResult.taskSessionId, 'retired-task-1');
+  assert.equal(retiredResult.state, 'completed');
+  assert.equal(retiredResult.execution.status, 'succeeded');
+  assert.equal(retiredResult.resultAvailable, false);
+  const statusCalls = retiredRuntime.calls.filter(call => call.operation === 'remote_send_message');
+  assert.equal(statusCalls.length, 1);
+  assert.equal(statusCalls[0].args.sessionId, 'control-bus');
+  assert.deepEqual(JSON.parse(statusCalls[0].args.message).args, {
+    targetRequestId: 'target-retired-0001',
+    targetTaskSessionId: 'retired-task-1',
+  });
+
+  // 2. control-bus 自身报 SESSION_NOT_IN_WORKSPACE 绝不递归回查
+  const busMissingRuntime = receiptRuntime({
+    taskReadError: () => new Error('SESSION_NOT_IN_WORKSPACE'),
+  });
+  await assert.rejects(
+    new PhoneMcpBridge(busMissingRuntime, authority).call('request_result', {
+      ...fixed, taskSessionId: 'control-bus', targetRequestId: 'target-bus-missing1',
+    }),
+    /SESSION_NOT_IN_WORKSPACE/u,
+  );
+  assert.equal(busMissingRuntime.calls.some(call => call.operation === 'remote_send_message'), false);
+
+  // 3. 授权失败、连接断开、工作区缺失等非目录缺失错误必须保留原失败语义，绝不走 control-bus 回查
+  for (const [label, errorCode] of [
+    ['auth-revoked', 'DEVICE_REVOKED'],
+    ['remote-authority', 'REMOTE_AUTHORITY_CHANGED'],
+    ['transport-closed', 'TRANSPORT_CLOSED'],
+    ['workspace-missing', 'WORKSPACE_NOT_FOUND'],
+  ]) {
+    const failRuntime = receiptRuntime({ taskReadError: new Error(errorCode) });
+    await assert.rejects(
+      new PhoneMcpBridge(failRuntime, authority).call('request_result', {
+        ...fixed, taskSessionId: 'task-err', targetRequestId: 'target-fail-0000001',
+      }),
+      new RegExp(errorCode, 'u'),
+      label,
+    );
+    assert.equal(failRuntime.calls.some(call => call.operation === 'remote_send_message'), false, label);
+  }
+
+  // 4. 抛出 SESSION_NOT_IN_WORKSPACE 的同时若发生连接变更或授权失效，必须立刻按连接/授权错误失败，不得进入回查
+  const racingRuntime = receiptRuntime({
+    taskReadError: (args) => {
+      if (args.sessionId === 'retired-race-1') {
+        racingRuntime.setState({ connected: false, connectedTargetDeviceId: undefined });
+        return new Error('SESSION_NOT_IN_WORKSPACE');
+      }
+      return undefined;
+    },
+    busStatusReply: () => { throw new Error('SHOULD_NOT_QUERY_BUS'); },
+  });
+  await assert.rejects(
+    new PhoneMcpBridge(racingRuntime, authority).call('request_result', {
+      ...fixed, taskSessionId: 'retired-race-1', targetRequestId: 'target-race-0000001',
+    }),
+    /BRIDGE_CONNECTION_CHANGED/u,
+  );
+  assert.equal(racingRuntime.calls.some(call => call.operation === 'remote_send_message'), false);
 });
 
 test('回查 control-bus 未完成或传输未知时忠实保留 accepted 或 outcome_unknown，不误抛身份不匹配', async () => {

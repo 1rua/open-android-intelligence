@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 import * as ws from 'ws';
 import { z } from 'zod';
 import { Context } from '@deepseek-ai/cordis';
+import { PhoneMcpBridge } from '../../integrations/oai-android-mcp/src/bridge.mjs';
 
 const expectedClientTimeZone = 'Asia/Shanghai';
 process.env.TZ = expectedClientTimeZone;
@@ -156,6 +157,33 @@ async function installedRuntimeVerifier(runtime) {
   const events = new Set();
   const trace = [];
   let createCount = 0;
+  let visibleSessionIds = ['control-bus'];
+  const busPromptRecords = [];
+  const oversizedId = 'verify-oversized-0001';
+  const oversizedPayload = {
+    request_id: oversizedId,
+    taskSessionId: 'active-artifact-task',
+    state: 'completed',
+    execution: { status: 'succeeded' },
+    resultAvailable: true,
+    result: { snapshotId: 'snap-065', payload: 'z'.repeat(20_000) },
+  };
+  const oversizedRaw = Buffer.from(JSON.stringify(oversizedPayload), 'utf8');
+  const oversizedVersion = `sha256:${createHash('sha256').update(oversizedRaw).digest('hex')}`;
+  const oversizedSummary = {
+    request_id: oversizedId,
+    taskSessionId: 'active-artifact-task',
+    state: 'completed',
+    execution: { status: 'succeeded' },
+    resultAvailable: true,
+    resultArtifact: {
+      artifactId: `result-${oversizedId}`,
+      path: `artifacts/result-${oversizedId}`,
+      mimeType: 'application/json',
+      bytes: oversizedRaw.length,
+      version: oversizedVersion,
+    },
+  };
   const client = {
     getStats() { return { mode: 'Relay', connected: true }; },
     onEvent(handler) { events.add(handler); return () => events.delete(handler); },
@@ -165,11 +193,36 @@ async function installedRuntimeVerifier(runtime) {
       trace.push({ route, endpoint: payload?.endpoint });
       if (route === 'harness.transport.describe') return { capabilities: ['harness.remote.v3'] };
       if (route === 'harness.remote.stream.open') {
+        const endpoint = payload?.endpoint;
         setImmediate(() => {
+          let frameValue;
+          if (endpoint === 'workspace/follow') {
+            frameValue = {
+              type: 'baseline', cursor: 0,
+              value: { items: [{ workspaceId: 'phone-capabilities', path: 'phone-capabilities', title: '隔离手机', sessionIds: [...visibleSessionIds] }] },
+            };
+          } else if (endpoint === 'session/follow') {
+            const sessionId = payload?.payload?.args?.request?.address?.sessionId;
+            if (sessionId === 'control-bus') {
+              frameValue = { type: 'snapshot', cursor: busPromptRecords.length, hasMore: false, records: [...busPromptRecords], projections: { values: {} } };
+            } else if (sessionId === 'active-artifact-task') {
+              frameValue = {
+                type: 'snapshot', cursor: 1, hasMore: false,
+                records: [{
+                  type: 'event',
+                  event: {
+                    seq: 0, type: 'assistant/message',
+                    data: { message: { content: [{ type: 'text', text: JSON.stringify(oversizedSummary) }] } },
+                  },
+                }],
+                projections: { values: {} },
+              };
+            }
+          }
+          if (!frameValue) return;
           for (const handler of events) handler({
             event: 'harness.remote.frame',
-            data: { streamId: payload.streamId, hasValue: true, value: { type: 'baseline', cursor: 0,
-              value: { items: [{ workspaceId: 'phone-capabilities', path: 'phone-capabilities', title: '隔离手机', sessionIds: ['control-bus'] }] } } },
+            data: { streamId: payload.streamId, hasValue: true, value: frameValue },
           });
         });
         return {};
@@ -180,11 +233,88 @@ async function installedRuntimeVerifier(runtime) {
           if (payload.payload?.args?.request?.path !== 'phone-capabilities') {
             return { ok: false, error: { code: 'CONTROL_WORKSPACE_NOT_FOUND', message: '隔离范围拒绝', details: {} } };
           }
-          return { ok: true, value: { workspace: { workspaceId: 'phone-capabilities', path: 'phone-capabilities', title: '隔离手机', sessionIds: ['control-bus'] }, created: false } };
+          return { ok: true, value: { workspace: { workspaceId: 'phone-capabilities', path: 'phone-capabilities', title: '隔离手机', sessionIds: [...visibleSessionIds] }, created: false } };
         }
         if (payload.endpoint === 'session/create') {
           createCount++;
           return { ok: true, value: { sessionId: `isolated-task-${createCount}` } };
+        }
+        if (payload.endpoint === 'session/list') {
+          return {
+            ok: true,
+            value: {
+              items: visibleSessionIds.map((sessionId, index) => ({
+                sessionId, title: sessionId, running: false, blank: false, updatedAt: 1000 + index,
+              })),
+            },
+          };
+        }
+        if (payload.endpoint === 'session/prompt') {
+          const req = payload.payload?.args?.request;
+          if (req?.sessionId === 'control-bus') {
+            const envelope = JSON.parse(req.content[0].text);
+            if (envelope.op === 'request.status') {
+              busPromptRecords.push({
+                type: 'event',
+                event: {
+                  seq: busPromptRecords.length,
+                  type: 'assistant/message',
+                  data: {
+                    message: {
+                      content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                          request_id: envelope.request_id,
+                          taskSessionId: 'control-bus',
+                          state: 'completed',
+                          execution: { status: 'succeeded' },
+                          result: {
+                            request_id: envelope.args.targetRequestId,
+                            taskSessionId: envelope.args.targetTaskSessionId,
+                            state: 'completed',
+                            execution: { status: 'succeeded' },
+                            resultAvailable: false,
+                          },
+                        }),
+                      }],
+                    },
+                  },
+                },
+              });
+              return { ok: true, value: { accepted: true } };
+            }
+          }
+        }
+        if (payload.endpoint === 'workspaceFiles/stat') {
+          const args = payload.payload?.args;
+          if (args?.workspaceFileScopeId === 'active-artifact-task' && args?.path === oversizedSummary.resultArtifact.path) {
+            return {
+              ok: true,
+              value: {
+                absolutePath: `/phone-capabilities/${args.workspaceFileScopeId}/${args.path}`,
+                version: oversizedVersion,
+                bytes: oversizedRaw.length,
+              },
+            };
+          }
+        }
+        if (payload.endpoint === 'workspaceFiles/readBytes') {
+          const args = payload.payload?.args;
+          if (args?.workspaceFileScopeId === 'active-artifact-task' && args?.path === oversizedSummary.resultArtifact.path) {
+            const { offset, length } = args.range;
+            const end = Math.min(oversizedRaw.length, offset + length);
+            return {
+              ok: true,
+              value: {
+                absolutePath: `/phone-capabilities/${args.workspaceFileScopeId}/${args.path}`,
+                version: oversizedVersion,
+                bytes: oversizedRaw.length,
+                offset,
+                data: oversizedRaw.subarray(offset, end).toString('base64'),
+                eof: end === oversizedRaw.length,
+              },
+            };
+          }
         }
       }
       throw new Error(`隔离客户端收到未登记请求：${route}/${payload?.endpoint ?? ''}`);
@@ -199,9 +329,39 @@ async function installedRuntimeVerifier(runtime) {
   });
   const signal = AbortSignal.timeout(2_000);
   const { sessionCreateCalls } = await verifyWorkspaceOpenAndSessionCreate(runtime, instance, 'phone', trace, signal, 'verify', '固定');
+
+  // 使用真实已安装 0.6.5 ClientModeRuntime 验证 PhoneMcpBridge：
+  // 1) 隔离目录仅含 control-bus 时，旧任务 request_result 经真实 SESSION_NOT_IN_WORKSPACE 回查 control-bus request.status；
+  // 2) 长回执通过真实 withToolRemote + remoteTypertGateway 内存读取 workspaceFiles/stat/readBytes，零 Downloads 落盘。
+  const verifyBridge = new PhoneMcpBridge(instance, { snapshot: async () => 'verify-epoch' });
+  const retiredStart = trace.length;
+  const retiredReceipt = await verifyBridge.call('request_result', {
+    hostId: 'phone', backend: 'harness', workspaceId: 'phone-capabilities',
+    taskSessionId: 'retired-task-065', targetRequestId: 'verify-retired-00001',
+  }, signal);
+  assert.equal(retiredReceipt.request_id, 'verify-retired-00001');
+  assert.equal(retiredReceipt.taskSessionId, 'retired-task-065');
+  assert.equal(retiredReceipt.state, 'completed');
+  assert.equal(retiredReceipt.resultAvailable, false);
+  const retiredTrace = trace.slice(retiredStart);
+  assert.ok(retiredTrace.some(item => item.endpoint === 'session/list'), '0.6.5 应先经 session/list 命中 SESSION_NOT_IN_WORKSPACE');
+  assert.ok(retiredTrace.some(item => item.endpoint === 'session/prompt'), '0.6.5 命中 SESSION_NOT_IN_WORKSPACE 后必须回查 control-bus request.status');
+
+  visibleSessionIds = ['control-bus', 'active-artifact-task'];
+  const artifactStart = trace.length;
+  const loadedLong = await verifyBridge.call('request_result', {
+    hostId: 'phone', backend: 'harness', workspaceId: 'phone-capabilities',
+    taskSessionId: 'active-artifact-task', targetRequestId: oversizedId,
+  }, signal);
+  assert.equal(loadedLong.result.snapshotId, 'snap-065');
+  assert.equal(loadedLong.result.payload.length, 20_000);
+  const artifactTrace = trace.slice(artifactStart);
+  assert.ok(artifactTrace.some(item => item.endpoint === 'workspaceFiles/stat'), '0.6.5 内存长回执必须走 workspaceFiles/stat');
+  assert.ok(artifactTrace.some(item => item.endpoint === 'workspaceFiles/readBytes'), '0.6.5 内存长回执必须走 workspaceFiles/readBytes');
+
   await runtime.ClientModeRuntime.prototype.handleControl.call(instance, 'mode.set', { mode: 'local' }, signal);
   return { workspacePath: 'workspace/open->workspace/create', workspaceOpenCalls: 2, sessionCreateCalls,
-    workspaceScopeRejected: true, distinctSessions: true, isolatedConnectionFacts: true };
+    workspaceScopeRejected: true, distinctSessions: true, retiredTaskFallbackVerified: true, inMemoryResultArtifactVerified: true, isolatedConnectionFacts: true };
 }
 
 const installedRuntimeVerification = installedRuntime === undefined ? undefined : await installedRuntimeVerifier(installedRuntime);

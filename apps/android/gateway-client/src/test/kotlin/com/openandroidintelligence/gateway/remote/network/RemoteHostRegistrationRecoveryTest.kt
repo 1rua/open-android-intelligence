@@ -126,7 +126,7 @@ class RemoteHostRegistrationRecoveryTest {
                 }
             }
             server.start(java.net.InetAddress.getByName("127.0.0.1"), 0)
-            origin = server.url("/").toString().removeSuffix("/")
+            origin = "http://127.0.0.1:${server.port}"
             store.save(RemoteIdentityScope(origin, "owner", RemoteRole.CLIENT), RemoteRoleCredential(clientIdentity, clientTokens))
             vault.installationIdentityStore { "测试手机" }.loadOrCreate(clientIdentity, ownedHostIdentity)
             active = vault.activate(origin, "owner", vault.revokeActive(), hostRegistrationError = hostRegistrationError)
@@ -470,7 +470,7 @@ class RemoteHostRegistrationRecoveryTest {
             val inProcessFailures = fixture.vault.roleFailures(fixture.active)
             assertEquals(RemoteHostFailure(RemoteHostFailureStage.REGISTRATION, "CONTROL_CONNECTION_FAILED"), inProcessFailures.hostStop)
             assertNull("Host 遇到未收录 4xx 码时绝不能连带停用 Client", inProcessFailures.clientStop)
-            assertNull(fixture.runtime.clientFailure.value)
+            assertNull(fixture.runtime.clientFailureSnapshot.value)
             assertTrue(fixture.runtime.listHosts().isEmpty())
             assertFalse("host" in fixture.helloRoles)
 
@@ -481,7 +481,7 @@ class RemoteHostRegistrationRecoveryTest {
             val afterRestartFailures = fixture.vault.roleFailures(fixture.active)
             assertEquals(RemoteHostFailure(RemoteHostFailureStage.REGISTRATION, "CONTROL_CONNECTION_FAILED"), afterRestartFailures.hostStop)
             assertNull("重启后角色围栏读取不得误判损坏并停用 Client", afterRestartFailures.clientStop)
-            assertNull(fixture.runtime.clientFailure.value)
+            assertNull(fixture.runtime.clientFailureSnapshot.value)
             assertEquals("CONTROL_CONNECTION_FAILED", fixture.runtime.hostFailure.value?.code)
             assertTrue(fixture.runtime.listHosts().isEmpty())
 

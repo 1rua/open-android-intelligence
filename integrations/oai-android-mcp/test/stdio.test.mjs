@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -197,4 +198,33 @@ test('Stdio 保留桥返回的 409 授权失效错误码，不伪装成功或笼
     assert.equal(revoked.isError, true);
     assert.match(revoked.content[0].text, /BRIDGE_AUTHORITY_CHANGED/u);
   } finally { await client.close(); await registration.close(); await new Promise(resolve => http.close(resolve)); }
+});
+
+test('Stdio 入口支持回环 HTTP 默认端口 80 并继续拒绝 :0、非回环与非法端口', async () => {
+  const stdioScript = new URL('../src/stdio.mjs', import.meta.url).pathname;
+  for (const origin of ['http://127.0.0.1:80', 'http://127.0.0.1', 'http://[::1]:80', 'http://[::1]']) {
+    const client = new Client({ name: 'phone-mcp-port80-test', version: '1.0.0' });
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [stdioScript],
+      env: { ...process.env, OAI_ANDROID_BRIDGE_URL: origin, OAI_ANDROID_BRIDGE_BEARER: 'port80-stdio-bearer-001' },
+      stderr: 'pipe',
+    });
+    try {
+      await client.connect(transport);
+      const listed = await client.listTools();
+      assert.ok(listed.tools.some(tool => tool.name === 'android_bridge_status'), origin);
+    } finally {
+      await client.close();
+    }
+  }
+
+  for (const invalidOrigin of [undefined, '', 'http://127.0.0.1:0', 'http://127.0.0.1:080', 'http://127.0.0.1:65536', 'https://127.0.0.1:80', 'http://localhost:80', 'http://127.0.0.1:80/extra']) {
+    const env = { ...process.env, OAI_ANDROID_BRIDGE_BEARER: 'port80-stdio-bearer-001' };
+    if (invalidOrigin === undefined) delete env.OAI_ANDROID_BRIDGE_URL;
+    else env.OAI_ANDROID_BRIDGE_URL = invalidOrigin;
+    const run = spawnSync(process.execPath, [stdioScript], { encoding: 'utf8', env, timeout: 5000 });
+    assert.notEqual(run.status, 0, String(invalidOrigin));
+    assert.match(run.stderr, /BRIDGE_LOOPBACK_URL_REQUIRED/u, String(invalidOrigin));
+  }
 });

@@ -1,6 +1,6 @@
 # 远程 Agent 控制 Android 后端修复与真机 APK 验收交接
 
-记录日期为 2026 年 11 月 27 日（Asia/Shanghai）。任务关联 `1rua/open-android-intelligence` 的 issue #248 与 PR #249（分支 `feature/remote-android-control-chain`，基线 `dev@b6cce9c16cd1047fa812d7b5b7ad307660209022`）。本轮后端修复、本地自动化门禁、跨进程固定客户端联测及独立双轴代码评审已全部闭环，当前转由任务分支触发 `Android APK Artifact` 工作流产出 Full Debug APK，交由用户完成真机端到端验收并决定是否合并 PR #249。
+记录日期为 2026 年 11 月 27 日（Asia/Shanghai）。任务关联 issue #248 与 PR #249，分支为 `feature/remote-android-control-chain`。真机验收使用与 PR 候选提交 SHA 一致的 `Android APK Artifact` 工作流产物。
 
 ## 协议与范围基准
 
@@ -8,7 +8,15 @@
 - 实施范围覆盖 Android 网关后端（`apps/android/gateway-client`）、桌面本机 Android MCP 桥（`integrations/oai-android-mcp`）、固定上游跨进程联测脚本（`tools/remote-interop`）与相关文档。
 - 身份边界保持独立 Client/Host 角色：扫码配对仅导入 Client，配对受限身份不触发 Host 补注册；控机从同账号授权的桌面入口打开手机虚拟工作区 `harness/phone-capabilities`，并在同一持久连接上验证原生 `remote_*` 与外部 Stdio `android_*`。
 
-## 修复闭环与验证证据
+## 审查修复与真机重点
+
+- 桥在生成 Stdio 配置前绑定当前登录身份。真机验收可在配置生成后、首次调用前登出并重新登录，确认旧配置失效，重新签发后再验证双入口。
+- 桌面选中 Relay 后，手机可独立完成中继附着和 Noise 握手。设备密钥暂锁和注册响应体中断都应保留同账号的 Host 注册恢复机会。
+- 任务移出目录后仍按原任务与请求回查手机回执。完整回执在内存中核对，同一任务中的产物重名保留原文件。
+
+## 原候选的自动化证据
+
+下表记录提交 `07aee9269bad334d0e3a42ac624418b075496dcf` 的验证结果。当前候选的 CI、评审与 APK 构建状态以 PR #249 的同 SHA 记录为准。
 
 | 范围 | 落地实现与自动化验证结论 |
 | --- | --- |

@@ -310,7 +310,7 @@ class RemoteServerApiTest {
                 .setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
             // 显式绑定 127.0.0.1，避免双栈宿主机上 OkHttp 对 localhost 在断连后切到未监听的 ::1 路由。
             server.start(java.net.InetAddress.getByName("127.0.0.1"), 0)
-            val origin = server.url("/").toString().removeSuffix("/")
+            val origin = "http://127.0.0.1:${server.port}"
             val api = RemoteServerApi(origin)
             val hostScope = RemoteIdentityScope(origin, "owner", RemoteRole.HOST)
             val identity = RemoteStaticIdentityFactory.generate(RemoteDeviceId("00000000-0000-4000-8000-000000000099"))
