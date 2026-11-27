@@ -111,4 +111,37 @@ object ToolCallPairing {
             orderSequence = existing.orderSequence ?: incoming.orderSequence,
         )
     }
+
+    /**
+     * 单一权威快照合并规则（供 [NativeExecutionStep.applyNewerSnapshot]、控制器与展示层共享）：
+     * - 非终态（RUNNING / UNKNOWN）收到终态（COMPLETED / FAILED）时无条件升级，即使重连重建投影导致修订号更低或相等；
+     * - 已终态绝不被任意修订号的非终态倒退，但仍非破坏性补全缺失的真实工具名、入参、宿主来源与顺序元数据；
+     * - 同为终态或同为非终态时，高修订号优先；同修订号支持 UNKNOWN → RUNNING 升级与空输出补全；
+     *   低修订号保留主快照状态与输出，同时非破坏性补全缺失字段。
+     */
+    fun mergeSnapshot(
+        existing: NativeExecutionStep,
+        incoming: NativeExecutionStep,
+    ): NativeExecutionStep {
+        val existingTerminal = isTerminalStatus(existing.status)
+        val incomingTerminal = isTerminalStatus(incoming.status)
+        val preferIncoming = when {
+            existingTerminal && !incomingTerminal -> false
+            !existingTerminal && incomingTerminal -> true
+            incoming.revision > existing.revision -> true
+            incoming.revision < existing.revision -> false
+            existing.status == NativeExecutionStatus.UNKNOWN && incoming.status == NativeExecutionStatus.RUNNING -> true
+            existing.output.isNullOrBlank() && !incoming.output.isNullOrBlank() -> true
+            else -> false
+        }
+        return if (preferIncoming) {
+            mergeSteps(existing = existing, incoming = incoming)
+        } else {
+            mergeSteps(existing = incoming, incoming = existing).copy(
+                sourceMessageId = NativeExecutionStep.resolveSourceMessageId(existing.sourceMessageId, incoming.sourceMessageId),
+                occurredAt = existing.occurredAt?.takeIf { it > 0L } ?: incoming.occurredAt,
+                orderSequence = existing.orderSequence ?: incoming.orderSequence,
+            )
+        }
+    }
 }

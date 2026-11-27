@@ -106,4 +106,85 @@ class ToolCallPairingTest {
         assertEquals("permission denied", upgraded.output)
         assertEquals("bash", upgraded.toolName)
     }
+
+    @Test
+    fun `applyNewerSnapshot支持重连低修订号和等修订号终态升级并跨修订号补全缺失元数据`() {
+        val runningHighRev = NativeExecutionStep(
+            stepId = "  call_reconnect_1  ",
+            eventId = "ev-run",
+            toolName = "read_file",
+            arguments = """{"path":"Main.kt"}""",
+            output = null,
+            status = NativeExecutionStatus.RUNNING,
+            revision = 10L,
+            sourceMessageId = "history-tool:call_reconnect_1",
+            occurredAt = 1_000L,
+            orderSequence = 3L,
+        )
+
+        // 1. 重连重建投影导致修订号重置为 1：非终态收到低修订号终态必须升级且保留原工具名、参数与顺序
+        val lowRevDone = NativeExecutionStep(
+            stepId = "call_reconnect_1",
+            eventId = "ev-done-low",
+            toolName = "tool",
+            arguments = "",
+            output = "file content",
+            status = NativeExecutionStatus.COMPLETED,
+            revision = 1L,
+            sourceMessageId = "msg-real-1",
+            occurredAt = 2_000L,
+            orderSequence = 9L,
+        )
+        val reconnected = runningHighRev.applyNewerSnapshot(lowRevDone)
+        assertEquals("call_reconnect_1", reconnected.stepId)
+        assertEquals(NativeExecutionStatus.COMPLETED, reconnected.status)
+        assertEquals("read_file", reconnected.toolName)
+        assertEquals("""{"path":"Main.kt"}""", reconnected.arguments)
+        assertEquals("file content", reconnected.output)
+        assertEquals("msg-real-1", reconnected.sourceMessageId)
+        assertEquals(10L, reconnected.revision)
+        assertEquals(1_000L, reconnected.occurredAt)
+        assertEquals(3L, reconnected.orderSequence)
+
+        // 2. 等修订号 RUNNING -> COMPLETED 同样升级
+        val equalRevDone = runningHighRev.copy(
+            stepId = "call_reconnect_1",
+            toolName = "tool",
+            arguments = "",
+            output = "equal-rev-ok",
+            status = NativeExecutionStatus.COMPLETED,
+            revision = 10L,
+        )
+        val equalUpgraded = runningHighRev.applyNewerSnapshot(equalRevDone)
+        assertEquals(NativeExecutionStatus.COMPLETED, equalUpgraded.status)
+        assertEquals("equal-rev-ok", equalUpgraded.output)
+        assertEquals("read_file", equalUpgraded.toolName)
+
+        // 3. 已终态收到低/高修订号非终态：不倒退状态且不破坏输出，但可非破坏补全原占位工具名与空参数
+        val placeholderDone = NativeExecutionStep(
+            stepId = "call_meta",
+            eventId = "ev-done",
+            toolName = "tool",
+            arguments = "",
+            output = "ok",
+            status = NativeExecutionStatus.COMPLETED,
+            revision = 5L,
+        )
+        val olderRichCall = NativeExecutionStep(
+            stepId = "call_meta",
+            eventId = "ev-call",
+            toolName = "grep",
+            arguments = """{"q":"foo"}""",
+            output = null,
+            status = NativeExecutionStatus.RUNNING,
+            revision = 2L,
+            sourceMessageId = "msg-2",
+        )
+        val enriched = placeholderDone.applyNewerSnapshot(olderRichCall)
+        assertEquals(NativeExecutionStatus.COMPLETED, enriched.status)
+        assertEquals("grep", enriched.toolName)
+        assertEquals("""{"q":"foo"}""", enriched.arguments)
+        assertEquals("ok", enriched.output)
+        assertEquals("msg-2", enriched.sourceMessageId)
+    }
 }

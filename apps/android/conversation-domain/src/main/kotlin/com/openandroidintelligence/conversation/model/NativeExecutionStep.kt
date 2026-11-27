@@ -23,16 +23,12 @@ data class NativeExecutionStep(
         ToolCallPairing.mergeSteps(this, incoming)
 
     /**
-     * 仅在新快照修订号更高且不把已终态步骤倒退为运行中时应用更新，
-     * 并复用 [ToolCallPairing.mergeSteps] 保留真实工具名、参数、输出及原调用位置与顺序元数据。
+     * 统一委托给领域层唯一权威快照合并实现 [ToolCallPairing.mergeSnapshot]：
+     * 支持高修订号推进、重连/同修订号非终态向终态升级以及跨修订号非破坏性字段补全，
+     * 绝不将已终态倒退为运行中或破坏已有真实工具名、参数、输出与顺序元数据。
      */
-    fun applyNewerSnapshot(incoming: NativeExecutionStep?): NativeExecutionStep {
-        if (incoming == null || incoming.revision <= revision) return this
-        val existingTerminal = ToolCallPairing.isTerminalStatus(status)
-        val incomingNonTerminal = !ToolCallPairing.isTerminalStatus(incoming.status)
-        if (existingTerminal && incomingNonTerminal) return this
-        return ToolCallPairing.mergeSteps(this, incoming)
-    }
+    fun applyNewerSnapshot(incoming: NativeExecutionStep?): NativeExecutionStep =
+        if (incoming == null) this else ToolCallPairing.mergeSnapshot(this, incoming)
 
     companion object {
         fun isTemporarySourceMessageId(id: String?): Boolean =

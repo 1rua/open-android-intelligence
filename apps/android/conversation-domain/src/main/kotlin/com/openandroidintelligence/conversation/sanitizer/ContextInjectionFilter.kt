@@ -262,9 +262,15 @@ object ContextInjectionFilter {
         "tool",
         "tool_call",
         "tool_result",
+        "toolresult",
         "tool_use",
         "function_call",
         "function_result",
+        "functionresult",
+        "function_response",
+        "functionresponse",
+        "function_call_output",
+        "functioncalloutput",
     )
 
     /** 可单独作为上下文字根标签的规范名称集合。 */
@@ -1204,6 +1210,10 @@ object ContextInjectionFilter {
         val segmentMaps = mutableListOf<TextSegmentMap>()
         var rawCursor = 0
         var cleanCursor = 0
+        var hasEmittedText = false
+        var lastTextEndedWithNewline = false
+        var strippedInjectionSinceLastText = false
+        var pendingSeparatorNewline = false
 
         fun flushPendingText() {
             if (pendingText.isEmpty()) return
@@ -1213,10 +1223,31 @@ object ContextInjectionFilter {
             val segRawStart = rawCursor
             val segRawEnd = rawCursor + rawChunk.length
             rawCursor = segRawEnd
-            val segCleanStart = cleanCursor
-            if (indexed.text.isNotEmpty()) {
-                output += MessagePart.Text(indexed.text)
-                cleanCursor += indexed.text.length
+            val segCleanStart = if (indexed.text.isNotEmpty() && pendingSeparatorNewline && hasEmittedText) {
+                val previousText = output.lastOrNull() as? MessagePart.Text
+                if (previousText != null) {
+                    output[output.lastIndex] = MessagePart.Text(previousText.value + "\n" + indexed.text)
+                } else {
+                    output += MessagePart.Text("\n" + indexed.text)
+                }
+                val startAfterNewline = cleanCursor + 1
+                cleanCursor += 1 + indexed.text.length
+                pendingSeparatorNewline = false
+                strippedInjectionSinceLastText = false
+                hasEmittedText = true
+                lastTextEndedWithNewline = rawChunk.endsWith('\n') || rawChunk.endsWith('\r')
+                startAfterNewline
+            } else {
+                val start = cleanCursor
+                if (indexed.text.isNotEmpty()) {
+                    output += MessagePart.Text(indexed.text)
+                    cleanCursor += indexed.text.length
+                    pendingSeparatorNewline = false
+                    strippedInjectionSinceLastText = false
+                    hasEmittedText = true
+                    lastTextEndedWithNewline = rawChunk.endsWith('\n') || rawChunk.endsWith('\r')
+                }
+                start
             }
             segmentMaps += TextSegmentMap(segRawStart, segRawEnd, segCleanStart, indexed)
         }
@@ -1225,17 +1256,38 @@ object ContextInjectionFilter {
             when (part) {
                 is MessagePart.Text -> {
                     if (textPartCount > 1 && !hasUnclosedCodeFence(pendingText) && isStandaloneCompleteInjectionPart(part.value)) {
+                        val hadTrailingNewlineBefore = if (pendingText.isNotEmpty()) {
+                            pendingText.endsWith('\n') || pendingText.endsWith('\r')
+                        } else {
+                            lastTextEndedWithNewline
+                        }
                         flushPendingText()
                         val segRawStart = rawCursor
                         val segRawEnd = rawCursor + part.value.length
                         rawCursor = segRawEnd
                         segmentMaps += TextSegmentMap(segRawStart, segRawEnd, cleanCursor, IndexedText("", IntArray(0)))
+                        if (hasEmittedText) {
+                            strippedInjectionSinceLastText = true
+                            if (hadTrailingNewlineBefore) {
+                                pendingSeparatorNewline = true
+                            }
+                        }
                     } else {
+                        if (pendingText.isEmpty() && strippedInjectionSinceLastText) {
+                            if (part.value.startsWith('\n') || part.value.startsWith('\r')) {
+                                pendingSeparatorNewline = true
+                            }
+                            strippedInjectionSinceLastText = false
+                        }
                         pendingText.append(part.value)
                     }
                 }
                 is MessagePart.Attachment, is MessagePart.Command -> {
                     flushPendingText()
+                    pendingSeparatorNewline = false
+                    strippedInjectionSinceLastText = false
+                    hasEmittedText = false
+                    lastTextEndedWithNewline = false
                     output += part
                 }
             }

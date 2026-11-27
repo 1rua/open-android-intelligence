@@ -1080,11 +1080,223 @@ class CrossBackendExecutionOrderTest {
         ).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
         assertEquals("out-1\nerr-1", stdResult.output)
         assertEquals(NativeExecutionStatus.COMPLETED, stdResult.status)
+
+        // 3. 已终态工具收到迟到 outputDelta 必须跳过，不能重复追加污染最终输出
+        val duplicateDeltaEvents = projection.accept(
+            codex("item/commandExecution/outputDelta", "itemId" to "cmd-declined", "delta" to "late-noise"),
+        )
+        assertTrue("终态步骤不得追加迟到增量输出", duplicateDeltaEvents.isEmpty())
+    }
+
+    @Test
+    fun `Codex的item_completed_functionCall保持运行态待functionCallOutput配对且无结果回合收敛为UNKNOWN`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(codex("turn/started", "turn" to obj("id" to "T-fc")), history = true)
+
+        // 1. item/completed(functionCall) 仅表示参数生成完成，未含输出时必须保持 RUNNING 而非 COMPLETED
+        projection.accept(
+            codex(
+                "item/completed",
+                "turnId" to "T-fc",
+                "item" to obj(
+                    "id" to "item-fc-call-1",
+                    "type" to "functionCall",
+                    "call_id" to "call_fc_pair_1",
+                    "name" to "read_file",
+                    "arguments" to """{"path":"build.gradle.kts"}""",
+                ),
+            ),
+            history = true,
+        )
+        val runningRow = projection.rows.getValue("history-tool:call_fc_pair_1")
+        assertEquals(NativeExecutionStatus.RUNNING, runningRow.executionSteps.single().status)
+
+        // 2. 随后同 call_id 的 functionCallOutput 到达 -> 才转为 COMPLETED 并写入输出
+        projection.accept(
+            codex(
+                "item/completed",
+                "turnId" to "T-fc",
+                "item" to obj(
+                    "id" to "item-fco-1",
+                    "type" to "functionCallOutput",
+                    "call_id" to "call_fc_pair_1",
+                    "output" to "plugins { id(\"android\") }",
+                ),
+            ),
+            history = true,
+        )
+        val pairedRow = projection.rows.getValue("history-tool:call_fc_pair_1")
+        assertEquals(NativeExecutionStatus.COMPLETED, pairedRow.executionSteps.single().status)
+        assertEquals("plugins { id(\"android\") }", pairedRow.executionSteps.single().output)
+
+        // 3. 另一条 functionCall 同样以 item/completed 到达但直到回合结束都无 functionCallOutput -> 收敛为 UNKNOWN（未返回结果）
+        projection.accept(
+            codex(
+                "item/completed",
+                "turnId" to "T-fc",
+                "item" to obj(
+                    "id" to "item-fc-call-2",
+                    "type" to "functionCall",
+                    "call_id" to "call_fc_missing_2",
+                    "name" to "search_docs",
+                    "arguments" to """{"q":"compose"}""",
+                ),
+            ),
+            history = true,
+        )
+        assertEquals(NativeExecutionStatus.RUNNING, projection.rows.getValue("history-tool:call_fc_missing_2").executionSteps.single().status)
+        projection.accept(codex("turn/completed", "turn" to obj("id" to "T-fc", "status" to "completed")), history = true)
+        val missingRow = projection.rows.getValue("history-tool:call_fc_missing_2")
+        assertEquals(NativeExecutionStatus.UNKNOWN, missingRow.executionSteps.single().status)
+    }
+
+    @Test
+    fun `活跃运行中回合刷新历史或接收含流式snapshot时不得误将工具标为UNKNOWN`() = runTest {
+        // 1. snapshot 帧包含进行中回合与活跃 assistantStream：已结束的旧回合标 UNKNOWN，活跃回合保持 RUNNING
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(
+            obj(
+                "type" to "snapshot",
+                "records" to listOf(
+                    durable(1, "turn/start", obj("turn" to 1)),
+                    durable(2, "tool/call", obj("callId" to "old-unfinished", "name" to "bash")),
+                    durable(3, "turn/end", obj("turn" to 1, "reason" to obj("kind" to "completed"))),
+                    durable(4, "turn/start", obj("turn" to 2)),
+                    durable(5, "tool/call", obj("callId" to "live-active-call", "name" to "read_file")),
+                ),
+                "assistantStream" to obj(
+                    "entries" to listOf(
+                        obj("attemptId" to "att-live", "turn" to 2, "content" to listOf(obj("type" to "text", "text" to "执行中"))),
+                    ),
+                ),
+            ),
+            history = true,
+        )
+        assertEquals(
+            "已结束历史回合缺失结果应收敛为 UNKNOWN",
+            NativeExecutionStatus.UNKNOWN,
+            projection.rows.getValue("history-tool:old-unfinished").executionSteps.single().status,
+        )
+        assertEquals(
+            "活跃运行中回合的工具不得在刷新快照时误标 UNKNOWN",
+            NativeExecutionStatus.RUNNING,
+            projection.rows.getValue("history-tool:live-active-call").executionSteps.single().status,
+        )
+
+        // 2. RemoteConversationRepository.loadTimeline 透传 result.activeGenerationId 跳过活跃回合收尾
+        val activeTurnRecords = listOf(
+            durable(10, "turn/start", obj("turn" to 7)),
+            durable(11, "tool/call", obj("callId" to "repo-active-call", "name" to "grep")),
+        )
+        val repo = historyRepository("harness", activeTurnRecords, activeGenerationId = "7", activityKnown = true)
+        val page = repo.timeline(local, PageRequest())
+        val step = page.messages.single { it.id == "history-tool:repo-active-call" }.executionSteps.single()
+        assertEquals("loadTimeline 活跃回合工具必须保持 RUNNING", NativeExecutionStatus.RUNNING, step.status)
+    }
+
+    @Test
+    fun `function_response顶层消息回写工具且隐藏气泡且assistantSnapshot跨消息tool_result不重复插卡且实时tool_calls标LIVE`() {
+        val projection = RemoteTimelineProjection(local)
+
+        // 1. 实时非流式 assistant/message 携带 tool_calls -> presentationOrigin 必须为 LIVE（不抑制工具卡入场动效）
+        val callEvents = projection.accept(
+            durable(
+                1,
+                "assistant/message",
+                obj(
+                    "turnId" to "turn-fr",
+                    "message" to obj(
+                        "id" to "msg-asst-fr",
+                        "role" to "assistant",
+                        "content" to listOf(obj("type" to "text", "text" to "调用工具")),
+                        "tool_calls" to listOf(
+                            obj(
+                                "id" to "call-fr-1",
+                                "type" to "function",
+                                "function" to obj("name" to "lookup", "arguments" to """{"k":"v"}"""),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val liveCallUpsert = callEvents.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().single()
+        assertEquals(
+            "实时非流式带工具调用消息必须标记 LIVE",
+            com.openandroidintelligence.conversation.model.StreamPresentationOrigin.LIVE,
+            liveCallUpsert.presentationOrigin,
+        )
+
+        // 2. sender="user" 且 messageType="function_response" 的顶层工具结果：必须回写原工具卡且隐藏自身气泡
+        val frEvents = projection.accept(
+            durable(
+                2,
+                "user/message",
+                obj(
+                    "turnId" to "turn-fr",
+                    "message" to obj(
+                        "id" to "msg-fr-hidden",
+                        "role" to "user",
+                        "messageType" to "function_response",
+                        "tool_call_id" to "call-fr-1",
+                        "content" to "lookup-ok",
+                    ),
+                ),
+            ),
+        )
+        assertFalse("function_response 消息绝不能上屏", "msg-fr-hidden" in projection.rows)
+        val updatedFrStep = projection.rows.getValue("msg-asst-fr").executionSteps.single()
+        assertEquals("lookup-ok", updatedFrStep.output)
+        assertEquals(NativeExecutionStatus.COMPLETED, updatedFrStep.status)
+        assertEquals(1, frEvents.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().count { it.message.id == "msg-asst-fr" })
+
+        // 3. assistantSnapshot 中出现归属前一条消息（msg-prev-tool）的 tool_result：回写原宿主行，不得在当前快照行重复造卡
+        projection.accept(
+            obj(
+                "type" to "snapshot",
+                "records" to listOf(
+                    durable(
+                        10,
+                        "assistant/message",
+                        obj(
+                            "turnId" to "turn-snap",
+                            "message" to obj(
+                                "id" to "msg-prev-tool",
+                                "role" to "assistant",
+                                "content" to listOf(
+                                    obj("type" to "tool_use", "id" to "call-prev-1", "name" to "read_file", "input" to obj("path" to "a.kt")),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+                "assistantStream" to obj(
+                    "entries" to listOf(
+                        obj(
+                            "attemptId" to "att-cross",
+                            "turn" to "turn-snap",
+                            "content" to listOf(
+                                obj("type" to "tool_result", "tool_use_id" to "call-prev-1", "output" to "prev-file-data"),
+                                obj("type" to "text", "text" to "根据读取结果继续"),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            history = true,
+        )
+        val prevRow = projection.rows.getValue("msg-prev-tool")
+        assertEquals("prev-file-data", prevRow.executionSteps.single().output)
+        assertEquals(NativeExecutionStatus.COMPLETED, prevRow.executionSteps.single().status)
+        val snapStreamRow = projection.rows.getValue("remote-stream:att-cross")
+        assertTrue("跨消息 tool_result 不得在当前 assistantSnapshot 行重复插卡", snapStreamRow.executionSteps.isEmpty())
     }
 
     private fun kotlinx.coroutines.test.TestScope.historyRepository(
         backend: String,
         records: List<JsonValue>,
+        activeGenerationId: String? = null,
+        activityKnown: Boolean = false,
     ): RemoteConversationRepository {
         val key = EndpointKey(
             RemoteServiceOrigin.fromCanonicalOrigin("https://remote.example"),
@@ -1108,7 +1320,8 @@ class CrossBackendExecutionOrderTest {
             override suspend fun sessions(workspace: RemoteWorkspace, page: PageRequest) =
                 RemoteSessionPage(listOf(RemoteSessionRow(native, "会话", 0, 1)))
             override suspend fun create(workspace: RemoteWorkspace) = RemoteSessionRow(native, "", 0, 0)
-            override suspend fun history(sessionId: String, page: PageRequest) = RemoteHistoryPage(records)
+            override suspend fun history(sessionId: String, page: PageRequest) =
+                RemoteHistoryPage(records, activeGenerationId = activeGenerationId, activityKnown = activityKnown)
             override fun follow(sessionId: String): Flow<JsonValue> = flow {
                 emit(obj("type" to "remote-stream-ready"))
                 MutableSharedFlow<JsonValue>().collect { emit(it) }

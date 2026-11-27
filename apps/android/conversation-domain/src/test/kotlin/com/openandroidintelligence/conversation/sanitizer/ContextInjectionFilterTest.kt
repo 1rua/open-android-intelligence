@@ -641,7 +641,7 @@ class ContextInjectionFilterTest {
             ContextInjectionFilter.sanitizeText(inlineDiscuss, role = ContextInjectionFilter.SenderRole.USER),
         )
 
-        // 多分块场景：用户正文 + 独立系统提醒分块 + 附件路径分块
+        // 多分块场景：用户正文 + 独立系统提醒分块 + 附件路径分块（保留相邻合法文本间的换行分隔）
         val multiPart = ContextInjectionFilter.sanitizeParts(
             parts = listOf(
                 MessagePart.Text("请帮我看看这个报错"),
@@ -652,8 +652,22 @@ class ContextInjectionFilterTest {
             streaming = false,
         )
         assertEquals(
-            "请帮我看看这个报错./attachments/log.txt",
+            "请帮我看看这个报错\n./attachments/log.txt",
             multiPart.parts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value },
+        )
+
+        val multiLineTrailingNewline = ContextInjectionFilter.sanitizeParts(
+            parts = listOf(
+                MessagePart.Text("第一行\n"),
+                MessagePart.Text("<system-reminder>internal context</system-reminder>"),
+                MessagePart.Text("第二行"),
+            ),
+            role = ContextInjectionFilter.SenderRole.USER,
+            streaming = false,
+        )
+        assertEquals(
+            "第一行\n第二行",
+            multiLineTrailingNewline.parts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value },
         )
     }
 
@@ -674,6 +688,13 @@ class ContextInjectionFilterTest {
         assertTrue(ContextInjectionFilter.isHiddenProtocolItemType("hookPrompt"))
         assertTrue(ContextInjectionFilter.isHiddenProtocolItemType("contextCompaction"))
         assertFalse(ContextInjectionFilter.isHiddenProtocolItemType("commandExecution"))
+
+        for (toolMsgType in listOf("toolresult", "function_response", "functionresponse", "function_call_output", "functioncalloutput")) {
+            assertNull(
+                "messageType=$toolMsgType 应作为内部结果消息被过滤",
+                ContextInjectionFilter.projectMessage(msg(id = "tr-$toolMsgType", sender = "user", text = "raw output", messageType = toolMsgType)),
+            )
+        }
     }
 
     @Test

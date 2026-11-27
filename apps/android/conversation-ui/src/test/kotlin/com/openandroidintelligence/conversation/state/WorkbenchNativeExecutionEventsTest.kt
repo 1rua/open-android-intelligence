@@ -434,6 +434,47 @@ class WorkbenchNativeExecutionEventsTest {
         } finally { controller.close() }
     }
 
+    @Test fun reconnectLowerOrEqualRevisionTerminalUpgradesRunningStepAndNormalizesWhitespaceStepId() = runTest {
+        val host = Host()
+        val controller = controller(host)
+        try {
+            runCurrent(); controller.openThread("a"); runCurrent()
+            val initialRunning = NativeExecutionStep(
+                stepId = "  call-reconn-1  ",
+                eventId = "ev-run-10",
+                toolName = "bash",
+                arguments = """{"cmd":"./gradlew test"}""",
+                output = null,
+                status = NativeExecutionStatus.RUNNING,
+                revision = 10L,
+            )
+            host.events.emit(update("turn-reconn", 10, initialRunning))
+            runCurrent()
+
+            // 重连后投影修订号从低值（1）重新开始并推送终态结果（stepId 无首尾空白）：必须原地升级为 COMPLETED 且不产生重复卡
+            val lowRevCompleted = NativeExecutionStep(
+                stepId = "call-reconn-1",
+                eventId = "ev-done-1",
+                toolName = "tool",
+                arguments = "",
+                output = "BUILD SUCCESSFUL",
+                status = NativeExecutionStatus.COMPLETED,
+                revision = 1L,
+            )
+            host.events.emit(update("turn-reconn", 1, lowRevCompleted))
+            runCurrent()
+
+            val factRows = rows(controller).filter { it.executionFact }
+            assertEquals("空白 stepId 与重连低修订号终态不得产生重复卡片", 1, factRows.size)
+            val merged = factRows.single().executionSteps.single()
+            assertEquals("call-reconn-1", merged.stepId)
+            assertEquals("bash", merged.toolName)
+            assertEquals("""{"cmd":"./gradlew test"}""", merged.arguments)
+            assertEquals("BUILD SUCCESSFUL", merged.output)
+            assertEquals(NativeExecutionStatus.COMPLETED, merged.status)
+        } finally { controller.close() }
+    }
+
     private fun step(id: String, revision: Long, status: NativeExecutionStatus = NativeExecutionStatus.COMPLETED) =
         NativeExecutionStep(id, "step-$id-$revision", "read_file", "{}", if (status == NativeExecutionStatus.COMPLETED) "result" else null,
             status, revision)

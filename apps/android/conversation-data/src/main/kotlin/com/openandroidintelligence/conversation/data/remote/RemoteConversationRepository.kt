@@ -224,7 +224,12 @@ class RemoteConversationRepository(
                         .filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
                         .forEach { acceptedPageIds += it.message.id }
                 }
-                target.finishHistoricalReplay(historyRead = mediaRead)
+                val activeTurnId = result.activeGenerationId
+                    ?: target.generationId?.takeIf {
+                        !result.activityKnown &&
+                            target.generationState in setOf(GenerationState.QUEUED, GenerationState.RUNNING)
+                    }
+                target.finishHistoricalReplay(historyRead = mediaRead, activeGenerationId = activeTurnId)
                     .filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
                     .forEach { acceptedPageIds += it.message.id }
             }

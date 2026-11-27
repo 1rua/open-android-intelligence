@@ -461,4 +461,101 @@ class ContextInjectionMirrorAndNotificationTest {
         assertEquals("干净会话名", refreshed.conversations.single().title)
         assertEquals("干净会话名", localMirror.threads()!!.single().title)
     }
+
+    @Test
+    fun `reconcileQuery与MessageStatus遇到纯上下文注入消息绝不回退写入原始文本或泄漏返回`() = runBlocking {
+        val scope = testScope("mirror_pure_injection_no_fallback")
+        val localMirror = mirror(scope)
+        val convId = "conv-pure-inj-1"
+
+        // 1. reconcileQuery 已有本地发送原子，远端回传纯注入消息（projectMessage == null）：绝不覆盖本地原子且不泄漏注入文本
+        val existingClientId = ClientMessageId("cli-existing-1")
+        localMirror.saveSendAtoms(
+            convId,
+            listOf(
+                com.openandroidintelligence.conversation.model.LocalSendAtom(
+                    conversationId = ConversationId(convId),
+                    clientMessageId = existingClientId,
+                    parts = listOf(MessagePart.Text("用户原始提问")),
+                    timestamp = 10L,
+                ),
+            ),
+        )
+        val pureInjectionRow = TimelineMessage(
+            id = "srv-pure-1",
+            sender = "user",
+            parts = listOf(MessagePart.Text("<system-reminder>only secret prompt</system-reminder>")),
+            timestamp = 20L,
+            state = "CONFIRMED",
+            conversationId = ConversationId(convId),
+            clientMessageId = existingClientId,
+            contentRevision = 2L,
+        )
+        val kept = localMirror.reconcileQuery(convId, existingClientId, pureInjectionRow)
+        assertEquals("用户原始提问", (kept.parts.single() as MessagePart.Text).value)
+        assertEquals("用户原始提问", (localMirror.loadSendAtoms(convId).single().parts.single() as MessagePart.Text).value)
+
+        // 2. reconcileQuery 无本地原子，远端回传纯注入消息：绝不把原始注入文本返回给调用方，且 MirroredConversationRepository.queryMessage 返回 null
+        val orphanClientId = ClientMessageId("cli-orphan-pure")
+        val orphanPureRow = TimelineMessage(
+            id = "srv-pure-orphan",
+            sender = "user",
+            parts = listOf(MessagePart.Text("<permissions instructions>secret</permissions instructions>")),
+            timestamp = 25L,
+            state = "CONFIRMED",
+            conversationId = ConversationId(convId),
+            clientMessageId = orphanClientId,
+        )
+        val sanitizedOrphan = localMirror.reconcileQuery(convId, orphanClientId, orphanPureRow)
+        assertTrue("纯注入消息不得带出任何可见文本分段", sanitizedOrphan.parts.isEmpty())
+        assertTrue("纯注入消息必须标记为 meta", sanitizedOrphan.isMeta)
+
+        val queryDelegate = object : ConversationRepository, com.openandroidintelligence.conversation.ports.MessageOutcomeQuery {
+            override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(emptyList(), null)
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+            override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) = Conversation(ConversationId(convId), "", 0L)
+            override suspend fun submitMessage(message: OutgoingMessage) = MessageAcceptance("ok", message.clientMessageId.value)
+            override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
+            override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> = flowOf()
+            override suspend fun cancelGeneration(generationId: String, requestId: String) = CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
+            override suspend fun queryMessage(conversationId: String, clientMessageId: ClientMessageId) = orphanPureRow
+        }
+        val mirroredRepo = MirroredConversationRepository(queryDelegate, localMirror)
+        assertNull("queryMessage 遇到纯注入消息必须返回 null", mirroredRepo.queryMessage(convId, orphanClientId))
+
+        // 3. apply(MessageStatus) 命中基线中一条纯注入 user 行且无既有原子：绝不能将其原始注入文本写入 LocalSendAtom
+        localMirror.saveTimeline(
+            convId,
+            TimelinePage(
+                messages = listOf(
+                    TimelineMessage(
+                        id = "srv-base-pure",
+                        sender = "user",
+                        parts = listOf(MessagePart.Text("<system-reminder>hidden baseline injection</system-reminder>")),
+                        timestamp = 30L,
+                        conversationId = ConversationId(convId),
+                    ),
+                ),
+                nextCursor = null,
+            ),
+        )
+        val statusClientId = ClientMessageId("cli-status-pure")
+        localMirror.apply(
+            VerifiedConversationEvent.MessageStatus(
+                eventId = "ev-status-pure",
+                occurredAt = 35L,
+                conversationId = ConversationId(convId),
+                messageId = "srv-base-pure",
+                clientMessageId = statusClientId,
+                status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED,
+                revision = 1L,
+                errorCode = null,
+                generationId = "g-pure",
+            ),
+        )
+        assertTrue(
+            "纯注入基线消息收到 MessageStatus 不得创建带原始注入文本的 LocalSendAtom",
+            localMirror.loadSendAtoms(convId).none { it.clientMessageId == statusClientId },
+        )
+    }
 }
