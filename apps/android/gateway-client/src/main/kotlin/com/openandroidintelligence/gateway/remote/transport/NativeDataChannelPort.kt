@@ -6,6 +6,7 @@ import java.nio.ByteBuffer
 import java.nio.charset.CodingErrorAction
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -19,6 +20,7 @@ class NativeDataChannelPort internal constructor(
     private val nativeLock = Any()
     private val callbackLock = Any()
     private val closed = AtomicBoolean(false)
+    private val released = CountDownLatch(1)
     private val listener = AtomicReference<RtcDataChannelPort.Observer?>(null)
     override val label: String = handle.label
 
@@ -81,14 +83,23 @@ class NativeDataChannelPort internal constructor(
         // 输入校验等端口自身失败也必须让载体离线，不能只释放 native 而留下 OPEN 投影。
         try { observer?.onStateChanged(identity, RtcChannelState.CLOSED) } catch (_: Exception) { }
         callbacks.execute {
-            synchronized(nativeLock) {
-                try { handle.observe(null) } finally {
-                    try { handle.close() } finally {
-                        try { handle.dispose() } finally { (callbacks as? ExecutorService)?.shutdown() }
+            try {
+                synchronized(nativeLock) {
+                    try { handle.observe(null) } finally {
+                        try { handle.close() } finally { handle.dispose() }
                     }
                 }
+            } finally {
+                released.countDown()
+                (callbacks as? ExecutorService)?.shutdown()
             }
         }
+    }
+
+    /** 只由 Peer 清理线程调用，确保工厂的原生线程晚于数据通道释放。 */
+    internal fun closeAndAwaitRelease() {
+        close()
+        released.await()
     }
 
     private fun dispatch(action: (RtcDataChannelPort.Observer) -> Unit) {

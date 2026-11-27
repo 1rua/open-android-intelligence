@@ -35,16 +35,12 @@ internal class RemoteRtcPeer(
     private val pendingIce = mutableListOf<IceCandidate>()
     private var remoteDescriptionSet = false
     private val channelLock = Any()
-    private var channelClaimed = false
+    private val channelTasks = Dispatchers.IO.limitedParallelism(1).asExecutor()
+    private var ownedPort: NativeDataChannelPort? = null
     private var transport: RtcDataChannelTransport? = null
     private val nativeReady = java.util.concurrent.CountDownLatch(1)
     private val boundary = RemoteRtcCallbackBoundary(
-        cleanup = {
-            nativeReady.await()
-            try { if (::peer.isInitialized) peer.close() } finally {
-                try { if (::peer.isInitialized) peer.dispose() } finally { if (::factory.isInitialized) factory.dispose() }
-            }
-        },
+        cleanup = ::cleanupNative,
         onClosing = {
             opened.completeExceptionally(RemoteRpcException("RTC_CLOSED"))
             val owned = synchronized(channelLock) { transport }
@@ -84,7 +80,7 @@ internal class RemoteRtcPeer(
             override fun onRemoveStream(stream: MediaStream) = Unit
             override fun onDataChannel(channel: DataChannel) {
                 // 回调只移交句柄，在应用线程注册观察者以避免重入 SDK。
-                if (!boundary.dispatchCallback(incomingChannelExecutor) { adopt(channel) }) disposeChannel(channel)
+                if (!boundary.dispatchCallback(channelTasks) { adopt(channel) }) disposeChannel(channel)
             }
             override fun onRenegotiationNeeded() = Unit
             override fun onAddTrack(receiver: RtpReceiver, streams: Array<out MediaStream>) = Unit
@@ -162,15 +158,15 @@ internal class RemoteRtcPeer(
         val native = try { NativeDataChannelPort(channel, RtcChannelIdentity(binding, generation)) }
         catch (failure: Exception) { disposeChannel(channel); throw failure }
         val claimed = synchronized(channelLock) {
-            if (boundary.isClosed || channelClaimed || native.label != RtcDataChannelTransport.CHANNEL_LABEL) {
+            if (boundary.isClosed || ownedPort != null || native.label != RtcDataChannelTransport.CHANNEL_LABEL) {
                 false
             } else {
-                channelClaimed = true
+                ownedPort = native
                 true
             }
         }
         if (!claimed) {
-            native.close()
+            native.closeAndAwaitRelease()
             return
         }
         val carrier = try { RtcDataChannelTransport(native.identity, native, scope) }
@@ -228,11 +224,26 @@ internal class RemoteRtcPeer(
         boundary.close()
     }
     private fun disposeChannel(channel: DataChannel) {
-        RemoteRtcCallbackBoundary(cleanup = { try { channel.close() } finally { channel.dispose() } }, onClosing = {}).close()
+        channelTasks.execute { try { channel.close() } finally { channel.dispose() } }
     }
+
+    private fun cleanupNative() {
+        nativeReady.await()
+        try {
+            val port = synchronized(channelLock) { ownedPort }
+            port?.closeAndAwaitRelease()
+        } finally {
+            try { if (::peer.isInitialized) peer.close() } finally {
+                // Peer.close 停止原生观察者。在同一队列的尾部释放工厂，以等待已经移交的迟到通道。
+                channelTasks.execute {
+                    try { if (::peer.isInitialized) peer.dispose() } finally { if (::factory.isInitialized) factory.dispose() }
+                }
+            }
+        }
+    }
+
     companion object {
         private val factoryLock = Any()
         private var initialized = false
-        private val incomingChannelExecutor = Dispatchers.IO.asExecutor()
     }
 }

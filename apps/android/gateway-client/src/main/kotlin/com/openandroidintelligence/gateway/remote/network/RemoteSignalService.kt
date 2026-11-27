@@ -9,6 +9,7 @@ import com.openandroidintelligence.gateway.remote.identity.*
 import com.openandroidintelligence.gateway.remote.protocol.*
 import com.openandroidintelligence.gateway.remote.rpc.*
 import com.openandroidintelligence.gateway.remote.runtime.*
+import com.openandroidintelligence.gateway.remote.transport.RtcDataChannelTransport
 import com.openandroidintelligence.gateway.schema.JsonValue
 import java.net.URI
 import java.util.UUID
@@ -290,12 +291,12 @@ internal class RemoteSignalService(
         private val rtcStateLock = Any()
         private val messages = linkedSetOf<(ByteArray) -> Unit>(); private val closures = linkedSetOf<(String) -> Unit>()
         private val carrierReady = CompletableDeferred<Unit>()
-        private val rtcAvailable = CompletableDeferred<RemoteRtcPeerSession>()
+        private val hostRtcReady = CompletableDeferred<Pair<RemoteRtcPeerSession, RtcDataChannelTransport>>()
         @Volatile private var rtcDisabled = false
         private var rtcGeneration = 0L
         private var rtcPeer: RemoteRtcPeerSession? = null
         private var rtcInitTask: Deferred<RemoteRtcPeerSession?>? = null
-        private var rtc: com.openandroidintelligence.gateway.remote.transport.RtcDataChannelTransport? = null
+        private var rtc: RtcDataChannelTransport? = null
         @Volatile private var relaySocket: RemoteSocket? = null
         private var outgoingCounter = 0L; private var incomingCounter = 0L
         @Volatile private var terminal: String? = null
@@ -361,7 +362,7 @@ internal class RemoteSignalService(
             }
             // 先让旧协商失效。即使 TURN 或原生构造仍未结束，中继也可以独立就绪。
             val (closingRtc, cancellingInit) = invalidateRtc()
-            rtcAvailable.completeExceptionally(RemoteRpcException("RTC_UNAVAILABLE"))
+            hostRtcReady.completeExceptionally(RemoteRpcException("RTC_UNAVAILABLE"))
             try {
                 attachRelay()
                 carrierReady.complete(Unit)
@@ -375,9 +376,9 @@ internal class RemoteSignalService(
                 if (secure.complete) return@withLock
                 throw RemoteRpcException("CONNECTION_REPLACED")
             }
-            val preferred = (assignment.fields.firstOrNull { it.first == "preferredTransports" }?.second as? JsonValue.JArray)
-                ?.items?.mapNotNull { (it as? JsonValue.JString)?.value } ?: listOf("lan", "p2p", "turn", "relay")
-            if (transport !in preferred || "transport.$transport" !in negotiated) throw RemoteRpcException("TRANSPORT_NOT_NEGOTIATED")
+            if (transport !in preferredTransports() || "transport.$transport" !in negotiated) {
+                throw RemoteRpcException("TRANSPORT_NOT_NEGOTIATED")
+            }
             if (transport == "relay") {
                 selectRelay()
                 return@withLock
@@ -386,8 +387,7 @@ internal class RemoteSignalService(
                 requireCurrentSelection()
                 selected = transport
             }
-            val peerRtc = withTimeout(15_000) { rtcAvailable.await() }
-            val opened = peerRtc.awaitOpen()
+            val (peerRtc, opened) = withTimeout(15_000) { hostRtcReady.await() }
             synchronized(rtcStateLock) {
                 requireCurrentSelection()
                 if (rtcDisabled || rtcPeer !== peerRtc) throw RemoteRpcException("RTC_CLOSED")
@@ -396,6 +396,40 @@ internal class RemoteSignalService(
             opened.onMessage(::receiveCiphertext); opened.onClose { fail(it) }
             carrierReady.complete(Unit)
         }
+        private fun preferredTransports(): List<String> =
+            (assignment.fields.firstOrNull { it.first == "preferredTransports" }?.second as? JsonValue.JArray)
+                ?.items?.mapNotNull { (it as? JsonValue.JString)?.value } ?: listOf("lan", "p2p", "turn", "relay")
+
+        private suspend fun announceHostRtcOpen(epoch: Long, peerRtc: RemoteRtcPeerSession) {
+            try {
+                val carrier = peerRtc.awaitOpen()
+                if (!isRtcGenerationActive(epoch)) return
+                val path = try { peerRtc.selectedTransport() }
+                catch (_: TimeoutCancellationException) { null }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: RemoteRpcException) { null }
+                val announced = when {
+                    path != null && "transport.$path" in negotiated -> path
+                    path == "lan" && "transport.p2p" in negotiated -> "p2p"
+                    else -> selected?.takeIf { it != "relay" }
+                        ?: preferredTransports().firstOrNull { it != "relay" && "transport.$it" in negotiated }
+                        ?: throw RemoteRpcException("TRANSPORT_NOT_NEGOTIATED")
+                }
+                if (!isRtcGenerationActive(epoch)) return
+                requireCurrentSelection()
+                if (!carrier.stats().connected) throw RemoteRpcException("RTC_CLOSED")
+                // 上游 Host 在自己的 DataChannel 打开后通告。绑定数据面仍以发起方选择为准。
+                sendControl("transport.selected", obj("connectionId" to id, "targetDeviceId" to peer.device.deviceId,
+                    "transport" to announced))
+                hostRtcReady.complete(peerRtc to carrier)
+            } catch (cancelled: CancellationException) {
+                hostRtcReady.completeExceptionally(cancelled)
+                throw cancelled
+            } catch (failure: Exception) {
+                hostRtcReady.completeExceptionally(failure)
+            }
+        }
+
         private suspend fun createRtc(turnOnly: Boolean, expectedGeneration: Long): RemoteRtcPeerSession? {
             if (!isRtcGenerationActive(expectedGeneration)) return null
             val servers = try { iceServers(id) }
@@ -437,7 +471,7 @@ internal class RemoteSignalService(
                         }
                     }
                     if (adopted) {
-                        rtcAvailable.complete(created)
+                        if (identityScope.role == RemoteRole.HOST) worker.launch { announceHostRtcOpen(epoch, created) }
                         created
                     } else {
                         // 原生连接构造迟到时只回收它自身，不能挂到已接管的 Relay 上。
@@ -489,7 +523,7 @@ internal class RemoteSignalService(
                     }
                     if (discarded != null) {
                         // Host 本地候选不可用时等待桌面选择 Relay。
-                        rtcAvailable.completeExceptionally(RemoteRpcException("RTC_UNAVAILABLE"))
+                        hostRtcReady.completeExceptionally(RemoteRpcException("RTC_UNAVAILABLE"))
                         cleanupRtcAsync(discarded.first, discarded.second)
                         return
                     }
@@ -640,7 +674,7 @@ internal class RemoteSignalService(
             closeRemoteConnectionResources(
                 { onPeerClosed(connectionScope, code) },
                 { cancellingInit?.cancel(); Unit },
-                { rtcAvailable.completeExceptionally(RemoteRpcException(code)); Unit },
+                { hostRtcReady.completeExceptionally(RemoteRpcException(code)); Unit },
                 { carrierReady.completeExceptionally(RemoteRpcException(code)); Unit },
                 { secure.close() }, { closingRtc?.close(); Unit }, { closingRelay?.close(); Unit },
                 *callbacks.map { callback -> { callback(code) } }.toTypedArray(),

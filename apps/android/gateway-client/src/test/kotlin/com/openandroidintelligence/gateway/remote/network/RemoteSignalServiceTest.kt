@@ -7,6 +7,10 @@ import com.openandroidintelligence.gateway.remote.identity.*
 import com.openandroidintelligence.gateway.remote.protocol.*
 import com.openandroidintelligence.gateway.remote.rpc.*
 import com.openandroidintelligence.gateway.remote.runtime.*
+import com.openandroidintelligence.gateway.remote.transport.RtcChannelIdentity
+import com.openandroidintelligence.gateway.remote.transport.RtcChannelState
+import com.openandroidintelligence.gateway.remote.transport.RtcDataChannelPort
+import com.openandroidintelligence.gateway.remote.transport.RtcDataChannelTransport
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonValue
 import java.util.UUID
@@ -20,6 +24,7 @@ import java.util.concurrent.atomic.AtomicIntegerArray
 import java.util.concurrent.atomic.AtomicLongArray
 import java.util.concurrent.atomic.AtomicReferenceArray
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestCoroutineScheduler
@@ -38,9 +43,10 @@ class RemoteSignalServiceTest {
     private fun token() = RemoteTokenPair("a".repeat(16), System.currentTimeMillis()+60_000, "r".repeat(16), System.currentTimeMillis()+600_000)
     private fun control(type: String, payload: JsonValue.JObject) = RemoteControlCodec.create(type, payload, UUID.randomUUID().toString(), System.currentTimeMillis())
     private fun text(frame: RemoteControlFrame) = RemoteControlCodec.encode(frame).toString(Charsets.UTF_8)
-    private fun ack() = control("hello.ack", obj("protocol" to 1, "serverVersion" to "fixture", "connectionSessionId" to "session",
-        "heartbeatIntervalMs" to 25_000, "maxControlFrameBytes" to 65536, "maxRelayFrameBytes" to 1048576,
-        "capabilities" to listOf("transport.relay"), "webrtcEnabled" to false))
+    private fun ack(capabilities: List<String> = listOf("transport.relay"), webRtcEnabled: Boolean = false) =
+        control("hello.ack", obj("protocol" to 1, "serverVersion" to "fixture", "connectionSessionId" to "session",
+            "heartbeatIntervalMs" to 25_000, "maxControlFrameBytes" to 65536, "maxRelayFrameBytes" to 1048576,
+            "capabilities" to capabilities, "webrtcEnabled" to webRtcEnabled))
     private fun business(id: String, type: String, payload: JsonValue.JObject) = Json.canonical(obj("v" to 1, "id" to id, "type" to type,
         "timestamp" to 1, "payload" to payload)).encodeToByteArray()
 
@@ -333,6 +339,135 @@ class RemoteSignalServiceTest {
                 .objectValue().value("ok"))
             assertFalse("未知连接不得关闭或替换当前已认证隧道", rig.closed(0).isCompleted)
         } finally { rig.shutdown() }
+    }
+
+    @Test fun Host等待本机DataChannel打开后仅通告一次LAN再回复Noise() = runBlocking {
+        val host = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
+        val client = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
+        val binding = RemoteConnectionBinding("connection-lan", host.deviceId.value, client.deviceId.value)
+        val secure = RemoteSecureChannel(NoiseIkChannel.create(
+            NoiseRole.CLIENT_INITIATOR, binding, client.privateKeyCopy(), host.publicKey,
+        ))
+        val socket = CompletableDeferred<WebSocket>()
+        val outgoing = Channel<RemoteControlFrame>(Channel.UNLIMITED)
+        val openObserved = CompletableDeferred<() -> Unit>()
+        val authenticated = CompletableDeferred<AuthenticatedRemotePeer>()
+        val server = MockWebServer()
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) { socket.complete(webSocket) }
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                val frame = RemoteControlCodec.decode(text.encodeToByteArray())
+                if (frame.type == "hello") {
+                    webSocket.send(text(ack(listOf("transport.lan", "transport.relay"), webRtcEnabled = true)))
+                    webSocket.send(text(control("connect.incoming", obj(
+                        "connectionId" to binding.connectionId,
+                        "clientDeviceId" to binding.clientDeviceId,
+                        "clientIdentityKey" to RemoteBase64Url.encode(client.publicKey),
+                        "authorization" to "account",
+                        "preferredTransports" to listOf("lan", "relay"),
+                    ))))
+                } else {
+                    outgoing.trySend(frame)
+                }
+            }
+        }))
+        // 信令处理和测试共用一个调度线程，心跳屏障之间可推进已投递的协程。
+        val parent = CoroutineScope(coroutineContext + SupervisorJob())
+        val api = RemoteServerApi(server.url("/").toString().removeSuffix("/"))
+        val peer = RemoteAuthorizedPeer(RemoteHostDevice(client.deviceId.value, "桌面", "linux", "member", true), RemoteRole.CLIENT, client.publicKey)
+        val service = RemoteSignalService(
+            context, parent, api, RemoteIdentityScope(api.origin, "owner", RemoteRole.HOST),
+            RemoteRoleCredential(host, token()), {}, { _, _ -> peer }, object : RemoteRpcHostHandler {
+                override suspend fun invoke(scope: RemoteRpcConnectionScope, method: String, params: JsonValue.JObject) = obj("ok" to true)
+                override fun events(scope: RemoteRpcConnectionScope) = emptyFlow<RemoteRpcEvent>()
+            },
+            onAuthenticatedPeer = { authenticated.complete(it) },
+            iceServers = { emptyList() },
+            rtcPeerFactory = { rtcBinding, generation, _, _, signal ->
+                val port = HostRtcPort(RtcChannelIdentity(rtcBinding, generation))
+                val carrier = RtcDataChannelTransport(port.identity, port, parent)
+                object : RemoteRtcPeerSession {
+                    override suspend fun initiate() = error("Host 应响应客户端的 WebRTC 提议")
+                    override suspend fun acceptOffer(sdp: String) { signal("signal.answer", obj("sdp" to "v=0\r\n")) }
+                    override suspend fun acceptAnswer(sdp: String) = error("Host 正在等待本机通道打开")
+                    override fun acceptIce(value: JsonValue.JObject) = Unit
+                    override suspend fun selectedTransport() = "lan"
+                    override suspend fun awaitOpen(): RtcDataChannelTransport {
+                        openObserved.complete(port::open)
+                        carrier.awaitOpen()
+                        return carrier
+                    }
+                    override fun close() { carrier.close() }
+                }
+            },
+        )
+        suspend fun nextFrame() = withTimeout(5_000) { outgoing.receive() }
+        fun toHost(vararg fields: Pair<String, Any?>) = obj(
+            "connectionId" to binding.connectionId, "targetDeviceId" to binding.hostDeviceId, *fields,
+        )
+        try {
+            service.startHost()
+            val ws = withTimeout(5_000) { socket.await() }
+            suspend fun expectPong(nonce: String) {
+                assertTrue(ws.send(text(control("ping", obj("nonce" to nonce)))))
+                val frame = nextFrame()
+                assertEquals("心跳前收到了额外的 Host 帧", "pong", frame.type)
+                assertEquals(nonce, frame.payload.requiredText("nonce"))
+            }
+
+            assertEquals("connect.accepted", nextFrame().type)
+            assertTrue(ws.send(text(control("signal.offer", toHost("sdp" to "v=0\r\n")))))
+            assertEquals("signal.answer", nextFrame().type)
+            val open = checkNotNull(withTimeoutOrNull(5_000) { openObserved.await() }) {
+                "Host 应在收到客户端选路前开始观察本机通道"
+            }
+
+            assertTrue(ws.send(text(control("transport.selected", toHost("transport" to "lan")))))
+            assertTrue(ws.send(text(secure.writeHandshakeFrame(UUID.randomUUID().toString(), System.currentTimeMillis()))))
+            // 首次往返确认客户端帧已投递，第二次检查挂起期间的 Host 输出。
+            expectPong("client-frames-received")
+            expectPong("data-channel-still-connecting")
+            assertFalse("通道打开前应保持未认证", authenticated.isCompleted)
+
+            open()
+            val announcement = nextFrame()
+            assertEquals("Host 应先通告本机选路", "transport.selected", announcement.type)
+            assertEquals(binding.connectionId, announcement.payload.requiredText("connectionId"))
+            assertEquals(binding.clientDeviceId, announcement.payload.requiredText("targetDeviceId"))
+            assertEquals("lan", announcement.payload.requiredText("transport"))
+            val reply = nextFrame()
+            assertEquals("secure.handshake", reply.type)
+            // 客户端只用连接及双方设备 ID 和静态公钥验证 Noise。
+            secure.readHandshakeFrame(reply)
+            assertTrue("客户端应验证并完成 Noise 握手", secure.complete)
+            val identity = withTimeout(5_000) { authenticated.await() }
+            assertEquals(RemoteRole.HOST, identity.role)
+            assertEquals("owner", identity.scope.accountId)
+            assertEquals(binding, RemoteConnectionBinding(
+                identity.scope.connectionId, identity.scope.hostDeviceId, identity.scope.clientDeviceId,
+            ))
+            expectPong("noise-complete")
+        } finally {
+            service.close()
+            parent.cancel()
+            server.shutdown()
+            secure.close()
+        }
+    }
+
+    private class HostRtcPort(override val identity: RtcChannelIdentity) : RtcDataChannelPort {
+        override val label = "dsh"
+        override var state = RtcChannelState.CONNECTING
+            private set
+        override val bufferedAmount = 0L
+        private var observer: RtcDataChannelPort.Observer? = null
+        override fun observe(observer: RtcDataChannelPort.Observer?) { this.observer = observer }
+        override fun sendBinary(bytes: ByteArray) = error("本用例仅读写控制信令")
+        override fun close() { state = RtcChannelState.CLOSED }
+        fun open() {
+            state = RtcChannelState.OPEN
+            observer?.onStateChanged(identity, state)
+        }
     }
 
     @Test fun Host挂起TURN凭据请求时Relay仍可完成握手和RPC() = runBlocking {

@@ -3,7 +3,11 @@ package com.openandroidintelligence.gateway.remote.transport
 import org.junit.Assert.*
 import org.junit.Test
 import java.nio.ByteBuffer
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 class NativeDataChannelPortTest {
     @Test
@@ -85,6 +89,29 @@ class NativeDataChannelPortTest {
         assertEquals(1, count)
         queued.single().run()
         assertEquals(listOf("observe", "unregister", "close", "dispose"), handle.steps)
+    }
+
+    @Test
+    fun Peer清理要等到原生DataChannel实际释放() {
+        val queued = LinkedBlockingQueue<Runnable>()
+        val handle = Handle()
+        val port = NativeDataChannelPort(handle, FakeRtcPort().identity, Executor { queued.add(it) })
+        val released = CountDownLatch(1)
+        val peerCleanup = thread(isDaemon = true) {
+            port.closeAndAwaitRelease()
+            released.countDown()
+        }
+        val task = requireNotNull(queued.poll(2, TimeUnit.SECONDS))
+        try {
+            assertEquals(RtcChannelState.CLOSED, port.state)
+            assertFalse(released.await(100, TimeUnit.MILLISECONDS))
+        } finally {
+            task.run()
+            peerCleanup.join(2_000)
+        }
+        assertFalse(peerCleanup.isAlive)
+        assertEquals(listOf("unregister", "close", "dispose"), handle.steps)
+        assertTrue(queued.isEmpty())
     }
 
     @Test
