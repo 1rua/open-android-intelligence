@@ -32,21 +32,27 @@ internal class RemoteRtcPeer(
     private val signal: (String, JsonValue.JObject) -> Unit,
 ) : RemoteRtcPeerSession {
     private val opened = CompletableDeferred<RtcDataChannelTransport>()
-    private val remoteReady = CompletableDeferred<Unit>()
     private val pendingIce = mutableListOf<IceCandidate>()
+    private var remoteDescriptionSet = false
+    private val channelLock = Any()
+    private var channelClaimed = false
+    private var transport: RtcDataChannelTransport? = null
     private val nativeReady = java.util.concurrent.CountDownLatch(1)
     private val boundary = RemoteRtcCallbackBoundary(
-        cleanup = { nativeReady.await(); try { port?.close() } finally {
+        cleanup = {
+            nativeReady.await()
             try { if (::peer.isInitialized) peer.close() } finally {
                 try { if (::peer.isInitialized) peer.dispose() } finally { if (::factory.isInitialized) factory.dispose() }
             }
-        } },
-        onClosing = { opened.completeExceptionally(RemoteRpcException("RTC_CLOSED")); transport?.close() },
+        },
+        onClosing = {
+            opened.completeExceptionally(RemoteRpcException("RTC_CLOSED"))
+            val owned = synchronized(channelLock) { transport }
+            owned?.close()
+        },
     )
     private lateinit var factory: PeerConnectionFactory
     private lateinit var peer: PeerConnection
-    private var transport: RtcDataChannelTransport? = null
-    private var port: NativeDataChannelPort? = null
     init {
         try {
         synchronized(factoryLock) {
@@ -77,7 +83,8 @@ internal class RemoteRtcPeer(
             override fun onAddStream(stream: MediaStream) = Unit
             override fun onRemoveStream(stream: MediaStream) = Unit
             override fun onDataChannel(channel: DataChannel) {
-                if (!boundary.callback { adopt(channel) }) disposeChannel(channel)
+                // 回调只移交句柄，在应用线程注册观察者以避免重入 SDK。
+                if (!boundary.dispatchCallback(incomingChannelExecutor) { adopt(channel) }) disposeChannel(channel)
             }
             override fun onRenegotiationNeeded() = Unit
             override fun onAddTrack(receiver: RtpReceiver, streams: Array<out MediaStream>) = Unit
@@ -92,7 +99,7 @@ internal class RemoteRtcPeer(
         }
         val offer = createSdp(offer = true); setSdp(offer, local = true)
         signal("signal.offer", obj("sdp" to offer.description))
-        return withTimeout(15_000) { opened.await() }
+        return awaitOpen()
     }
     override suspend fun acceptOffer(sdp: String) {
         setSdp(SessionDescription(SessionDescription.Type.OFFER, sdp), local = false)
@@ -103,7 +110,13 @@ internal class RemoteRtcPeer(
     override fun acceptIce(value: JsonValue.JObject) {
         val candidate = IceCandidate(value.optionalText("sdpMid"), (value.fields.firstOrNull { it.first == "sdpMLineIndex" }?.second as? JsonValue.JNumber)?.raw?.toIntOrNull() ?: 0,
             value.optionalText("candidate") ?: "")
-        boundary.native { synchronized(pendingIce) { if (!remoteReady.isCompleted) pendingIce += candidate else peer.addIceCandidate(candidate) } }
+        synchronized(pendingIce) {
+            if (!remoteDescriptionSet) {
+                pendingIce += candidate
+                return
+            }
+        }
+        boundary.native { peer.addIceCandidate(candidate) }
     }
     override suspend fun selectedTransport(): String = withTimeout(5_000) { suspendCancellableCoroutine { continuation ->
         boundary.native { peer.getStats { report ->
@@ -127,20 +140,64 @@ internal class RemoteRtcPeer(
             if (continuation.isActive) continuation.resume(selected)
         } }
     } }
-    override suspend fun awaitOpen(): RtcDataChannelTransport = withTimeout(15_000) { opened.await() }
-    private fun flushIce() { boundary.native { synchronized(pendingIce) { remoteReady.complete(Unit); pendingIce.forEach(peer::addIceCandidate); pendingIce.clear() } } }
+    override suspend fun awaitOpen(): RtcDataChannelTransport = withTimeout(15_000) {
+        val carrier = opened.await()
+        if (boundary.isClosed) throw RemoteRpcException("RTC_CLOSED")
+        carrier
+    }
+
+    private fun flushIce() {
+        val buffered = synchronized(pendingIce) {
+            remoteDescriptionSet = true
+            pendingIce.toList().also { pendingIce.clear() }
+        }
+        boundary.native { buffered.forEach(peer::addIceCandidate) }
+    }
+
     private fun adopt(channel: DataChannel) {
-        if (boundary.isClosed || transport != null || channel.label() != RtcDataChannelTransport.CHANNEL_LABEL) {
-            // 拒绝的 DataChannel 同样不能在原生 observer 栈中同步 dispose。
+        if (boundary.isClosed) {
             disposeChannel(channel)
             return
         }
-        val native = NativeDataChannelPort(channel, RtcChannelIdentity(binding, generation))
-        port = native
-        val carrier = RtcDataChannelTransport(native.identity, native, scope)
-        transport = carrier
-        scope.launch { try { carrier.awaitOpen(); opened.complete(carrier) } catch (_: Exception) { opened.completeExceptionally(RemoteRpcException("RTC_UNAVAILABLE")) } }
+        val native = try { NativeDataChannelPort(channel, RtcChannelIdentity(binding, generation)) }
+        catch (failure: Exception) { disposeChannel(channel); throw failure }
+        val claimed = synchronized(channelLock) {
+            if (boundary.isClosed || channelClaimed || native.label != RtcDataChannelTransport.CHANNEL_LABEL) {
+                false
+            } else {
+                channelClaimed = true
+                true
+            }
+        }
+        if (!claimed) {
+            native.close()
+            return
+        }
+        val carrier = try { RtcDataChannelTransport(native.identity, native, scope) }
+        catch (failure: Exception) { native.close(); throw failure }
+        val published = synchronized(channelLock) {
+            if (boundary.isClosed) false else {
+                transport = carrier
+                true
+            }
+        }
+        if (!published) {
+            carrier.close()
+            return
+        }
+        scope.launch {
+            try {
+                carrier.awaitOpen()
+                if (!boundary.isClosed) opened.complete(carrier)
+            } catch (cancelled: CancellationException) {
+                close()
+                throw cancelled
+            } catch (_: Exception) {
+                opened.completeExceptionally(RemoteRpcException("RTC_UNAVAILABLE"))
+            }
+        }
     }
+
     private suspend fun createSdp(offer: Boolean): SessionDescription = suspendCancellableCoroutine { continuation ->
         val observer = object : SdpObserver {
             override fun onCreateSuccess(value: SessionDescription) {
@@ -173,5 +230,9 @@ internal class RemoteRtcPeer(
     private fun disposeChannel(channel: DataChannel) {
         RemoteRtcCallbackBoundary(cleanup = { try { channel.close() } finally { channel.dispose() } }, onClosing = {}).close()
     }
-    companion object { private val factoryLock = Any(); private var initialized = false }
+    companion object {
+        private val factoryLock = Any()
+        private var initialized = false
+        private val incomingChannelExecutor = Dispatchers.IO.asExecutor()
+    }
 }
