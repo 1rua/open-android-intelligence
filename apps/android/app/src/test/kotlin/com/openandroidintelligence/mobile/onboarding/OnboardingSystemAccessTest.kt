@@ -214,6 +214,8 @@ class OnboardingSystemAccessTest {
 
         pauseActivity()
         shadowOf(roleManager).removeHeldRole(RoleManager.ROLE_ASSISTANT)
+        // 撤销持有者后，系统仍提供数字助理角色。
+        shadowOf(roleManager).addAvailableRole(RoleManager.ROLE_ASSISTANT)
         resumeActivity()
         cardText("assistant_role", UiR.string.perm_status_role_not_set).performScrollTo().assertIsDisplayed()
         cardButton("assistant_role", UiR.string.perm_action_settings).assertExists()
@@ -313,8 +315,8 @@ class OnboardingSystemAccessTest {
             assertTrue("状态文字应占有可见空间", status.width > 0f && status.height > 0f)
             assertTrue("设置按钮应占有可见空间", button.width > 0f && button.height > 0f)
             assertTrue("大字体下状态文字不能与设置按钮重叠：状态=$status，按钮=$button", !overlap(status, button))
-            assertFalse("状态文案应能换行完整显示", textLayout(statusNode).hasVisualOverflow)
-            assertFalse("设置按钮应完整显示文案", textLayout(label).hasVisualOverflow)
+            assertTextFits(statusNode, card, statusRes)
+            assertTextFits(label, card, UiR.string.perm_action_settings)
         }
     }
 
@@ -425,10 +427,26 @@ class OnboardingSystemAccessTest {
         first.left < second.right && second.left < first.right &&
             first.top < second.bottom && second.top < first.bottom
 
-    private fun textLayout(node: SemanticsNodeInteraction): TextLayoutResult {
+    private fun assertTextFits(node: SemanticsNodeInteraction, card: String, textRes: Int) {
         val layouts = mutableListOf<TextLayoutResult>()
         node.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
-        return layouts.single()
+        val layout = layouts.single()
+        val text = activity.getString(textRes)
+        // 普通 Text 的语义段落宽度可能是父级约束，逐行检查实际文字边界。
+        assertEquals(
+            "$card 的文案应完整显示：$text",
+            text.length,
+            layout.getLineEnd(layout.lineCount - 1, visibleEnd = true),
+        )
+        for (line in 0 until layout.lineCount) {
+            assertFalse("$card 的文案不可省略：$text", layout.isLineEllipsized(line))
+            assertTrue(
+                "$card 的文案行超出可见范围：$text",
+                layout.getLineLeft(line) >= -1f &&
+                    layout.getLineRight(line) <= layout.size.width + 1f &&
+                    layout.getLineBottom(line) <= layout.size.height + 1f,
+            )
+        }
     }
 
     private class ResumedOwner : LifecycleOwner {
