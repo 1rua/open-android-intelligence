@@ -26,6 +26,11 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- 初始引导在打开设置前需要查询这些系统入口是否存在。 -->
+        <intent><action android:name="android.settings.ACCESSIBILITY_SETTINGS" /></intent>
+        <intent><action android:name="android.settings.VOICE_INPUT_SETTINGS" /></intent>
+        <intent><action android:name="android.settings.MANAGE_DEFAULT_APPS_SETTINGS" /></intent>
+        <intent><action android:name="android.settings.SETTINGS" /></intent>
     </queries>
 
     <!--
@@ -136,10 +141,8 @@
         <!--
             系统数字助理（VoiceInteractionService / VoiceInteractionSessionService）。
 
-            声明必须放在 app 模块：`android.voice_interaction` 元数据里的 sessionService
-            要求写成 `<applicationId>/<类全名>` 的扁平组件名，只有这里确定最终
-            applicationId；写成短类名时 ComponentName.unflattenFromString 返回 null，
-            系统会把应用判成 unqualified，用户在「默认数字助理」里根本看不到本应用。
+            `android.voice_interaction` 元数据中的 sessionService 和 recognitionService
+            使用完整类名，系统用当前安装包名和类名组成服务组件。
 
             会话服务必须 exported=true（系统以不同 UID 绑定），权限仍由
             BIND_VOICE_INTERACTION 收口，只有系统能绑定。

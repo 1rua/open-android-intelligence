@@ -13,7 +13,6 @@
     <string name="perm_action_settings">前往设置</string>
     <string name="perm_action_next">下一步</string>
     <string name="perm_action_skip_optional">跳过可选权限</string>
-    <string name="perm_action_no_op">无需操作</string>
     <string name="perm_action_unsupported">不支持</string>
     <string name="perm_action_role_set">已设置</string>
     <string name="perm_action_enabled">已开启</string>
@@ -29,7 +28,7 @@
     <!-- 权限引导卡片状态与徽标 -->
     <string name="perm_screen_title">按需授权</string>
     <string name="perm_screen_empty">当前没有需要授权的系统权限。</string>
-    <string name="perm_status_dialog_only">使用时由系统询问 · 无需现在授权</string>
+    <string name="perm_status_screen_accessibility_off">开启系统无障碍服务以支持屏幕采集与操控</string>
     <string name="perm_status_role_unsupported">系统未提供可用的数字助理设置页 · 仍可在应用内对话</string>
     <string name="perm_status_device_unsupported">当前设备不支持</string>
     <string name="perm_status_role_granted">已设为默认数字助理 · 可用 Assist 手势唤起</string>
@@ -151,6 +150,7 @@
     <string name="perm_audio_in_session_required">需要麦克风权限，请在系统设置中允许后重试</string>
     <string name="perm_role_assistant_not_set_hint">未检测到已设置。请在系统设置中选择 OAI 作为数字助理</string>
     <string name="perm_role_assistant_settings_unavailable">系统未提供可用的数字助理设置页，可稍后在系统设置中手动选择</string>
+    <string name="perm_accessibility_settings_unavailable">系统未提供无障碍设置入口</string>
 
     <!-- 屏幕采集授权结果提示 (MainActivity MediaProjection) -->
     <string name="perm_screen_capture_disabled">未开启屏幕截图功能</string>

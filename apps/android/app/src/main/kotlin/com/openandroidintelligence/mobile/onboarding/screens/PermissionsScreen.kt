@@ -290,22 +290,12 @@ private fun PermissionCard(
     // 系统角色项（默认数字助理）与运行时权限的文案不同：
     // 它没有「授权」这个概念，只有「是否已设为默认」。
     val isRoleCard = entry.systemRole != null
+    val isScreenCapture = entry.id == "screen_capture"
 
     val statusText: String
     val actionText: String
     val action: () -> Unit
-    // 「每次使用现场确认」的权限只有屏幕采集一项。
-    //
-    // 不能只看 `isSpecialSystemAccess && manifestPermissions.isEmpty()`：
-    // 通知使用权也满足这两个条件，但它**在系统设置里有开关**，用户必须能跳过去开启。
-    // 用 id 精确判定，避免把「可去设置开启」误当成「无需操作」而堵死授权路径。
-    val dialogOnly = entry.id == "screen_capture"
     when {
-        dialogOnly -> {
-            statusText = stringResource(UiR.string.perm_status_dialog_only)
-            actionText = stringResource(UiR.string.perm_action_no_op)
-            action = {}
-        }
         unsupported -> {
             statusText = if (isRoleCard) {
                 stringResource(UiR.string.perm_status_role_unsupported)
@@ -329,6 +319,11 @@ private fun PermissionCard(
             statusText = stringResource(UiR.string.perm_status_granted)
             actionText = stringResource(UiR.string.perm_action_enabled)
             action = {}
+        }
+        isScreenCapture -> {
+            statusText = stringResource(UiR.string.perm_status_screen_accessibility_off)
+            actionText = stringResource(UiR.string.perm_action_settings)
+            action = onOpenSettings
         }
         blocked -> {
             statusText = stringResource(UiR.string.perm_status_blocked)
@@ -441,12 +436,12 @@ private fun PermissionCard(
                 text = statusText,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = if (isRoleCard || isScreenCapture) Dimensions.SpaceSmall else 0.dp),
             )
             when {
-                // 系统对话框型权限：没有可点的授权入口，只给状态文字，避免「点了没反应」。
-                // 系统不支持的项同理：系统里没有可授予的东西，按钮只会是死路。
-                dialogOnly || unsupported -> Text(
+                unsupported -> Text(
                     text = actionText,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

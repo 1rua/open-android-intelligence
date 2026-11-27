@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.annotation.StringRes
 import androidx.core.content.ContextCompat
+import com.openandroidintelligence.mobile.screen.accessibilityServiceEnabledInSettings
 import com.openandroidintelligence.ui.resources.R as UiR
 
 /** 权限的分组。 */
@@ -110,7 +111,7 @@ fun buildVisiblePermissions(
                 displayNameRes = UiR.string.perm_catalog_screen_capture_title,
                 purposeRes = UiR.string.perm_catalog_screen_capture_desc,
                 group = PermissionGroup.OPTIONAL,
-                // 投屏授权由系统 MediaProjection 对话框现场询问，没有可持久查询的状态。
+                // 这张卡片引导开启无障碍服务。系统投屏确认仍由实际使用场景触发。
                 isSpecialSystemAccess = true,
                 availability = PermissionAvailability.AVAILABLE,
                 manifestPermissions = emptyList(),
@@ -123,7 +124,7 @@ fun buildVisiblePermissions(
                 purposeRes = UiR.string.perm_catalog_assistant_role_desc,
                 group = PermissionGroup.OPTIONAL,
                 // 默认助理是 RoleManager 管理的系统角色，不是运行时权限，
-                // 只能在系统角色对话框或系统设置里授予；状态查询走 AssistantRole。
+                // 由用户在系统设置中选择，状态查询走 AssistantRole。
                 isSpecialSystemAccess = true,
                 availability = PermissionAvailability.AVAILABLE,
                 manifestPermissions = emptyList(),
@@ -185,33 +186,28 @@ fun buildVisiblePermissions(enabledPluginPrimitives: Set<String>): List<Permissi
 /**
  * 查询某项权限在**当前设备上的真实状态**。
  *
- * 判定顺序：
- * 1. 没有对应的 manifest 权限（早期系统上的通知、或系统对话框型的投屏）→ [PermissionStatus.NOT_REQUIRED]；
- * 2. 已授予 → [PermissionStatus.GRANTED]；
- * 3. 未授予时，若系统仍允许再次询问 → [PermissionStatus.DENIED]（可再弹框）；
- * 4. 否则 → [PermissionStatus.BLOCKED]（只能去系统设置）。
+ * 系统角色和特殊访问项直接读取系统状态。普通权限按能否再次询问区分
+ * [PermissionStatus.DENIED] 和 [PermissionStatus.BLOCKED]。
  *
  * 把 3 与 4 混为一谈是「重复弹窗」的根因：BLOCKED 状态下再申请系统什么都不会做。
  */
 fun resolvePermissionStatus(context: Context, entry: PermissionEntry): PermissionStatus {
     // 系统角色项（默认数字助理）不适用上面的权限判定顺序：
     // 它既不是运行时权限，也没有 manifest 项，只能向系统的 RoleManager 查询真实状态。
-    // 三种结果必须分开：不支持（系统里没有这个角色）/ 已持有 / 未持有但可去申请。
+    // 角色持有状态来自系统，未持有时再判断是否有可用的设置入口。
     if (entry.systemRole != null) {
         return resolveSystemRoleStatus(context, entry.systemRole)
-    }
-
-    // 屏幕采集是纯现场确认型（MediaProjection 对话框）：
-    // 系统不提供「已授权」的持久状态，只能在每次发起圈选时由系统弹窗；
-    // 引导页展示它只是告知用户「有这项能力」，不能也不该在此刻把状态刷成 GRANTED。
-    if (entry.id == "screen_capture") {
-        return PermissionStatus.NOT_REQUIRED
     }
 
     // 特殊系统访问项（如通知使用权）不能走普通的 checkSelfPermission：
     // 它们不是运行时权限，Manifest 权限列表为空；状态来自对应的系统服务。
     if (entry.isSpecialSystemAccess) {
         return when (entry.id) {
+            "screen_capture" -> if (accessibilityServiceEnabledInSettings(context)) {
+                PermissionStatus.GRANTED
+            } else {
+                PermissionStatus.DENIED
+            }
             "notification_access" -> if (hasNotificationListenerAccess(context)) {
                 PermissionStatus.GRANTED
             } else {
@@ -280,15 +276,14 @@ private fun shouldShowRationale(context: Context, permission: String): Boolean {
 /**
  * 系统角色（RoleManager）状态解析。
  *
- * 不支持的角色无论持不持有都不该出现操作按钮；支持但未持有时返回
- * [PermissionStatus.DENIED]（而不是 BLOCKED），因为角色对话框/设置页仍可再次打开，
- * 用户点「设置」就有真实的下一步。
+ * 优先显示系统报告的持有状态。角色查询不可用时，仍可使用厂商提供的设置入口。
  */
 private fun resolveSystemRoleStatus(context: Context, role: SystemRole): PermissionStatus = when (role) {
     SystemRole.ASSISTANT -> when {
-        !AssistantRole.isAssistantRoleSupported(context) -> PermissionStatus.UNSUPPORTED
         AssistantRole.isAssistantRoleHeld(context) -> PermissionStatus.GRANTED
-        else -> PermissionStatus.DENIED
+        AssistantRole.isAssistantRoleSupported(context) || AssistantRole.hasSettingsEntry(context) ->
+            PermissionStatus.DENIED
+        else -> PermissionStatus.UNSUPPORTED
     }
 }
 
