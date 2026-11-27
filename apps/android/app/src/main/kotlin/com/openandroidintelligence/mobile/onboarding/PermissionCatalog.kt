@@ -281,12 +281,13 @@ private fun shouldShowRationale(context: Context, permission: String): Boolean {
 private fun resolveSystemRoleStatus(context: Context, role: SystemRole): PermissionStatus = when (role) {
     SystemRole.ASSISTANT -> {
         val held = AssistantRole.isAssistantRoleHeld(context)
+        val roleAvailable = AssistantRole.isAssistantRoleSupported(context)
         when {
             held == true -> PermissionStatus.GRANTED
-            !AssistantRole.isAssistantRoleSupported(context) && !AssistantRole.hasSettingsEntry(context) ->
-                PermissionStatus.UNSUPPORTED
-            held == null -> PermissionStatus.UNKNOWN
-            else -> PermissionStatus.DENIED
+            roleAvailable && held == false -> PermissionStatus.DENIED
+            // 能打开系统设置时保留入口；可解析的页面本身不能确认助理选项可用。
+            roleAvailable || AssistantRole.hasSettingsEntry(context) -> PermissionStatus.UNKNOWN
+            else -> PermissionStatus.UNSUPPORTED
         }
     }
 }

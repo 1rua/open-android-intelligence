@@ -134,13 +134,13 @@ class AssistantRoleTest {
 
     @Test
     @Config(sdk = [34])
-    fun settingsRemainsActionableWhenTheRoleQueryIsUnavailable() {
+    fun settingsHomeIsActionableWithoutClaimingAssistantSelectionIsAvailable() {
         val entry = buildVisiblePermissions(34, emptySet()).first { it.id == "assistant_role" }
         registerSettingsActions(Settings.ACTION_SETTINGS)
         val starter = SettingsStarter(context)
 
         assertFalse(AssistantRole.isAssistantRoleSupported(context))
-        assertEquals(PermissionStatus.DENIED, resolvePermissionStatus(context, entry))
+        assertEquals(PermissionStatus.UNKNOWN, resolvePermissionStatus(context, entry))
         assertTrue(AssistantRole.openSettings(starter))
         assertEquals(listOf(Settings.ACTION_SETTINGS), starter.attempts)
     }
