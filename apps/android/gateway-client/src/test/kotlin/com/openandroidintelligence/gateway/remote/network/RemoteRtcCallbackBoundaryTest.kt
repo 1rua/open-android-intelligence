@@ -1,11 +1,35 @@
 package com.openandroidintelligence.gateway.remote.network
 
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
 import org.junit.Assert.*
 import org.junit.Test
 
 class RemoteRtcCallbackBoundaryTest {
+    @Test fun SDK等待另一线程回调时回调能先于原生调用完成() {
+        val boundary = RemoteRtcCallbackBoundary({}, {}, Executor { it.run() })
+        val callbackEntered = CountDownLatch(1)
+        val callbackCompleted = CountDownLatch(1)
+        lateinit var callbackThread: Thread
+        try {
+            boundary.native {
+                callbackThread = thread(isDaemon = true, name = "模拟 WebRTC 回调") {
+                    callbackEntered.countDown()
+                    boundary.callback { callbackCompleted.countDown() }
+                }
+                assertTrue("原生调用期间已触发回调", callbackEntered.await(2, TimeUnit.SECONDS))
+                assertTrue("原生调用返回前回调必须完成", callbackCompleted.await(1, TimeUnit.SECONDS))
+            }
+        } finally {
+            callbackThread.join(2_000)
+        }
+        assertFalse(callbackThread.isAlive)
+    }
+
     @Test fun 原生回调中失败只排队且退出回调后清理一次() {
         val pending = mutableListOf<Runnable>()
         var callbackActive = false
@@ -24,7 +48,7 @@ class RemoteRtcCallbackBoundaryTest {
     }
 
     @Test fun 多个关闭与ICE失败竞争只产生一个清理任务() {
-        val pending = java.util.concurrent.ConcurrentLinkedQueue<Runnable>()
+        val pending = ConcurrentLinkedQueue<Runnable>()
         val closing = AtomicInteger(); val disposed = AtomicInteger()
         val boundary = RemoteRtcCallbackBoundary({ disposed.incrementAndGet() }, { closing.incrementAndGet() }, Executor { pending.add(it) })
         val threads = (1..12).map { Thread { boundary.close() }.apply { start() } }
@@ -33,20 +57,52 @@ class RemoteRtcCallbackBoundaryTest {
         pending.single().run(); assertEquals(1, disposed.get())
     }
 
-    @Test fun 接收通道尚未发布时关闭必须等待发布后再清理() {
-        val entered = java.util.concurrent.CountDownLatch(1)
-        val publish = java.util.concurrent.CountDownLatch(1)
-        val pending = java.util.concurrent.ConcurrentLinkedQueue<Runnable>()
+    @Test fun 关闭立即通知且原生清理等待在途回调退出() {
+        val entered = CountDownLatch(1)
+        val publish = CountDownLatch(1)
+        val notified = CountDownLatch(1)
+        val pending = ConcurrentLinkedQueue<Runnable>()
         var published = false
         var disposed = false
-        val boundary = RemoteRtcCallbackBoundary({ assertTrue(published); disposed = true }, {}, Executor { pending.add(it) })
-        val adopter = Thread { boundary.callback { entered.countDown(); check(publish.await(3, java.util.concurrent.TimeUnit.SECONDS)); published = true } }
-        adopter.start(); assertTrue(entered.await(3, java.util.concurrent.TimeUnit.SECONDS))
-        val closer = Thread { boundary.close() }.apply { start() }
-        assertTrue(pending.isEmpty())
-        publish.countDown(); adopter.join(3000); closer.join(3000)
-        assertFalse(adopter.isAlive); assertFalse(closer.isAlive)
-        assertEquals(1, pending.size); pending.single().run(); assertTrue(disposed)
+        val boundary = RemoteRtcCallbackBoundary(
+            { assertTrue(published); disposed = true }, { notified.countDown() }, Executor { pending.add(it) },
+        )
+        val adopter = thread(isDaemon = true) {
+            boundary.callback {
+                entered.countDown()
+                check(publish.await(5, TimeUnit.SECONDS))
+                published = true
+            }
+        }
+        assertTrue(entered.await(2, TimeUnit.SECONDS))
+        val closer = thread(isDaemon = true) { boundary.close() }
+        try {
+            assertTrue("关闭通知不等待通道接收", notified.await(2, TimeUnit.SECONDS))
+            assertFalse(boundary.callback { fail("关闭后不允许新回调") })
+            assertTrue(pending.isEmpty())
+        } finally {
+            publish.countDown()
+            adopter.join(2_000)
+            closer.join(2_000)
+        }
+        assertFalse(adopter.isAlive)
+        assertFalse(closer.isAlive)
+        pending.single().run()
+        assertTrue(disposed)
+    }
+
+    @Test fun 关闭等待已经移交的异步通道并拒绝迟到回调() {
+        val adoption = mutableListOf<Runnable>()
+        val cleanup = mutableListOf<Runnable>()
+        var completed = false
+        val boundary = RemoteRtcCallbackBoundary({ assertTrue(completed) }, {}, Executor { cleanup += it })
+        val dispatcher = Executor { adoption += it }
+        assertTrue(boundary.dispatchCallback(dispatcher) { completed = true })
+        boundary.close()
+        assertFalse(boundary.dispatchCallback(dispatcher) { fail("迟到通道不得进入已关闭的连接") })
+        assertTrue(cleanup.isEmpty())
+        adoption.single().run()
+        cleanup.single().run()
     }
 
     @Test fun 主动创建与发布受同一门保护且关闭后不再创建原生通道() {
