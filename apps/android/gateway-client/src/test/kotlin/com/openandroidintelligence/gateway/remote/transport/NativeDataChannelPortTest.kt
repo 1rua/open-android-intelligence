@@ -3,7 +3,6 @@ package com.openandroidintelligence.gateway.remote.transport
 import org.junit.Assert.*
 import org.junit.Test
 import java.nio.ByteBuffer
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -96,15 +95,15 @@ class NativeDataChannelPortTest {
         val queued = LinkedBlockingQueue<Runnable>()
         val handle = Handle()
         val port = NativeDataChannelPort(handle, FakeRtcPort().identity, Executor { queued.add(it) })
-        val released = CountDownLatch(1)
-        val peerCleanup = thread(isDaemon = true) {
-            port.closeAndAwaitRelease()
-            released.countDown()
-        }
+        val peerCleanup = thread(isDaemon = true) { port.closeAndAwaitRelease() }
         val task = requireNotNull(queued.poll(2, TimeUnit.SECONDS))
         try {
             assertEquals(RtcChannelState.CLOSED, port.state)
-            assertFalse(released.await(100, TimeUnit.MILLISECONDS))
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+            while (peerCleanup.isAlive && peerCleanup.state != Thread.State.WAITING && System.nanoTime() < deadline) {
+                Thread.yield()
+            }
+            assertEquals(Thread.State.WAITING, peerCleanup.state)
         } finally {
             task.run()
             peerCleanup.join(2_000)

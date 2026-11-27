@@ -3,14 +3,13 @@ package com.openandroidintelligence.gateway.remote.network
 import android.util.Log
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import java.util.concurrent.Executor
-import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 
 /** 原生方法可能同步等待另一个线程的回调。生命周期锁只保护准入和在途计数。 */
 internal class RemoteRtcCallbackBoundary(
     private val cleanup: () -> Unit,
     private val onClosing: () -> Unit,
-    private val executor: Executor = cleanupExecutor,
+    private val executor: Executor,
 ) {
     private val lifecycle = Any()
     private var inFlight = 0
@@ -74,12 +73,6 @@ internal class RemoteRtcCallbackBoundary(
         if (scheduleCleanup) executor.execute {
             try { cleanup() }
             catch (_: Exception) { Log.e("RemoteRtcPeer", "RTC_CLEANUP_FAILED") }
-        }
-    }
-
-    companion object {
-        private val cleanupExecutor = Executors.newSingleThreadExecutor { task ->
-            Thread(task, "oai-remote-peer-cleanup").apply { isDaemon = true }
         }
     }
 }

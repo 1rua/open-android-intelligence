@@ -35,12 +35,14 @@ internal class RemoteRtcPeer(
     private val pendingIce = mutableListOf<IceCandidate>()
     private var remoteDescriptionSet = false
     private val channelLock = Any()
+    // 每个 Peer 有独立的接收和清理顺序，慢释放只影响本连接。
     private val channelTasks = Dispatchers.IO.limitedParallelism(1).asExecutor()
     private var ownedPort: NativeDataChannelPort? = null
     private var transport: RtcDataChannelTransport? = null
     private val nativeReady = java.util.concurrent.CountDownLatch(1)
     private val boundary = RemoteRtcCallbackBoundary(
         cleanup = ::cleanupNative,
+        executor = channelTasks,
         onClosing = {
             opened.completeExceptionally(RemoteRpcException("RTC_CLOSED"))
             val owned = synchronized(channelLock) { transport }
