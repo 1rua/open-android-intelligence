@@ -1,16 +1,21 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.model.CatalogVersion
 import com.openandroidintelligence.conversation.model.ConversationId
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.MotionPolicy
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -308,6 +313,193 @@ class WorkspaceConversationBrowserTest {
         compose.onNodeWithContentDescription("管理文件夹").assertDoesNotExist()
         compose.onNodeWithText("新建文件夹").assertDoesNotExist()
         compose.onNodeWithText("移动到文件夹").assertDoesNotExist()
+    }
+
+    @Test
+    fun `工作区折叠与展开具备平滑高度动画且收敛后不残留空隙`() {
+        val menu = WorkspaceMenuState(
+            agentTitle = "主力电脑 · DSH",
+            groups = sampleGroups(),
+        )
+
+        compose.setContent {
+            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = false)) {
+                MaterialTheme {
+                    WorkspaceConversationBrowser(
+                        workspaceMenu = menu,
+                        activeThreadId = "t1",
+                        onOpenThread = {},
+                        onCreateThread = {},
+                        onRefresh = {},
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        val wsOneHeaderBoundsBefore = compose.onNodeWithTag("workspace-group-header:ws-one")
+            .fetchSemanticsNode().boundsInRoot
+        val wsTwoHeaderTopExpanded = compose.onNodeWithTag("workspace-group-header:ws-two")
+            .fetchSemanticsNode().boundsInRoot.top
+        assertTrue(wsTwoHeaderTopExpanded > wsOneHeaderBoundsBefore.bottom + 20f)
+
+        // 手动推进帧验证折叠不是瞬切，而是经历中间过渡态再收敛卸载
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("workspace-group-header:ws-one").performClick()
+        compose.waitForIdle()
+        repeat(4) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+        val wsTwoHeaderTopMidCollapse = compose.onNodeWithTag("workspace-group-header:ws-two")
+            .fetchSemanticsNode().boundsInRoot.top
+
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        compose.onNodeWithText("工作区一对话").assertDoesNotExist()
+        compose.onNodeWithTag("workspace-thread:ws-one:t1").assertDoesNotExist()
+
+        val wsOneHeaderBoundsCollapsed = compose.onNodeWithTag("workspace-group-header:ws-one")
+            .fetchSemanticsNode().boundsInRoot
+        val wsTwoHeaderTopCollapsed = compose.onNodeWithTag("workspace-group-header:ws-two")
+            .fetchSemanticsNode().boundsInRoot.top
+        assertTrue(
+            "折叠中段相邻工作区应位于展开位与收起位之间（非瞬切亦非停滞）: expanded=$wsTwoHeaderTopExpanded, mid=$wsTwoHeaderTopMidCollapse, collapsed=$wsTwoHeaderTopCollapsed",
+            wsTwoHeaderTopMidCollapse < wsTwoHeaderTopExpanded && wsTwoHeaderTopMidCollapse > wsTwoHeaderTopCollapsed,
+        )
+        val maxExpectedGapPx = with(compose.density) { 16.dp.toPx() }
+        assertTrue(
+            "折叠收敛后工作区之间不得残留幽灵空隙: gap=${wsTwoHeaderTopCollapsed - wsOneHeaderBoundsCollapsed.bottom}",
+            wsTwoHeaderTopCollapsed - wsOneHeaderBoundsCollapsed.bottom <= maxExpectedGapPx,
+        )
+
+        // 再次点击展开，验证同样经历平滑高度增长中段并精准恢复原位置
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("workspace-group-header:ws-one").performClick()
+        compose.waitForIdle()
+        repeat(4) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+        val wsTwoHeaderTopMidExpand = compose.onNodeWithTag("workspace-group-header:ws-two")
+            .fetchSemanticsNode().boundsInRoot.top
+        assertTrue(
+            "展开中段相邻工作区应位于收起位与展开位之间（平滑下推而非瞬切）: collapsed=$wsTwoHeaderTopCollapsed, mid=$wsTwoHeaderTopMidExpand, expanded=$wsTwoHeaderTopExpanded",
+            wsTwoHeaderTopMidExpand > wsTwoHeaderTopCollapsed && wsTwoHeaderTopMidExpand < wsTwoHeaderTopExpanded,
+        )
+
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        compose.onNodeWithText("工作区一对话").assertIsDisplayed()
+        val wsTwoHeaderTopReexpanded = compose.onNodeWithTag("workspace-group-header:ws-two")
+            .fetchSemanticsNode().boundsInRoot.top
+        assertEquals(wsTwoHeaderTopExpanded, wsTwoHeaderTopReexpanded, 2f)
+    }
+
+    @Test
+    fun `减少动态模式下工作区折叠与展开正常降级且收敛准确`() {
+        val menu = WorkspaceMenuState(
+            agentTitle = "主力电脑 · DSH",
+            groups = sampleGroups(),
+        )
+
+        compose.setContent {
+            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = true, durationScale = 0f)) {
+                MaterialTheme {
+                    WorkspaceConversationBrowser(
+                        workspaceMenu = menu,
+                        activeThreadId = "t1",
+                        onOpenThread = {},
+                        onCreateThread = {},
+                        onRefresh = {},
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithText("工作区二对话").assertIsDisplayed()
+        compose.onNodeWithTag("workspace-group-header:ws-two").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("工作区二对话").assertDoesNotExist()
+        compose.onNodeWithTag("workspace-thread:ws-two:t2").assertDoesNotExist()
+
+        compose.onNodeWithTag("workspace-group-header:ws-two").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("工作区二对话").assertIsDisplayed()
+        compose.onNodeWithTag("workspace-thread:ws-two:t2").assertIsDisplayed()
+    }
+
+    @Test
+    fun `工作区折叠展开后当前工作区会话排序重排与选中打开不回归`() {
+        val reorderedSnapshots = mutableListOf<List<String>>()
+        val opened = mutableListOf<String>()
+        val groups = listOf(
+            WorkspaceConversationGroup(
+                workspaceKey = "ws-one",
+                title = "核心仓库",
+                subtitle = "/repo/core",
+                isActive = true,
+                threads = Loadable.Ready(
+                    listOf(
+                        ConversationSummary(ConversationId("t1"), "第一条会话", 3000L, false),
+                        ConversationSummary(ConversationId("t2"), "第二条会话", 2000L, false),
+                    )
+                ),
+            ),
+            WorkspaceConversationGroup(
+                workspaceKey = "ws-two",
+                title = "文档仓库",
+                subtitle = "/repo/docs",
+                isActive = false,
+                threads = Loadable.Ready(
+                    listOf(
+                        ConversationSummary(ConversationId("t3"), "工作区二对话", 1000L, false),
+                    )
+                ),
+            ),
+        )
+
+        compose.setContent {
+            MaterialTheme {
+                WorkspaceConversationBrowser(
+                    workspaceMenu = WorkspaceMenuState(agentTitle = "主力电脑 · DSH", groups = groups),
+                    activeThreadId = "t1",
+                    onOpenThread = { opened += it },
+                    onCreateThread = {},
+                    onRefresh = {},
+                    managementSupported = true,
+                    online = true,
+                    actions = ConversationBrowserActions(
+                        reorder = { reorderedSnapshots += it },
+                    ),
+                )
+            }
+        }
+        compose.waitForIdle()
+
+        // 折叠再展开后，独立 LazyColumn 项的语义重排动作与打开回调保持完整可用
+        compose.onNodeWithTag("workspace-group-header:ws-one").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("workspace-thread:ws-one:t1").assertDoesNotExist()
+
+        compose.onNodeWithTag("workspace-group-header:ws-one").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("workspace-thread:ws-one:t2").assertIsDisplayed()
+
+        // 触发无障碍上移重排操作，验证独立 item 与排序链路未回归
+        val customActions = compose.onNodeWithTag("workspace-thread:ws-one:t2")
+            .fetchSemanticsNode()
+            .config[SemanticsActions.CustomActions]
+        compose.runOnIdle {
+            val moveUp = customActions.first { it.label == "上移会话" }
+            assertTrue(moveUp.action())
+        }
+        compose.onNodeWithTag("workspace-thread:ws-one:t2").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf(listOf("t2", "t1")), reorderedSnapshots)
+            assertEquals(listOf("t2"), opened)
+        }
     }
 
     private class StubConversationRepository : ConversationRepository {

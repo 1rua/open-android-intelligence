@@ -90,6 +90,8 @@ class MotionPhysicsTest {
             MotionSpecs.EffectsDefaultSpring,
             MotionSpecs.EffectsSlowSpring,
             MotionSpecs.MorphSpring,
+            MotionSpecs.DisclosureSpatialSpring,
+            MotionSpecs.DisclosureEffectsSpring,
             MotionSpecs.ExpandSpring,
             MotionSpecs.CollapseSpring,
             MotionSpecs.SheetSpring,
@@ -100,6 +102,12 @@ class MotionPhysicsTest {
                 "Effects/layout spring must be critically damped to avoid overshoot",
             )
         }
+
+        // 统一折叠/揭示令牌与工具卡片既有形变/淡化曲线保持单一来源一致
+        assertEquals(MotionSpecs.MorphSpring.dampingRatio, MotionSpecs.DisclosureSpatialSpring.dampingRatio)
+        assertEquals(MotionSpecs.MorphSpring.stiffness, MotionSpecs.DisclosureSpatialSpring.stiffness)
+        assertEquals(MotionSpecs.EffectsDefaultSpring.dampingRatio, MotionSpecs.DisclosureEffectsSpring.dampingRatio)
+        assertEquals(MotionSpecs.EffectsDefaultSpring.stiffness, MotionSpecs.DisclosureEffectsSpring.stiffness)
 
         // 按压缩放处于合理收缩区间，紧凑控件缩放不大于常规控件
         assertTrue(MotionSpecs.PressScaleDefault in 0.8f..0.999f)
@@ -203,5 +211,35 @@ class MotionPhysicsTest {
         val reducedEnter = assertIs<TweenSpec<Float>>(MotionSpecs.staggerEnter<Float>(index = 3, reduced = true))
         assertEquals(0, reducedEnter.delay)
         assertEquals(LinearEasing, reducedEnter.easing)
+    }
+
+    @Test
+    fun disclosureFactoriesShareToolCardCurvesAndDegradeInReducedMotion() {
+        val sizeSpec = assertIs<SpringSpec<Float>>(MotionSpecs.disclosureSize<Float>(reduced = false))
+        assertEquals(MotionSpecs.DisclosureSpatialSpring.dampingRatio, sizeSpec.dampingRatio)
+        assertEquals(MotionSpecs.DisclosureSpatialSpring.stiffness, sizeSpec.stiffness)
+        assertTrue(sizeSpec.dampingRatio >= Spring.DampingRatioNoBouncy)
+
+        val revealSpec = assertIs<SpringSpec<Float>>(MotionSpecs.disclosureRevealProgress(reduced = false))
+        assertEquals(MotionSpecs.DisclosureSpatialSpring.dampingRatio, revealSpec.dampingRatio)
+        assertEquals(MotionSpecs.DisclosureSpatialSpring.stiffness, revealSpec.stiffness)
+        assertEquals(MotionSpecs.DisclosureRevealVisibilityThreshold, revealSpec.visibilityThreshold)
+
+        val fadeSpec = assertIs<SpringSpec<Float>>(MotionSpecs.disclosureFade<Float>(reduced = false))
+        assertEquals(MotionSpecs.DisclosureEffectsSpring.dampingRatio, fadeSpec.dampingRatio)
+        assertEquals(MotionSpecs.DisclosureEffectsSpring.stiffness, fadeSpec.stiffness)
+        assertTrue(fadeSpec.dampingRatio >= Spring.DampingRatioNoBouncy)
+
+        val chevronSpec = assertIs<SpringSpec<Float>>(MotionSpecs.disclosureChevron(reduced = false))
+        assertEquals(MotionSpecs.SpatialFastSpring.dampingRatio, chevronSpec.dampingRatio)
+        assertEquals(MotionSpecs.SpatialFastSpring.stiffness, chevronSpec.stiffness)
+
+        // 减少动态下：尺寸、水平揭示、箭头旋转退化为 SnapSpec，淡化退化为 150ms 线性无位移 TweenSpec
+        assertIs<SnapSpec<Float>>(MotionSpecs.disclosureSize<Float>(reduced = true))
+        assertIs<SnapSpec<Float>>(MotionSpecs.disclosureRevealProgress(reduced = true))
+        assertIs<SnapSpec<Float>>(MotionSpecs.disclosureChevron(reduced = true))
+        val reducedFade = assertIs<TweenSpec<Float>>(MotionSpecs.disclosureFade<Float>(reduced = true))
+        assertEquals(MotionSpecs.ReducedMotionCrossfadeDuration, reducedFade.durationMillis)
+        assertEquals(LinearEasing, reducedFade.easing)
     }
 }

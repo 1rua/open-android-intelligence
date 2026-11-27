@@ -1,6 +1,7 @@
 package com.openandroidintelligence.conversation.workbench
 
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.core.updateTransition
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.scrollBy
@@ -20,8 +21,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -30,9 +33,13 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import com.openandroidintelligence.conversation.components.ExpandableRegion
 import com.openandroidintelligence.conversation.components.bouncyClickable
+import com.openandroidintelligence.conversation.components.rememberExpandChevronRotation
+import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.ports.ConversationOrganization
 import com.openandroidintelligence.conversation.ports.ConversationSortMode
 import com.openandroidintelligence.conversation.ports.ConversationSummary
@@ -40,6 +47,8 @@ import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import com.openandroidintelligence.ui.resources.R as UiR
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
@@ -217,6 +226,23 @@ fun WorkspaceConversationBrowser(
         }
     }
 
+    val reduceMotion = LocalMotionPolicy.current.isReduced
+    val groupTransitions = workspaceMenu.groups.associate { group ->
+        key(group.workspaceKey) {
+            group.workspaceKey to updateTransition(
+                targetState = group.workspaceKey !in collapsedKeys,
+                label = "workspace-disclosure:${group.workspaceKey}",
+            )
+        }
+    }
+    // 任意工作区处于折叠/展开过渡中时，下方项由 ExpandableRegion 的高度弹簧自然连续推移，
+    // 暂停列表项 placement 弹簧避免双重弹簧滞后造成组间裂隙或展开重叠。
+    val isAnyGroupTransitioning = groupTransitions.values.any { it.currentState != it.targetState }
+    val placementSpec = MotionSpecs.disclosureSize(
+        reduced = reduceMotion,
+        visibilityThreshold = IntOffset.VisibilityThreshold,
+    )
+
     LazyColumn(
         modifier = modifier.fillMaxSize().testTag("workspace-conversation-browser"),
         state = listState,
@@ -226,7 +252,6 @@ fun WorkspaceConversationBrowser(
             end = Dimensions.SpaceCompact,
             bottom = 24.dp,
         ),
-        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
     ) {
         item(key = "ws-browser-search") {
             OutlinedTextField(
@@ -252,7 +277,7 @@ fun WorkspaceConversationBrowser(
 
         item(key = "ws-browser-controls") {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(top = Dimensions.SpaceTiny),
+                modifier = Modifier.fillMaxWidth().padding(top = Dimensions.SpaceSmall),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(Modifier.weight(1f)) {
@@ -331,7 +356,7 @@ fun WorkspaceConversationBrowser(
         item(key = "ws-browser-hint") {
             val subtitle = workspaceMenu.agentTitle?.takeIf { it.isNotBlank() }
                 ?: stringResource(UiR.string.conv_workspace_header_hint)
-            Column(modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)) {
+            Column(modifier = Modifier.padding(start = 4.dp, end = 4.dp, top = 6.dp, bottom = 2.dp)) {
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.labelSmall,
@@ -383,6 +408,8 @@ fun WorkspaceConversationBrowser(
 
         workspaceMenu.groups.forEach { group ->
             val collapsed = group.workspaceKey in collapsedKeys
+            val groupTransition = groupTransitions.getValue(group.workspaceKey)
+            val keepChildrenMounted = groupTransition.currentState || groupTransition.targetState
             val visibleRows = visibleRowsByWorkspace[group.workspaceKey].orEmpty()
             val displayedRows = if (group.isActive) {
                 previewIds?.mapNotNull { id -> activeRowsById[id] } ?: visibleRows
@@ -396,51 +423,80 @@ fun WorkspaceConversationBrowser(
                     visibleCount = visibleRows.size,
                     collapsed = collapsed,
                     online = online,
+                    reduceMotion = reduceMotion,
                     onToggleCollapse = {
+                        if (group.isActive && !collapsed && draggedId != null) cancelDrag()
                         collapsedKeys = if (collapsed) collapsedKeys - group.workspaceKey else collapsedKeys + group.workspaceKey
                     },
                     onCreateInWorkspace = { workspaceMenu.onCreateWorkspaceThread(group.workspaceKey) },
                 )
             }
 
-            if (!collapsed) {
+            if (keepChildrenMounted) {
                 when (group.threads) {
                     Loadable.Idle, Loadable.Loading -> item(key = "ws-loading:${group.workspaceKey}") {
-                        Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(modifier = Modifier.size(Dimensions.SmallIcon), strokeWidth = Dimensions.StrokeStitch)
+                        ExpandableRegion(
+                            transition = groupTransition,
+                            reduced = reduceMotion,
+                        ) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = Dimensions.SpaceTiny)
+                                    .padding(12.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(Dimensions.SmallIcon),
+                                    strokeWidth = Dimensions.StrokeStitch,
+                                )
+                            }
                         }
                     }
                     is Loadable.Failed -> item(key = "ws-failed:${group.workspaceKey}") {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
+                        ExpandableRegion(
+                            transition = groupTransition,
+                            reduced = reduceMotion,
                         ) {
-                            Text(
-                                text = stringResource(UiR.string.conv_browser_load_failed),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.weight(1f),
-                            )
-                            TextButton(onClick = {
-                                if (group.isActive) onRefresh() else workspaceMenu.onRefreshCatalog()
-                            }) {
-                                Text(stringResource(UiR.string.common_action_retry))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = Dimensions.SpaceTiny)
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = stringResource(UiR.string.conv_browser_load_failed),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                TextButton(onClick = {
+                                    if (group.isActive) onRefresh() else workspaceMenu.onRefreshCatalog()
+                                }) {
+                                    Text(stringResource(UiR.string.common_action_retry))
+                                }
                             }
                         }
                     }
                     else -> if (displayedRows.isEmpty()) {
                         item(key = "ws-empty:${group.workspaceKey}") {
-                            val emptyText = when {
-                                query.isNotBlank() -> stringResource(UiR.string.conv_browser_empty_search)
-                                filter == WORKSPACE_FILTER_ARCHIVED -> stringResource(UiR.string.conv_browser_empty_archived)
-                                else -> stringResource(UiR.string.conv_workspace_no_sessions)
+                            ExpandableRegion(
+                                transition = groupTransition,
+                                reduced = reduceMotion,
+                            ) {
+                                val emptyText = when {
+                                    query.isNotBlank() -> stringResource(UiR.string.conv_browser_empty_search)
+                                    filter == WORKSPACE_FILTER_ARCHIVED -> stringResource(UiR.string.conv_browser_empty_archived)
+                                    else -> stringResource(UiR.string.conv_workspace_no_sessions)
+                                }
+                                Text(
+                                    text = emptyText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(start = 28.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                                )
                             }
-                            Text(
-                                text = emptyText,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(start = 28.dp, end = 8.dp, top = 4.dp, bottom = 8.dp),
-                            )
                         }
                     } else {
                         items(
@@ -452,13 +508,24 @@ fun WorkspaceConversationBrowser(
                             val busy = group.isActive && id in busyThreadIds
                             val isDragged = group.isActive && id == draggedId
                             val dragOffset = if (isDragged) dragDistance else 0f
+                            val itemContainerModifier = if (!group.isActive) {
+                                Modifier
+                            } else {
+                                Modifier
+                                    .animateItem(
+                                        fadeInSpec = null,
+                                        fadeOutSpec = null,
+                                        placementSpec = if (isDragged || isAnyGroupTransitioning) null else placementSpec,
+                                    )
+                                    .zIndex(if (isDragged) 1f else 0f)
+                                    .offset { IntOffset(0, dragOffset.roundToInt()) }
+                            }
                             val rowModifier = Modifier
+                                .padding(top = Dimensions.SpaceTiny)
                                 .testTag("workspace-thread:${group.workspaceKey}:$id")
                                 .let { base ->
                                     if (!group.isActive) base
                                     else base
-                                        .zIndex(if (isDragged) 1f else 0f)
-                                        .offset { IntOffset(0, dragOffset.roundToInt()) }
                                         .semantics {
                                             if (canManage) {
                                                 customActions = listOf(-1 to moveUpLabel, 1 to moveDownLabel).map { (delta, label) ->
@@ -509,26 +576,32 @@ fun WorkspaceConversationBrowser(
                                             }
                                         }
                                 }
-                            WorkspaceThreadRow(
-                                thread = thread,
-                                selected = isActiveThread,
-                                busy = busy,
-                                showManageMenu = group.isActive,
-                                canReorder = group.isActive && canManage,
-                                canRename = group.isActive && canManage && renameSupported,
-                                canArchive = group.isActive && canManage && archiveSupported && (!thread.archived || unarchiveSupported),
-                                canDelete = group.isActive && canManage && deleteSupported,
-                                deleteSupported = deleteSupported,
-                                relativeTime = relativeThreadTime(thread.updatedAt, now),
-                                onOpen = {
-                                    if (group.isActive) onOpenThread(id)
-                                    else workspaceMenu.onOpenWorkspaceThread(group.workspaceKey, id)
-                                },
-                                onRename = { renameTarget = thread },
-                                onArchive = { actions.archive(id, !thread.archived) },
-                                onDelete = { deleteTarget = thread },
-                                modifier = rowModifier,
-                            )
+                            ExpandableRegion(
+                                transition = groupTransition,
+                                reduced = reduceMotion,
+                                modifier = itemContainerModifier,
+                            ) {
+                                WorkspaceThreadRow(
+                                    thread = thread,
+                                    selected = isActiveThread,
+                                    busy = busy,
+                                    showManageMenu = group.isActive,
+                                    canReorder = group.isActive && canManage,
+                                    canRename = group.isActive && canManage && renameSupported,
+                                    canArchive = group.isActive && canManage && archiveSupported && (!thread.archived || unarchiveSupported),
+                                    canDelete = group.isActive && canManage && deleteSupported,
+                                    deleteSupported = deleteSupported,
+                                    relativeTime = relativeThreadTime(thread.updatedAt, now),
+                                    onOpen = {
+                                        if (group.isActive) onOpenThread(id)
+                                        else workspaceMenu.onOpenWorkspaceThread(group.workspaceKey, id)
+                                    },
+                                    onRename = { renameTarget = thread },
+                                    onArchive = { actions.archive(id, !thread.archived) },
+                                    onDelete = { deleteTarget = thread },
+                                    modifier = rowModifier,
+                                )
+                            }
                         }
                     }
                 }
@@ -603,16 +676,26 @@ private fun WorkspaceGroupHeader(
     visibleCount: Int,
     collapsed: Boolean,
     online: Boolean,
+    reduceMotion: Boolean,
     onToggleCollapse: () -> Unit,
     onCreateInWorkspace: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    val chevronRotation = rememberExpandChevronRotation(
+        expanded = !collapsed,
+        reduced = reduceMotion,
+        label = "workspace-chevron:${group.workspaceKey}",
+        collapsedDegrees = if (isRtl) 90f else -90f,
+        expandedDegrees = 0f,
+    )
     Surface(
         color = if (group.isActive) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
         else MaterialTheme.colorScheme.surfaceContainer,
         shape = RoundedCornerShape(AppRadius.Medium),
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .padding(top = Dimensions.SpaceTiny)
+            .padding(top = Dimensions.SpaceSmall)
             .clip(RoundedCornerShape(AppRadius.Medium)),
     ) {
         Row(
@@ -624,13 +707,15 @@ private fun WorkspaceGroupHeader(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                imageVector = if (collapsed) Icons.Default.KeyboardArrowRight else Icons.Default.KeyboardArrowDown,
+                imageVector = Icons.Default.ExpandMore,
                 contentDescription = stringResource(
                     if (collapsed) UiR.string.conv_workspace_expand_cd else UiR.string.conv_workspace_collapse_cd,
                     group.title,
                 ),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(Dimensions.SmallIcon),
+                modifier = Modifier
+                    .size(Dimensions.SmallIcon)
+                    .graphicsLayer { rotationZ = chevronRotation },
             )
             Spacer(Modifier.width(6.dp))
             Column(modifier = Modifier.weight(1f)) {
