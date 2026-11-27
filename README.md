@@ -167,7 +167,10 @@ npm run test:full
 ---
 
 ## 感谢
-本项目基于[ds-harness-remote](https://github.com/liguobao/ds-harness-remote)实现,欢迎给上游项目和本项目star
+
+本项目基于[ds-harness-remote](https://github.com/liguobao/ds-harness-remote)（[MIT](https://github.com/liguobao/ds-harness-remote/blob/main/LICENSE)）实现,欢迎给上游项目和本项目star
+
+本项目采用[KaTex](https://github.com/KaTeX/KaTeX)库([MIT](https://github.com/KaTeX/KaTeX/blob/main/LICENSE))
 
 ## 开源协议
 
