@@ -285,7 +285,7 @@ fun WorkbenchScreen(
     val toolCardRevealTracker = rememberToolCardRevealTracker(
         threadId = state.activeThreadId,
         displayItems = displayItems,
-        ready = timelineReady,
+        ready = state.timeline is Loadable.Ready || state.timeline is Loadable.Empty,
     )
 
     LaunchedEffect(state.notice) {

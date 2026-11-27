@@ -332,12 +332,11 @@
     <string name="conv_thought_interrupted_cd">思考已中断</string>
     <string name="conv_tool_status_running">执行中</string>
     <string name="conv_tool_status_interrupted">执行已中断</string>
-    <string name="conv_tool_status_unknown">结果未知</string>
     <string name="conv_tool_status_no_result">未返回结果</string>
     <string name="conv_tool_status_failed">执行失败</string>
     <string name="conv_tool_status_invocation_only">已调用</string>
     <string name="conv_tool_status_completed">已完成</string>
-    <string name="conv_tool_status_interrupted_unknown">执行已中断 · 结果未知</string>
+    <string name="conv_tool_status_interrupted_unknown">执行已中断 · 未返回结果</string>
     <string name="conv_tool_action_collapse_label">收起工具详情</string>
     <string name="conv_tool_action_expand_label">展开工具详情</string>
     <string name="conv_tool_call_tag">[执行命令]</string>
@@ -348,7 +347,6 @@
     <string name="conv_tool_hermes_params_truncated">参数来自 Hermes 预览，可能已被截断</string>
     <string name="conv_tool_section_output">输出</string>
     <string name="conv_tool_section_error_output">错误输出</string>
-    <string name="conv_tool_no_result_received">未收到工具结果</string>
     <string name="conv_tool_invocation_no_return">此调用未附带返回值</string>
     <string name="conv_tool_no_output">无输出</string>
     <string name="conv_tool_action_copy_command">复制命令</string>

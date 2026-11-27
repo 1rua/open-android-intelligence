@@ -87,6 +87,7 @@ fun MessageTimeline(
     onDownloadAttachment: ((String) -> Unit)? = null,
     onRequestOriginalAttachment: ((String) -> Unit)? = null,
     generation: GenerationState? = null,
+    ready: Boolean = true,
 ) {
     val displayItems = rememberTimelineDisplayItems(entries, generation = generation)
     val timing = rememberExecutionTimingStore(threadId = null)
@@ -94,7 +95,7 @@ fun MessageTimeline(
     val toolCardRevealTracker = LocalToolCardRevealTracker.current ?: rememberToolCardRevealTracker(
         threadId = null,
         displayItems = displayItems,
-        ready = true,
+        ready = ready,
     )
     AttachmentPreviewHost(
         attachments = entries.flatMap { it.attachments },

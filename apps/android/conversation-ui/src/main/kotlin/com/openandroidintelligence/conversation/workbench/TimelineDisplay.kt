@@ -249,7 +249,7 @@ class TimelineDisplayModel(
                     latestNativeSteps[canonical] = step
                     canonicalKeysByStepId.getOrPut(cleanStepId) { mutableListOf() }.add(canonical)
                 } else {
-                    latestNativeSteps[canonical] = previous.mergeDisplaySnapshot(step)
+                    latestNativeSteps[canonical] = previous.applyNewerSnapshot(step)
                 }
             }
         }
@@ -458,7 +458,7 @@ class TimelineDisplayModel(
             val followedByCompletedSameTurnAnswer = nextEntry != null &&
                 isExecutionEligible(nextEntry) &&
                 sameTurnGeneration &&
-                nextEntry.text.isNotBlank() &&
+                (nextEntry.text.isNotBlank() || nextEntry.attachments.isNotEmpty()) &&
                 !nextEntry.isStreaming &&
                 (nextEntry.executionGenerationState == null || nextEntry.executionGenerationState.isTerminal()) &&
                 !(activeTopGeneration && index + 1 == items.lastIndex && nextEntry.executionGenerationState?.isTerminal() != true)
@@ -808,40 +808,6 @@ class TimelineDisplayModel(
 private fun normalizeNativeStepId(stepId: String): String =
     ToolCallPairing.normalizeCallId(stepId) ?: stepId
 
-/**
- * UI 层非破坏性合并同一步骤的前后快照，统一委托给领域层唯一权威实现
- * [ToolCallPairing.mergeSteps] 与 [NativeExecutionStep.applyNewerSnapshot]：
- * - 高修订号优先，且已终态绝不被非终态倒退；
- * - 低修订号或同修订号晚到快照仍非破坏性补全有效工具名、入参与输出，并保留首次调用顺序与来源升级。
- */
-private fun NativeExecutionStep.mergeDisplaySnapshot(incoming: NativeExecutionStep): NativeExecutionStep {
-    val existingTerminal = ToolCallPairing.isTerminalStatus(status)
-    val incomingTerminal = ToolCallPairing.isTerminalStatus(incoming.status)
-    if (incoming.revision > revision) {
-        return if (existingTerminal && !incomingTerminal) {
-            ToolCallPairing.mergeSteps(this, incoming)
-        } else {
-            applyNewerSnapshot(incoming)
-        }
-    }
-    val preferIncoming = when {
-        existingTerminal && !incomingTerminal -> false
-        incoming.revision < revision -> false
-        !existingTerminal && incomingTerminal -> true
-        status == NativeExecutionStatus.UNKNOWN && incoming.status == NativeExecutionStatus.RUNNING -> true
-        output.isNullOrBlank() && !incoming.output.isNullOrBlank() -> true
-        else -> false
-    }
-    if (preferIncoming) {
-        return ToolCallPairing.mergeSteps(this, incoming)
-    }
-    return ToolCallPairing.mergeSteps(existing = incoming, incoming = this).copy(
-        sourceMessageId = NativeExecutionStep.resolveSourceMessageId(sourceMessageId, incoming.sourceMessageId),
-        occurredAt = occurredAt?.takeIf { it > 0L } ?: incoming.occurredAt,
-        orderSequence = orderSequence ?: incoming.orderSequence,
-    )
-}
-
 private fun TimelineEntry.allNativeSteps(): List<NativeExecutionStep> {
     if (timelineSteps.isEmpty()) {
         val combined = linkedMapOf<String, NativeExecutionStep>()
@@ -849,7 +815,7 @@ private fun TimelineEntry.allNativeSteps(): List<NativeExecutionStep> {
             val cleanId = normalizeNativeStepId(rawStep.stepId)
             val step = if (rawStep.stepId == cleanId) rawStep else rawStep.copy(stepId = cleanId)
             val existing = combined[cleanId]
-            combined[cleanId] = existing?.mergeDisplaySnapshot(step) ?: step
+            combined[cleanId] = existing?.applyNewerSnapshot(step) ?: step
         }
         return combined.values.toList()
     }
@@ -859,14 +825,14 @@ private fun TimelineEntry.allNativeSteps(): List<NativeExecutionStep> {
             val cleanId = normalizeNativeStepId(step.step.stepId)
             val normalized = if (step.step.stepId == cleanId) step.step else step.step.copy(stepId = cleanId)
             val existing = combined[cleanId]
-            combined[cleanId] = existing?.mergeDisplaySnapshot(normalized) ?: normalized
+            combined[cleanId] = existing?.applyNewerSnapshot(normalized) ?: normalized
         }
     }
     executionSteps.forEach { rawStep ->
         val cleanId = normalizeNativeStepId(rawStep.stepId)
         val step = if (rawStep.stepId == cleanId) rawStep else rawStep.copy(stepId = cleanId)
         val existing = combined[cleanId]
-        combined[cleanId] = existing?.mergeDisplaySnapshot(step) ?: step
+        combined[cleanId] = existing?.applyNewerSnapshot(step) ?: step
     }
     return combined.values.toList()
 }
@@ -991,7 +957,7 @@ internal fun buildOrderedEntryBlocks(
 
             is ExecutionTimelineStep.ToolCallStep -> {
                 val resolvedStep = nativeById[normalizeNativeStepId(step.stepId)]?.let { latest ->
-                    step.step.mergeDisplaySnapshot(latest)
+                    step.step.applyNewerSnapshot(latest)
                 } ?: step.step
                 val effectiveStatus = if (terminalGeneration && resolvedStep.status == NativeExecutionStatus.RUNNING) {
                     NativeExecutionStatus.UNKNOWN

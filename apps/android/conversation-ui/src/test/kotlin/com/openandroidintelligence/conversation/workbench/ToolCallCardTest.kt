@@ -22,6 +22,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
+import com.openandroidintelligence.conversation.model.ExecutionTimelineStep
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.model.NativeExecutionStep
@@ -739,6 +740,99 @@ class ToolCallCardTest {
     }
 
     @Test
+    fun toolCardRevealTrackerDeduplicatesNativeStepAcrossNullAndProvisionalUpgrades() {
+        val model = TimelineDisplayModel()
+        val tracker = ToolCardRevealTracker()
+        tracker.sync(emptyList(), ready = true)
+
+        // 1. generationId 初始为 null（仅 timelineSteps 携带 nativeStepId），首次出现播一次入场
+        val nullGenStep = NativeExecutionStep("call_null_1", "ev-1", "read_file", "{}", null, NativeExecutionStatus.RUNNING, 1L)
+        val nullGenEntry = TimelineEntry(
+            key = "e-null-gen",
+            sender = "assistant",
+            text = "",
+            isUser = false,
+            timestamp = 1L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            generationId = null,
+            executionSteps = listOf(nullGenStep),
+            timelineSteps = listOf(ExecutionTimelineStep.ToolCallStep(nullGenStep, bodyOffset = 0, orderIndex = 0)),
+        )
+        tracker.sync(model.build(listOf(nullGenEntry), GenerationState.RUNNING), ready = true)
+        assertTrue(tracker.consumeEntranceAnimation("e-null-gen:call_null_1"))
+
+        // 同一 nativeStepId 后续升级到权威 generationId，不得因 key 变更重播入场动画
+        val authGenEntry = nullGenEntry.copy(
+            key = "e-auth-gen",
+            generationId = "g-auth-9",
+            executionSteps = listOf(nullGenStep.copy(status = NativeExecutionStatus.COMPLETED, output = "ok", revision = 2L)),
+            timelineSteps = emptyList(),
+        )
+        tracker.sync(model.build(listOf(authGenEntry), GenerationState.COMPLETED), ready = true)
+        assertFalse(tracker.consumeEntranceAnimation("execution:g-auth-9:call_null_1"))
+
+        // 2. 临时 generationId（request:*）→ 另一临时 generationId（acp-turn:*）也不得重播
+        val provStep = NativeExecutionStep("  call_prov_2 ", "ev-2", "bash", "ls", null, NativeExecutionStatus.RUNNING, 1L)
+        val requestEntry = TimelineEntry(
+            key = "e-req",
+            sender = "assistant",
+            text = "",
+            isUser = false,
+            timestamp = 2L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            generationId = "request:r-1",
+            executionSteps = listOf(provStep),
+        )
+        tracker.sync(model.build(listOf(authGenEntry, requestEntry), GenerationState.RUNNING), ready = true)
+        assertTrue(tracker.consumeEntranceAnimation("execution:request:r-1:call_prov_2"))
+
+        val acpEntry = requestEntry.copy(
+            key = "e-acp",
+            generationId = "acp-turn:4",
+            executionSteps = listOf(provStep.copy(stepId = "call_prov_2", revision = 2L)),
+        )
+        tracker.sync(model.build(listOf(authGenEntry, acpEntry), GenerationState.RUNNING), ready = true)
+        assertFalse(tracker.consumeEntranceAnimation("execution:acp-turn:4:call_prov_2"))
+    }
+
+    @Test
+    fun toolCardRevealTrackerExpiresPendingKeysIndependentlyWithoutExtension() {
+        var nowMillis = 1_000L
+        val model = TimelineDisplayModel()
+        val tracker = ToolCardRevealTracker(clockMillis = { nowMillis })
+        tracker.sync(emptyList(), ready = true)
+
+        val stepA = NativeExecutionStep("s-a", "ev-a", "read_file", "{}", null, NativeExecutionStatus.RUNNING, 1L)
+        val stepB = NativeExecutionStep("s-b", "ev-b", "bash", "ls", null, NativeExecutionStatus.RUNNING, 1L)
+        val entryA = TimelineEntry(
+            key = "e-a",
+            sender = "assistant",
+            text = "",
+            isUser = false,
+            timestamp = 1L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            generationId = "g-exp",
+            executionSteps = listOf(stepA),
+        )
+        // T = 1000ms：卡 A 入队（到期时刻 1600ms）
+        tracker.sync(model.build(listOf(entryA), GenerationState.RUNNING), ready = true)
+
+        // T = 1400ms：卡 B 入队（到期时刻 2000ms），不得延长卡 A 的有效期
+        nowMillis = 1_400L
+        val entryAB = entryA.copy(executionSteps = listOf(stepA, stepB))
+        tracker.sync(model.build(listOf(entryAB), GenerationState.RUNNING), ready = true)
+        assertEquals(200L, tracker.nextExpirationDelayMillis())
+
+        // T = 1650ms：卡 A 已过期返回 false，卡 B 仍有 350ms 有效期返回 true
+        nowMillis = 1_650L
+        assertFalse(tracker.consumeEntranceAnimation("execution:g-exp:s-a"))
+        assertTrue(tracker.consumeEntranceAnimation("execution:g-exp:s-b"))
+    }
+
+    @Test
     fun freshToolCardRevealsLeftToRightAndDegradesToNoDisplacementFadeInReduceMotion() {
         val backdrop = Color(0xFFFF0000)
         lateinit var rootView: View
@@ -839,7 +933,8 @@ class ToolCallCardTest {
             }
         }
 
-        compose.onNodeWithText("执行已中断 · 结果未知", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("执行已中断 · 未返回结果", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("结果未知", substring = true).assertDoesNotExist()
         compose.onNodeWithContentDescription("执行已中断").assertIsDisplayed()
         compose.onNodeWithText("sleep 999").assertDoesNotExist()
 
@@ -847,6 +942,8 @@ class ToolCallCardTest {
 
         compose.onNodeWithText("命令").assertIsDisplayed()
         compose.onNodeWithText("sleep 999").assertIsDisplayed()
+        compose.onNodeWithText("未返回结果").assertIsDisplayed()
+        compose.onNodeWithText("无输出").assertDoesNotExist()
     }
 
     @Test

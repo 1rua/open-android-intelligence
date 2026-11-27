@@ -116,15 +116,26 @@ fun AssistantMessageContent(
     val groups = remember(stepBlocks) { groupRealtimeOrderedBlocks(stepBlocks) }
     val toolCallCount = remember(stepBlocks) { stepBlocks.count { it is OrderedTimelineBlock.ToolCall } }
     val thoughtCount = remember(stepBlocks) { stepBlocks.count { it is OrderedTimelineBlock.Thought } }
-    val hasOtherProcessBlocks = remember(groups) { groups.any { it is RealtimeGroup.Narrative } }
-    val hasFailure = remember(stepBlocks) {
+    val otherProcessCount = remember(groups) { groups.count { it is RealtimeGroup.Narrative } }
+    val hasFailure = remember(stepBlocks, entryStreaming) {
         stepBlocks.any { item ->
-            item is OrderedTimelineBlock.ToolCall && !item.block.isSuccess
+            when (item) {
+                is OrderedTimelineBlock.ToolCall -> {
+                    val stepStreaming = item.entryStreamingOverride ?: entryStreaming
+                    !item.block.isSuccess || (item.block.isRunning && !stepStreaming)
+                }
+                is OrderedTimelineBlock.Thought -> !item.block.isComplete && !entryStreaming
+                else -> false
+            }
         }
     }
-    val collapseIntoSummaryCard = !entryStreaming &&
-        finalBlocks.isNotEmpty() &&
-        (toolCallCount >= 1 || (thoughtCount >= 1 && (thoughtCount > 1 || hasOtherProcessBlocks)))
+    val collapseIntoSummaryCard = shouldCollapseTurnProcessCard(
+        isStreaming = entryStreaming,
+        hasCompletedFinalAnswer = !entryStreaming && finalBlocks.isNotEmpty(),
+        toolCallCount = toolCallCount,
+        thoughtCount = thoughtCount,
+        otherProcessCount = otherProcessCount,
+    )
 
     Column(
         modifier = modifier.fillMaxWidth(),

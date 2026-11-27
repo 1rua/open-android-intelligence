@@ -6,6 +6,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
@@ -500,6 +501,133 @@ class WorkspaceConversationBrowserTest {
             assertEquals(listOf(listOf("t2", "t1")), reorderedSnapshots)
             assertEquals(listOf("t2"), opened)
         }
+    }
+
+    @Test
+    fun `工作区折叠中段禁用子行点击菜单与无障碍重排且取消在途拖拽`() {
+        val opened = mutableListOf<String>()
+        val reordered = mutableListOf<List<String>>()
+        val groups = listOf(
+            WorkspaceConversationGroup(
+                workspaceKey = "ws-one",
+                title = "核心仓库",
+                subtitle = "/repo/core",
+                isActive = true,
+                threads = Loadable.Ready(
+                    listOf(
+                        ConversationSummary(ConversationId("t1"), "第一条会话", 3000L, false),
+                        ConversationSummary(ConversationId("t2"), "第二条会话", 2000L, false),
+                    )
+                ),
+            ),
+            WorkspaceConversationGroup(
+                workspaceKey = "ws-two",
+                title = "文档仓库",
+                subtitle = "/repo/docs",
+                isActive = false,
+                threads = Loadable.Ready(
+                    listOf(ConversationSummary(ConversationId("t3"), "工作区二对话", 1000L, false))
+                ),
+            ),
+        )
+
+        compose.setContent {
+            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = true, durationScale = 1f)) {
+                MaterialTheme {
+                    WorkspaceConversationBrowser(
+                        workspaceMenu = WorkspaceMenuState(agentTitle = "主力电脑 · DSH", groups = groups),
+                        activeThreadId = "t1",
+                        onOpenThread = { opened += it },
+                        onCreateThread = {},
+                        onRefresh = {},
+                        managementSupported = true,
+                        online = true,
+                        actions = ConversationBrowserActions(reorder = { reordered += it }),
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        // 在 Reduce Motion 150ms 全高淡出期间，子项尚在树中但处于 collapsed == true：必须禁用点击、菜单与无障碍重排
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("workspace-group-header:ws-one").performClick()
+        repeat(3) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+
+        val midNode = compose.onNodeWithTag("workspace-thread:ws-one:t2").fetchSemanticsNode()
+        assertTrue(
+            "折叠中段子行必须禁用无障碍自定义重排动作",
+            SemanticsActions.CustomActions !in midNode.config,
+        )
+        assertTrue(
+            "折叠中段子行应处于禁用状态防误触",
+            SemanticsProperties.Disabled in midNode.config,
+        )
+        compose.onNodeWithContentDescription("管理会话 第一条会话").assertIsNotEnabled()
+        compose.onNodeWithTag("workspace-thread:ws-one:t2").performClick()
+        assertTrue("折叠中段点击不得打开会话", opened.isEmpty())
+
+        // 收敛后子项安全卸载；再次展开后交互完全恢复（无拖拽状态残留）
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        compose.onNodeWithTag("workspace-thread:ws-one:t2").assertDoesNotExist()
+
+        compose.onNodeWithTag("workspace-group-header:ws-one").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("workspace-thread:ws-one:t2").assertIsDisplayed().performClick()
+        assertEquals(listOf("t2"), opened)
+        assertTrue(reordered.isEmpty())
+    }
+
+    @Test
+    fun `工作区快速连点折叠后中段立即展开能平滑收敛回原位`() {
+        val menu = WorkspaceMenuState(
+            agentTitle = "主力电脑 · DSH",
+            groups = sampleGroups(),
+        )
+        compose.setContent {
+            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = false, durationScale = 1f)) {
+                MaterialTheme {
+                    WorkspaceConversationBrowser(
+                        workspaceMenu = menu,
+                        activeThreadId = "t1",
+                        onOpenThread = {},
+                        onCreateThread = {},
+                        onRefresh = {},
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+        val wsTwoTopOriginal = compose.onNodeWithTag("workspace-group-header:ws-two")
+            .fetchSemanticsNode().boundsInRoot.top
+
+        // 发起折叠并在动画中段立即反向点击展开
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithTag("workspace-group-header:ws-one").performClick()
+        repeat(3) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+        compose.onNodeWithTag("workspace-group-header:ws-one").performClick()
+        repeat(3) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+
+        // 收敛后子项完整显示且相邻工作区回到精确原位，无双重弹簧错位或重叠
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        compose.onNodeWithTag("workspace-thread:ws-one:t1").assertIsDisplayed()
+        val wsOneChildBottom = compose.onNodeWithTag("workspace-thread:ws-one:t1")
+            .fetchSemanticsNode().boundsInRoot.bottom
+        val wsTwoTopSettled = compose.onNodeWithTag("workspace-group-header:ws-two")
+            .fetchSemanticsNode().boundsInRoot.top
+        assertTrue("展开收敛后相邻工作区不得与子行重叠", wsTwoTopSettled >= wsOneChildBottom)
+        assertEquals(wsTwoTopOriginal, wsTwoTopSettled, 2f)
     }
 
     private class StubConversationRepository : ConversationRepository {

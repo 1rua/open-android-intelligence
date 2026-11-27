@@ -133,6 +133,7 @@ internal fun AssistantTimelineView(
     onRequestOriginalAttachment: ((String) -> Unit)? = null,
     listState: LazyListState? = null,
     emptyContent: (@Composable () -> Unit)? = null,
+    ready: Boolean = true,
 ) {
     val reduceMotion = LocalMotionPolicy.current.isReduced
     val isThinking = generation.isGenerating() && entries.none { !it.isUser && it.isStreaming }
@@ -150,7 +151,7 @@ internal fun AssistantTimelineView(
     val toolCardRevealTracker = rememberToolCardRevealTracker(
         threadId = threadId,
         displayItems = displayItems,
-        ready = true,
+        ready = ready,
     )
     val state = listState ?: rememberLazyListState()
     val scope = rememberCoroutineScope()

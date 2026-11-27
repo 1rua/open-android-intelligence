@@ -214,8 +214,9 @@ fun WorkspaceConversationBrowser(
             delay(16)
         }
     }
-    LaunchedEffect(canManage, query, filter, activeWorkspaceKey) {
-        if (!canManage || draggedId != null) cancelDrag()
+    val activeWorkspaceCollapsed = activeWorkspaceKey != null && activeWorkspaceKey in collapsedKeys
+    LaunchedEffect(canManage, query, filter, activeWorkspaceKey, activeWorkspaceCollapsed) {
+        if (!canManage || activeWorkspaceCollapsed || draggedId != null) cancelDrag()
     }
 
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -235,9 +236,11 @@ fun WorkspaceConversationBrowser(
             )
         }
     }
-    // 任意工作区处于折叠/展开过渡中时，下方项由 ExpandableRegion 的高度弹簧自然连续推移，
+    // 任意工作区处于折叠/展开过渡中（含快速反转回弹）时，下方项由 ExpandableRegion 的高度弹簧自然连续推移，
     // 暂停列表项 placement 弹簧避免双重弹簧滞后造成组间裂隙或展开重叠。
-    val isAnyGroupTransitioning = groupTransitions.values.any { it.currentState != it.targetState }
+    val isAnyGroupTransitioning = groupTransitions.values.any {
+        it.currentState != it.targetState || it.isRunning
+    }
     val placementSpec = MotionSpecs.disclosureSize(
         reduced = reduceMotion,
         visibilityThreshold = IntOffset.VisibilityThreshold,
@@ -471,9 +474,14 @@ fun WorkspaceConversationBrowser(
                                     color = MaterialTheme.colorScheme.error,
                                     modifier = Modifier.weight(1f),
                                 )
-                                TextButton(onClick = {
-                                    if (group.isActive) onRefresh() else workspaceMenu.onRefreshCatalog()
-                                }) {
+                                TextButton(
+                                    onClick = {
+                                        if (!collapsed) {
+                                            if (group.isActive) onRefresh() else workspaceMenu.onRefreshCatalog()
+                                        }
+                                    },
+                                    enabled = !collapsed,
+                                ) {
                                     Text(stringResource(UiR.string.common_action_retry))
                                 }
                             }
@@ -520,6 +528,7 @@ fun WorkspaceConversationBrowser(
                                     .zIndex(if (isDragged) 1f else 0f)
                                     .offset { IntOffset(0, dragOffset.roundToInt()) }
                             }
+                            val currentCollapsed by rememberUpdatedState(collapsed)
                             val rowModifier = Modifier
                                 .padding(top = Dimensions.SpaceTiny)
                                 .testTag("workspace-thread:${group.workspaceKey}:$id")
@@ -527,7 +536,7 @@ fun WorkspaceConversationBrowser(
                                     if (!group.isActive) base
                                     else base
                                         .semantics {
-                                            if (canManage) {
+                                            if (canManage && !collapsed) {
                                                 customActions = listOf(-1 to moveUpLabel, 1 to moveDownLabel).map { (delta, label) ->
                                                     CustomAccessibilityAction(label) {
                                                         val ids = currentFiltered.map { it.id.value }
@@ -542,37 +551,42 @@ fun WorkspaceConversationBrowser(
                                                 }
                                             }
                                         }
-                                        .pointerInput(id, canManage, group.workspaceKey) {
-                                            if (canManage) {
+                                        .pointerInput(id, canManage, collapsed, group.workspaceKey) {
+                                            if (canManage && !collapsed) {
                                                 val itemKey = workspaceThreadRowKey(group.workspaceKey, id)
-                                                detectDragGesturesAfterLongPress(
-                                                    onDragStart = {
-                                                        val item = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == itemKey }
-                                                        if (item != null && currentCanManage) {
-                                                            originalIds = currentFiltered.map { it.id.value }
-                                                            previewIds = originalIds
-                                                            draggedId = id
-                                                            dragStartOffset = item.offset.toFloat()
-                                                            dragHeight = item.size
-                                                            dragDistance = 0f
-                                                        }
-                                                    },
-                                                    onDragCancel = { cancelDrag() },
-                                                    onDragEnd = {
-                                                        val moved = previewIds
-                                                        if (moved != null && moved != originalIds && currentCanManage) {
-                                                            currentReorder(reorderVisibleConversationIds(currentOrdered.map { it.id.value }, moved))
-                                                        }
-                                                        cancelDrag()
-                                                    },
-                                                    onDrag = { change, amount ->
-                                                        if (draggedId == id) {
-                                                            change.consume()
-                                                            dragDistance += amount.y
-                                                            reorderUnderPointer()
-                                                        }
-                                                    },
-                                                )
+                                                try {
+                                                    detectDragGesturesAfterLongPress(
+                                                        onDragStart = {
+                                                            if (currentCollapsed) return@detectDragGesturesAfterLongPress
+                                                            val item = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == itemKey }
+                                                            if (item != null && currentCanManage) {
+                                                                originalIds = currentFiltered.map { it.id.value }
+                                                                previewIds = originalIds
+                                                                draggedId = id
+                                                                dragStartOffset = item.offset.toFloat()
+                                                                dragHeight = item.size
+                                                                dragDistance = 0f
+                                                            }
+                                                        },
+                                                        onDragCancel = { cancelDrag() },
+                                                        onDragEnd = {
+                                                            val moved = previewIds
+                                                            if (!currentCollapsed && moved != null && moved != originalIds && currentCanManage) {
+                                                                currentReorder(reorderVisibleConversationIds(currentOrdered.map { it.id.value }, moved))
+                                                            }
+                                                            cancelDrag()
+                                                        },
+                                                        onDrag = { change, amount ->
+                                                            if (draggedId == id && !currentCollapsed) {
+                                                                change.consume()
+                                                                dragDistance += amount.y
+                                                                reorderUnderPointer()
+                                                            }
+                                                        },
+                                                    )
+                                                } finally {
+                                                    if (draggedId == id) cancelDrag()
+                                                }
                                             }
                                         }
                                 }
@@ -585,6 +599,7 @@ fun WorkspaceConversationBrowser(
                                     thread = thread,
                                     selected = isActiveThread,
                                     busy = busy,
+                                    enabled = !collapsed,
                                     showManageMenu = group.isActive,
                                     canReorder = group.isActive && canManage,
                                     canRename = group.isActive && canManage && renameSupported,
@@ -593,12 +608,14 @@ fun WorkspaceConversationBrowser(
                                     deleteSupported = deleteSupported,
                                     relativeTime = relativeThreadTime(thread.updatedAt, now),
                                     onOpen = {
-                                        if (group.isActive) onOpenThread(id)
-                                        else workspaceMenu.onOpenWorkspaceThread(group.workspaceKey, id)
+                                        if (!collapsed) {
+                                            if (group.isActive) onOpenThread(id)
+                                            else workspaceMenu.onOpenWorkspaceThread(group.workspaceKey, id)
+                                        }
                                     },
-                                    onRename = { renameTarget = thread },
-                                    onArchive = { actions.archive(id, !thread.archived) },
-                                    onDelete = { deleteTarget = thread },
+                                    onRename = { if (!collapsed) renameTarget = thread },
+                                    onArchive = { if (!collapsed) actions.archive(id, !thread.archived) },
+                                    onDelete = { if (!collapsed) deleteTarget = thread },
                                     modifier = rowModifier,
                                 )
                             }
@@ -775,6 +792,7 @@ private fun WorkspaceThreadRow(
     thread: ConversationSummary,
     selected: Boolean,
     busy: Boolean,
+    enabled: Boolean,
     showManageMenu: Boolean,
     canReorder: Boolean,
     canRename: Boolean,
@@ -789,6 +807,9 @@ private fun WorkspaceThreadRow(
     modifier: Modifier = Modifier,
 ) {
     var menu by remember { mutableStateOf(false) }
+    LaunchedEffect(enabled) {
+        if (!enabled) menu = false
+    }
     val indicatorColor = MaterialTheme.colorScheme.primary
     val title = resolveDisplayConversationTitle(thread.title)
     val details = listOfNotNull(
@@ -831,7 +852,7 @@ private fun WorkspaceThreadRow(
         trailingContent = if (showManageMenu) {
             {
                 Box {
-                    IconButton(onClick = { menu = true }) {
+                    IconButton(onClick = { menu = true }, enabled = enabled) {
                         Icon(
                             imageVector = Icons.Default.MoreVert,
                             contentDescription = stringResource(UiR.string.conv_browser_item_manage_cd, title),
@@ -906,6 +927,7 @@ private fun WorkspaceThreadRow(
                 }
             }
             .bouncyClickable(
+                enabled = enabled,
                 onClickLabel = stringResource(UiR.string.conv_browser_action_open_thread),
                 onClick = onOpen,
             ),

@@ -101,7 +101,7 @@ fun MarkdownToolCallView(
     val stateColors = LocalAppStateColors.current
 
     // 只有消息仍在流式时，未闭合的 tool_call 才代表「真的在执行」；
-    // 流已经结束却仍未闭合，就是中断，结果未知。
+    // 流已经结束却仍未闭合，就是中断，未返回结果。
     val nativeStatus = block.executionStatus
     val running = nativeStatus == NativeExecutionStatus.RUNNING ||
         nativeStatus == null && block.isRunning && isStreaming
@@ -284,7 +284,7 @@ fun MarkdownToolCallView(
                 }
             },
             expandedContent = {
-                ToolCallDetails(block = block, running = running)
+                ToolCallDetails(block = block, running = running, interrupted = interrupted)
             },
         )
     }
@@ -314,6 +314,7 @@ private fun toolBadgeText(
 private fun ToolCallDetails(
     block: TimelineBlock.ToolCallBlock,
     running: Boolean,
+    interrupted: Boolean,
 ) {
     val execSuccessLabel = stringResource(UiR.string.conv_md_exec_success)
     val execFailedLabel = stringResource(UiR.string.conv_md_exec_failed)
@@ -405,7 +406,8 @@ private fun ToolCallDetails(
                 Text(
                     text = stringResource(
                         when {
-                            block.executionStatus == NativeExecutionStatus.UNKNOWN -> UiR.string.conv_tool_status_no_result
+                            block.executionStatus == NativeExecutionStatus.UNKNOWN || interrupted ->
+                                UiR.string.conv_tool_status_no_result
                             block.invocationOnly -> UiR.string.conv_tool_invocation_no_return
                             else -> UiR.string.conv_tool_no_output
                         },

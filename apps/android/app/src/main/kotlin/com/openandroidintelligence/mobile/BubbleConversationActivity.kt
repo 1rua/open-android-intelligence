@@ -229,7 +229,7 @@ private fun BubbleChat(
     val toolCardRevealTracker = rememberToolCardRevealTracker(
         threadId = state.activeThreadId,
         displayItems = displayItems,
-        ready = state.timeline is Loadable.Ready,
+        ready = state.timeline is Loadable.Ready || state.timeline is Loadable.Empty,
     )
     val reduceMotion = LocalMotionPolicy.current.isReduced
     val downloadAction: ((String) -> Unit)? =

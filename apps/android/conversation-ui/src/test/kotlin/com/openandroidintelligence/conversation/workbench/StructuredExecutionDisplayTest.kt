@@ -3,6 +3,7 @@ package com.openandroidintelligence.conversation.workbench
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.model.NativeExecutionStep
+import com.openandroidintelligence.conversation.model.TimelineAttachment
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import com.openandroidintelligence.conversation.state.ApprovalCardState
 import com.openandroidintelligence.conversation.model.ApprovalId
@@ -416,6 +417,22 @@ class StructuredExecutionDisplayTest {
         assertEquals(2, items.size)
         val run = (items[0] as TimelineDisplayItem.Execution).run
         assertTrue(run.hasCompletedFinalAnswer, "临时 generation 的纯工具段紧随权威 generation 最终回答也应折叠")
+    }
+
+    @Test
+    fun completedNativeRunFollowedByAttachmentOnlyFinalAnswerCollapses() {
+        val items = TimelineDisplayModel().build(
+            listOf(
+                entry("fact-img", "g-img", steps = listOf(step("s-img"))).copy(executionFact = true),
+                entry("final-img", "g-img", text = "").copy(
+                    attachments = listOf(TimelineAttachment(draftId = "att-1", filename = "result.png", mediaType = "image/png")),
+                ),
+            ),
+            generation = GenerationState.COMPLETED,
+        )
+        assertEquals(2, items.size)
+        val run = (items[0] as TimelineDisplayItem.Execution).run
+        assertTrue(run.hasCompletedFinalAnswer, "纯原生工具段紧跟仅含附件的最终回答也应允许折叠")
     }
 
 }
