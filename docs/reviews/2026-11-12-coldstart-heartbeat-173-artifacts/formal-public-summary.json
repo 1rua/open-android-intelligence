@@ -1,0 +1,115 @@
+{
+  "sourceBaseline": "4e7aeef85dbe824223ce3a23eeb0a4fe125a04a4",
+  "sourceChange": "仅ControlledEventStream增加当前Core心跳响应头及中文注释",
+  "originalTestSourceModified": false,
+  "productionSourceModified": false,
+  "tenSecondAssertionsPreserved": true,
+  "temporaryLatchOrInputWrapperPresent": false,
+  "methodBuild": {
+    "status": "SUCCESSFUL",
+    "seconds": "3m52s",
+    "tasks": 862,
+    "executed": 342,
+    "fromCache": 520
+  },
+  "methodRuns": [
+    {
+      "name": "minimal-original-debug.xml",
+      "sha256": "d3e6f5da4e4d5e2c0162f2bed089a97efa164c3bffb7a22ec0d5cc3da61bae13",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": "8.253",
+      "signal": [
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接恢复实测：recoveryMillis=4032"
+      ]
+    },
+    {
+      "name": "minimal-original-release.xml",
+      "sha256": "234c45be8990e0d33cad868fd26157dc1bde678784aedcde484432617049588c",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": "7.165",
+      "signal": [
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接恢复实测：recoveryMillis=3941"
+      ]
+    }
+  ],
+  "wholeClassRuns": [
+    {
+      "variant": "FullDebug",
+      "xmlSha256": "ba1ba1d461f280a90b1dce001fc66f155bd6ee017d94cadab2f663f312dc88a6",
+      "tests": 19,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": "19.596",
+      "signal": [
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接恢复实测：recoveryMillis=4235",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl"
+      ]
+    },
+    {
+      "variant": "FullRelease",
+      "xmlSha256": "4aaa9b255b0ad1ef8a9f5b17e0410300aee9d2a9dedafd5ae2aaef5a0ce0c289",
+      "tests": 19,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": "19.905",
+      "signal": [
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接恢复实测：recoveryMillis=3912",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl"
+      ]
+    }
+  ],
+  "fullStatus": "未执行最终Full，关闭条件继续保留",
+  "wholeClassBuild": {
+    "status": "SUCCESSFUL",
+    "elapsed": "1m40s",
+    "tasks": 862,
+    "executed": 28,
+    "upToDate": 834
+  }
+}

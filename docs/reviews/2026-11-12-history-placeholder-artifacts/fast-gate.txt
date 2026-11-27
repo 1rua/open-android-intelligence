@@ -1,0 +1,4 @@
+ Test Files  5 passed | 1 skipped (6)
+      Tests  120 passed | 3 skipped (123)
+BUILD SUCCESSFUL in 22s
+✅ 所有阶段验证通过！

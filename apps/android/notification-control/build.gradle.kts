@@ -6,7 +6,18 @@ plugins {
 // 裁决 D6：纯接口模块。只有 port 契约与 deny-first 默认实现，
 // 没有采集、没有权限请求、没有持久化；Android 侧仅剩 android.jar 的
 // Context 类型（NotificationBindingPort.openSystemListenerSettings 需要）。
-android { namespace = "com.openandroidintelligence.notification.control" }
+android {
+    namespace = "com.openandroidintelligence.notification.control"
+
+    testOptions.unitTests.apply {
+        isIncludeAndroidResources = true
+        all {
+            val testHome = rootProject.layout.projectDirectory.dir(".gradle/robolectric-home").asFile
+            it.systemProperty("user.home", testHome.absolutePath)
+            it.doFirst { testHome.mkdirs() }
+        }
+    }
+}
 
 dependencies {
     // 快照复用 core-model 的闭集枚举（字段访问 / 投递模式），避免第二套平行定义。

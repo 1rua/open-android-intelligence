@@ -1,157 +1,107 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" width="100%" height="auto" role="img" aria-label="架构：Android 客户端通过 Gateway Protocol v2 连接 Agent 宿主">
-  <title>设备、协议与宿主的连接结构</title>
-  <desc>航天工程制图风格的三层架构：设备侧由 Android 宿主、平台内核与设备插件组成；Gateway Protocol v2 负责传输与校验；Hermes、OpenClaw 与 DSH 通过各自插件提供网关服务。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 540" width="100%" height="auto" role="img" aria-labelledby="title desc">
+  <title id="title">Open Android Intelligence 是怎么工作的：手机、OAI Core 与 AI 助手三方协作</title>
+  <desc id="desc">用大白话展示三部分关系：左边是你的安卓手机（随时聊天、装插件、本地管权限），中间是你自己电脑或服务器上的 OAI Core（负责牵线传话，不替手机做决定），右边是你的各种 AI 助手（Hermes、DSH、Codex、Claude Code 等）。</desc>
 
   <defs>
-    <pattern id="archGrain" width="7" height="7" patternUnits="userSpaceOnUse">
-      <circle cx="1" cy="1" r="0.5" fill="#111111" opacity="0.09"/>
-      <circle cx="5" cy="4" r="0.38" fill="#111111" opacity="0.055"/>
+    <pattern id="archGrid" width="16" height="16" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="0.8" fill="#111111" opacity="0.07"/>
     </pattern>
-    <pattern id="archHalftone" width="8" height="8" patternUnits="userSpaceOnUse">
-      <circle cx="2" cy="2" r="1.4" fill="#111111" opacity="0.36"/>
-    </pattern>
-    <clipPath id="archClip">
-      <rect x="20" y="20" width="1160" height="560"/>
-    </clipPath>
   </defs>
 
   <style>
-    .mono { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #4E4E4E; }
-    .mono-d { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #111111; }
-    .mono-m { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 0.8px; fill: #6F6F6A; }
-    .num { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", monospace; font-size: 18px; letter-spacing: 1.2px; fill: #B8501F; }
-    .disp { font-family: "Arial Black", "Inter", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-weight: 900; font-size: 44px; letter-spacing: -0.8px; fill: #111111; }
-    .item { font-family: "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; font-weight: 700; fill: #111111; }
-    .body { font-family: "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; font-weight: 400; fill: #4E4E4E; }
-    .host { font-family: "Arial Black", "Inter", "Helvetica Neue", Arial, "Noto Sans CJK SC", "PingFang SC", sans-serif; font-size: 20px; font-weight: 900; letter-spacing: 0.6px; fill: #111111; }
+    .mono { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", ui-monospace, monospace; font-size: 18px; letter-spacing: 0.4px; fill: #4A4A46; }
+    .mono-d { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", ui-monospace, monospace; font-size: 18px; font-weight: 700; letter-spacing: 0.5px; fill: #111111; }
+    .num { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", ui-monospace, monospace; font-size: 18px; font-weight: 700; letter-spacing: 0.8px; fill: #B8501F; }
+    .disp { font-family: "Arial Black", "Inter", "Helvetica Neue", Arial, "PingFang SC", "Noto Sans CJK SC", sans-serif; font-weight: 900; font-size: 40px; letter-spacing: -0.6px; fill: #111111; }
+    .card-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", sans-serif; font-size: 22px; font-weight: 800; fill: #111111; }
+    .item { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", sans-serif; font-size: 20px; font-weight: 700; fill: #111111; }
+    .foot-item { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", sans-serif; font-size: 18px; font-weight: 700; fill: #111111; }
+    .body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", sans-serif; font-size: 18px; font-weight: 400; fill: #4A4A46; }
   </style>
 
-  <rect width="1200" height="600" fill="#F7F7F5"/>
-  <rect width="1200" height="600" fill="url(#archGrain)"/>
-  <rect x="20" y="20" width="1160" height="560" fill="none" stroke="#111111" stroke-width="1.2"/>
+  <rect width="1200" height="540" rx="20" fill="#F7F7F5"/>
+  <rect width="1200" height="540" rx="20" fill="url(#archGrid)"/>
+  <rect x="20" y="20" width="1160" height="500" fill="none" stroke="#111111" stroke-width="1.4"/>
 
-  <g stroke="#111111" stroke-width="1">
+  <g stroke="#111111" stroke-width="1.2">
     <path d="M10 20H30M20 10V30"/>
     <path d="M1170 20H1190M1180 10V30"/>
-    <path d="M10 580H30M20 570V590"/>
-    <path d="M1170 580H1190M1180 570V590"/>
+    <path d="M10 520H30M20 510V530"/>
+    <path d="M1170 520H1190M1180 510V530"/>
   </g>
 
-  <text x="44" y="47" class="mono-d" style="letter-spacing:1.4px">OPEN ANDROID INTELLIGENCE / SYSTEM ARCHIVE</text>
-  <text x="600" y="47" class="mono">TECHNICAL DOSSIER / SHEET 02</text>
-  <text x="1156" y="47" class="mono" text-anchor="end">REV 2.1.1 / 2026</text>
-  <path d="M44 64H1156" stroke="#111111" stroke-width="1"/>
+  <text x="44" y="48" class="mono-d">HOW IT WORKS / 一张图看懂工作原理</text>
+  <text x="1156" y="48" class="mono" text-anchor="end">无第三方云端中转 · 数据直连你自己的服务</text>
+  <path d="M44 64H1156" stroke="#111111" stroke-width="1.2"/>
 
-  <g clip-path="url(#archClip)">
-    <g opacity="0.5">
-      <circle cx="1128" cy="536" r="26" fill="none" stroke="#D6D6CE" stroke-width="0.8"/>
-      <circle cx="1128" cy="536" r="52" fill="none" stroke="#D6D6CE" stroke-width="0.8" stroke-dasharray="2 6"/>
-      <path d="M1128 470V602M1062 536H1194" stroke="#D6D6CE" stroke-width="0.8"/>
-    </g>
-  </g>
+  <text x="44" y="114" class="disp">三部分怎么配合工作？</text>
+  <text x="44" y="146" class="body">你不需要在手机里塞进笨重的大模型——手机只负责聊天界面、手机动作和权限把关，思考交给电脑上的 AI。</text>
+  <path d="M44 168H1156" stroke="#111111" stroke-width="1.2"/>
 
-  <text x="44" y="96" class="num">FIG. 02 / SYSTEM TOPOLOGY</text>
-  <text x="42" y="146" class="disp">设备、协议与宿主的连接结构</text>
-  <text x="44" y="174" class="mono">ANDROID HOST → GATEWAY PROTOCOL V2 → AGENT HOST</text>
+  <!-- 列 1：你的安卓手机 -->
+  <rect x="44" y="188" width="336" height="284" fill="#FFFFFF" stroke="#111111" stroke-width="1.4"/>
+  <rect x="44" y="188" width="336" height="64" fill="#EFEFE9" stroke="#111111" stroke-width="1.2"/>
+  <text x="64" y="214" class="num">01 / PHONE</text>
+  <text x="64" y="240" class="card-title">你的安卓手机 (App)</text>
 
-  <text x="1156" y="96" class="mono" text-anchor="end">RELAY / 0.00</text>
-  <text x="1156" y="118" class="mono" text-anchor="end">AUTH / ED25519</text>
-  <text x="1156" y="140" class="mono" text-anchor="end">VECTORS / 70</text>
-  <text x="1156" y="162" class="mono" text-anchor="end">STATUS / ACTIVE</text>
+  <rect x="64" y="272" width="16" height="4" fill="#B8501F"/>
+  <text x="64" y="298" class="item">随时跟 AI 聊天</text>
+  <text x="64" y="324" class="body">发文字、传文件、圈选屏幕提问</text>
+  <path d="M64 340H360" stroke="#E2E2DA" stroke-width="1"/>
 
-  <path d="M44 196H1156" stroke="#111111" stroke-width="1"/>
+  <rect x="64" y="356" width="16" height="4" fill="#B8501F"/>
+  <text x="64" y="382" class="item">按需开启手机能力插件</text>
+  <text x="64" y="408" class="body">查通知、读短信、截屏与点按屏幕</text>
+  <path d="M64 424H360" stroke="#E2E2DA" stroke-width="1"/>
 
-  <g>
-    <rect x="44" y="214" width="282" height="316" fill="none" stroke="#111111" stroke-width="1.2"/>
-    <rect x="350" y="214" width="242" height="316" fill="none" stroke="#111111" stroke-width="1.2"/>
-    <rect x="616" y="214" width="540" height="316" fill="none" stroke="#111111" stroke-width="1.2"/>
-    <path d="M44 280H326M350 280H592M616 280H1156" stroke="#111111" stroke-width="1"/>
-  </g>
+  <text x="64" y="452" class="foot-item">决定权 100% 留在手机本地</text>
 
-  <text x="60" y="240" class="num">01 / DEVICE</text>
-  <text x="310" y="240" class="mono-m" text-anchor="end">LOCAL</text>
-  <text x="60" y="266" class="mono-d">Android 宿主</text>
+  <!-- 箭头 1 <-> 2 -->
+  <path d="M380 330H432" stroke="#111111" stroke-width="2"/>
+  <path d="M390 323L380 330L390 337" fill="none" stroke="#111111" stroke-width="2"/>
+  <path d="M422 323L432 330L422 337" fill="none" stroke="#111111" stroke-width="2"/>
 
-  <text x="366" y="240" class="num">02 / PROTOCOL</text>
-  <text x="366" y="266" class="mono-d">Gateway v2</text>
+  <!-- 列 2：OAI Core 服务端 -->
+  <rect x="432" y="188" width="336" height="284" fill="#FFFFFF" stroke="#111111" stroke-width="1.4"/>
+  <rect x="432" y="188" width="336" height="64" fill="#EFEFE9" stroke="#111111" stroke-width="1.2"/>
+  <text x="452" y="214" class="num">02 / OAI CORE</text>
+  <text x="452" y="240" class="card-title">你的私人中枢 (服务端)</text>
 
-  <text x="632" y="240" class="num">03 / HOST</text>
-  <text x="1140" y="240" class="mono-m" text-anchor="end">HERMES · OPENCLAW · DSH</text>
-  <text x="632" y="266" class="mono-d">Agent 宿主</text>
+  <rect x="452" y="272" width="16" height="4" fill="#B8501F"/>
+  <text x="452" y="298" class="item">装在你自己的电脑或服务器</text>
+  <text x="452" y="324" class="body">一个地址同时连手机和各种 AI</text>
+  <path d="M452 340H748" stroke="#E2E2DA" stroke-width="1"/>
 
-  <g>
-    <path d="M60 306H74" stroke="#B8501F" stroke-width="2.4"/>
-    <text x="60" y="332" class="item">账号与会话</text>
-    <text x="60" y="358" class="body">连接 Gateway、选取附件</text>
-    <path d="M60 378H310" stroke="#D6D6CE" stroke-width="0.8"/>
+  <rect x="452" y="356" width="16" height="4" fill="#B8501F"/>
+  <text x="452" y="382" class="item">负责验证身份与传话</text>
+  <text x="452" y="408" class="body">核对账号、转发请求并取回结果</text>
+  <path d="M452 424H748" stroke="#E2E2DA" stroke-width="1"/>
 
-    <path d="M60 400H74" stroke="#B8501F" stroke-width="2.4"/>
-    <text x="60" y="426" class="item">平台内核</text>
-    <text x="60" y="452" class="body">管理身份、授权与插件</text>
-    <path d="M60 472H310" stroke="#D6D6CE" stroke-width="0.8"/>
+  <text x="452" y="452" class="foot-item">只负责传话，不能替手机批权限</text>
 
-    <path d="M60 494H74" stroke="#B8501F" stroke-width="2.4"/>
-    <text x="60" y="520" class="item">设备插件</text>
-  </g>
+  <!-- 箭头 2 <-> 3 -->
+  <path d="M768 330H820" stroke="#111111" stroke-width="2"/>
+  <path d="M778 323L768 330L778 337" fill="none" stroke="#111111" stroke-width="2"/>
+  <path d="M810 323L820 330L810 337" fill="none" stroke="#111111" stroke-width="2"/>
 
-  <g>
-    <path d="M366 296V520" stroke="#C9C9C2" stroke-width="0.9"/>
-    <circle cx="366" cy="296" r="5" fill="#111111"/>
-    <circle cx="366" cy="352" r="5" fill="#F7F7F5" stroke="#111111" stroke-width="1.4"/>
-    <circle cx="366" cy="408" r="5" fill="#F7F7F5" stroke="#111111" stroke-width="1.4"/>
-    <circle cx="366" cy="464" r="5" fill="#F7F7F5" stroke="#111111" stroke-width="1.4"/>
+  <!-- 列 3：你的 AI 助手 -->
+  <rect x="820" y="188" width="336" height="284" fill="#FFFFFF" stroke="#111111" stroke-width="1.4"/>
+  <rect x="820" y="188" width="336" height="64" fill="#EFEFE9" stroke="#111111" stroke-width="1.2"/>
+  <text x="840" y="214" class="num">03 / AI AGENTS</text>
+  <text x="840" y="240" class="card-title">你的各种 AI 助手</text>
 
-    <text x="384" y="302" class="mono-d">HTTP(S) / SSE</text>
-    <text x="384" y="326" class="body">双向事件流</text>
+  <rect x="840" y="272" width="16" height="4" fill="#B8501F"/>
+  <text x="840" y="298" class="item">把电脑上的会话接进手机</text>
+  <text x="840" y="324" class="body">直连 Hermes、DSH、Codex 对话</text>
+  <path d="M840 340H1136" stroke="#E2E2DA" stroke-width="1"/>
 
-    <text x="384" y="358" class="mono-d">JSON SCHEMA</text>
-    <text x="384" y="382" class="body">2020-12 封闭校验</text>
+  <rect x="840" y="356" width="16" height="4" fill="#B8501F"/>
+  <text x="840" y="382" class="item">用命令行或 MCP 操控手机</text>
+  <text x="840" y="408" class="body">支持 oai 命令行与 MCP 工具调用</text>
+  <path d="M840 424H1136" stroke="#E2E2DA" stroke-width="1"/>
 
-    <text x="384" y="414" class="mono-d">ED25519</text>
-    <text x="384" y="438" class="body">签名与防重放</text>
+  <text x="840" y="452" class="foot-item">每次调用都须写明是谁、为什么</text>
 
-    <text x="384" y="470" class="mono-d">IDEMPOTENT</text>
-    <text x="384" y="494" class="body">幂等执行</text>
-  </g>
-
-  <path d="M326 362H346" stroke="#111111" stroke-width="1.2"/>
-  <path d="M346 356V368L350 362Z" fill="#111111"/>
-  <path d="M592 362H612" stroke="#111111" stroke-width="1.2"/>
-  <path d="M612 356V368L616 362Z" fill="#111111"/>
-
-  <g>
-    <text x="632" y="314" class="num">01</text>
-    <text x="664" y="314" class="host">HERMES</text>
-    <text x="775" y="314" class="body">独立插件 / 主密钥</text>
-    <text x="1140" y="314" class="mono-m" text-anchor="end">ADAPTER / 2.2.0</text>
-    <path d="M632 330H1140" stroke="#D6D6CE" stroke-width="0.8"/>
-
-    <text x="632" y="368" class="num">02</text>
-    <text x="664" y="368" class="host">OPENCLAW</text>
-    <text x="790" y="368" class="body">独立插件 / 主密钥</text>
-    <text x="1140" y="368" class="mono-m" text-anchor="end">ADAPTER / 1.1.0</text>
-    <path d="M632 384H1140" stroke="#D6D6CE" stroke-width="0.8"/>
-
-    <text x="632" y="422" class="num">03</text>
-    <text x="664" y="422" class="host">DSH</text>
-    <text x="722" y="422" class="body">复用原生端口</text>
-    <text x="1140" y="422" class="mono-m" text-anchor="end">BUNDLE / 0.2.0</text>
-    <path d="M632 438H1140" stroke="#D6D6CE" stroke-width="0.8"/>
-
-    <text x="632" y="472" class="body">多账号隔离</text>
-    <text x="764" y="472" class="body">配对、会话与数据按账号隔离</text>
-    <path d="M632 488H1140" stroke="#D6D6CE" stroke-width="0.8"/>
-    <text x="632" y="516" class="body">能力声明</text>
-    <text x="764" y="516" class="body">由 Agent 宿主按会话协商</text>
-  </g>
-
-  <g opacity="0.65">
-    <circle cx="52" cy="547" r="9" fill="url(#archHalftone)"/>
-    <circle cx="52" cy="547" r="9" fill="none" stroke="#111111" stroke-width="0.8"/>
-    
-  </g>
-
-  <path d="M44 550H1156" stroke="#111111" stroke-width="1"/>
-  <text x="44" y="574" class="mono">SHEET 02 / THREE-LAYER TOPOLOGY · 设备能力链路仍在装配</text>
-  <text x="1156" y="574" class="mono" text-anchor="end">NO RELAY · ED25519 · 70 VECTORS</text>
+  <path d="M44 486H1156" stroke="#111111" stroke-width="1.2"/>
+  <text x="44" y="508" class="body">一句话总结：手机装一个 App，电脑跑一个 OAI Core，你常用的 AI 助手就都能在手机上聊天并安全帮你干活。</text>
 </svg>

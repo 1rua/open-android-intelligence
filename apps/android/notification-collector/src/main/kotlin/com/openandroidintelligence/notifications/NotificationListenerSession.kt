@@ -18,21 +18,39 @@ internal class NotificationListenerSession(
     }
 
     fun refresh(): AndroidNotificationCollector? = synchronized(lock) {
-        if (!connected) return@synchronized null
-        val snapshot = try { activeNotifications() } catch (_: SecurityException) { null }
-        if (snapshot == null) {
+        if (!canCollect()) return@synchronized null
+        val snapshot = try { NotificationCollectionAccess.capture(activeNotifications) } catch (_: SecurityException) { null }
+        if (snapshot == null || !canCollect()) {
             collector.clearActive()
             return@synchronized null
         }
         collector.reconcileActive(snapshot)
+        if (!canCollect()) return@synchronized null
         collector
     }
 
-    fun posted(notification: RawNotification) = synchronized(lock) {
-        if (connected) collector.onPosted(notification)
+    /** The service passes a lazy factory so logout prevents even title/body extraction. */
+    fun posted(notification: () -> RawNotification): Boolean = synchronized(lock) {
+        if (!canCollect()) return@synchronized false
+        val raw = NotificationCollectionAccess.capture(notification) ?: run {
+            collector.clearActive()
+            return@synchronized false
+        }
+        if (!canCollect()) return@synchronized false
+        collector.onPosted(raw)
     }
 
-    fun removed(key: String) = synchronized(lock) {
-        if (connected) collector.onRemoved(key)
+    /** Already-normalized test/provider records still cross the same lifecycle gate. */
+    fun posted(notification: RawNotification): Boolean = posted { notification }
+
+    fun removed(key: String): Boolean = synchronized(lock) {
+        if (!canCollect()) return@synchronized false
+        collector.onRemoved(key)
+    }
+
+    private fun canCollect(): Boolean {
+        if (connected && NotificationCollectionAccess.isAllowed()) return true
+        collector.clearActive()
+        return false
     }
 }

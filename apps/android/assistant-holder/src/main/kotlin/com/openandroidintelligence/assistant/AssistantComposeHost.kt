@@ -37,6 +37,19 @@ internal class AssistantComposeHost(context: Context) :
     private val savedStateController = SavedStateRegistryController.create(this)
     private val composeView = ComposeView(context)
 
+    /**
+     * 内容测量高度回传：Compose 根节点把自身高度交给宿主，宿主原样转给窗口层。
+     *
+     * 宿主本身不解释这个高度（不去 `setLayout`、也不缓存成布局参数）：窗口属于会话，
+     * 宿主只做「界面 → 窗口」这一跳的转发，避免两处都以为自己是尺寸真相。
+     */
+    var onContentHeightChanged: ((heightPx: Int) -> Unit)? = null
+
+    /** 供内容层回调：把整棵树的测量高度交给窗口层。 */
+    fun reportContentHeight(heightPx: Int) {
+        onContentHeightChanged?.invoke(heightPx)
+    }
+
     override val lifecycle: Lifecycle get() = lifecycleRegistry
 
     override val savedStateRegistry: SavedStateRegistry get() = savedStateController.savedStateRegistry

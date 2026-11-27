@@ -29,20 +29,20 @@ fail() { printf 'TSNET_AAR_BUILD_BLOCKED: %s\n' "$1" >&2; exit 2; }
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../../../.." && pwd)"
-toolchains="$repo_root/.toolchains"
+toolchains="${OAI_TOOLCHAINS_ROOT:-$repo_root/.toolchains}"
 lock_file="$repo_root/apps/android/tailnet-core/native/tsnetbridge/tsnet-aar.lock.json"
 wrapper_dir="$repo_root/apps/android/tailnet-core/native/tsnetbridge"
 staged_source="$toolchains/tsnet-src-v1.98.10"
 build_root="$toolchains/tsnet-build"
 out_dir="$repo_root/apps/android/tailnet-core/libs"
 
-readonly NDK_ROOT="$toolchains/android-sdk/ndk/27.2.12479018"
-readonly JDK_ROOT="$toolchains/jdk-17.0.20+8"
+readonly NDK_ROOT="${ANDROID_NDK_HOME:-$toolchains/android-sdk/ndk/27.2.12479018}"
+readonly JDK_ROOT="${JAVA_HOME:-$toolchains/jdk-17.0.20+8}"
 GOMODCACHE="$toolchains/gomodcache"
 GOCACHE="$toolchains/go-build-cache"
-GO_BIN='/usr/sbin/go'
-GOMOBILE_BIN="$repo_root/.toolchains/go-workspace/bin/gomobile"
-GOBIND_BIN="$repo_root/.toolchains/go-workspace/bin/gobind"
+GO_BIN="${GO_BIN:-$(command -v go || echo /usr/bin/go)}"
+GOMOBILE_BIN="$toolchains/go-workspace/bin/gomobile"
+GOBIND_BIN="$toolchains/go-workspace/bin/gobind"
 
 [[ -x "$GO_BIN" ]] || fail "go binary missing: $GO_BIN"
 [[ -x "$GOMOBILE_BIN" ]] || fail "gomobile binary missing: $GOMOBILE_BIN"
@@ -51,17 +51,27 @@ GOBIND_BIN="$repo_root/.toolchains/go-workspace/bin/gobind"
 [[ -d "$staged_source" ]] || fail "staged source missing (run stage-tsnet-source.sh first): $staged_source"
 [[ -f "$staged_source/source-metadata.json" ]] || fail "staged source has no source-metadata.json"
 
+# 在隔离 HOME 前优先继承或推导 GOPATH，并仅在未显式设置 GOROOT 且目标存在时按 go env GOROOT 推导
+export GOPATH="${GOPATH:-${HOME}/go}"
+if [[ -z "${GOROOT:-}" ]]; then
+  detected_goroot="$("$GO_BIN" env GOROOT 2>/dev/null || true)"
+  if [[ -n "$detected_goroot" && -d "$detected_goroot" ]]; then
+    export GOROOT="$detected_goroot"
+  fi
+else
+  export GOROOT
+fi
+
 export HOME="$toolchains/tsnet-home"
 export TMPDIR="$toolchains/tsnet-tmp"
-export PATH="/usr/sbin:/usr/bin:/bin:$(dirname "$GOMOBILE_BIN"):$JDK_ROOT/bin"
-export GOROOT='/usr/lib/go'
-export GOPATH='/home/djbd/go'
+export PATH="$(dirname "$GO_BIN"):$(dirname "$GOMOBILE_BIN"):$JDK_ROOT/bin:/usr/sbin:/usr/bin:/bin"
 export GOMODCACHE="$GOMODCACHE"
 export GOPROXY="file://$toolchains/gomodcache/cache/download"
 export GOSUMDB='off'
 export GOTOOLCHAIN='local'
 export GOCACHE="$toolchains/tsnet-go-build-cache-aar"
-export ANDROID_HOME="$toolchains/android-sdk"
+export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$toolchains/android-sdk}}"
+export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
 export ANDROID_NDK_HOME="$NDK_ROOT"
 export JAVA_HOME="$JDK_ROOT"
 export CGO_ENABLED='1'

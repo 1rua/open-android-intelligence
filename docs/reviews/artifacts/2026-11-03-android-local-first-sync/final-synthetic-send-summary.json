@@ -1,0 +1,18 @@
+{
+  "sourceCommit": "403c5c58f5bba7f69b50c5da1878c172d07974ee",
+  "apkSha256": "a4cbe29527910cdff7528f3d24935c0b91725565e060ba3621aa0cfadacfe1ae",
+  "data": "synthetic only; identifiers are SHA-256 digests",
+  "conversationIdSha256": "8ad30a397e66cd5c9ae948b0946b79d881128940f36105532185849a1cd6660c",
+  "clientMessageIdSha256": "29eb99c5e519ee16307b7a4a1f1febf018279cbbd9c983347fa0a513975e5057",
+  "generationIdSha256": "a7d9ae9dfaa9b9fee318b68f24bb46f58514e57f53adfc0e3277da6866f61a5a",
+  "userMessageIdSha256": "4ea5c4b39685e97c65c87c6829696bb965520c33e212c0f9361c85454edf2ba6",
+  "observedClientEvents": ["send.clicked", "send.dispatched", "T1.request_started", "T6.sse_read:generation", "T6.sse_read:delta", "T6.sse_read:done", "send.acceptance_merged", "T10.frame_committed:reply"],
+  "adapterTaskStartedCount": 1,
+  "adapterTaskFinishedCount": 1,
+  "adapterHttpPostCount": null,
+  "limitations": [
+    "The fixture only journals HTTP posts for the original conversation, not this second conversation.",
+    "A single task start is not proof of exactly one network delivery.",
+    "The static fixture history does not project newly emitted events; full EventSync recovery is not verified."
+  ]
+}

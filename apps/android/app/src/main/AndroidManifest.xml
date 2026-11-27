@@ -4,6 +4,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <!-- 短信能力按设备实际支持情况启用，客户端本身不要求电话硬件。 -->
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!--
         屏幕圈选的截图来源（MediaProjection）：Android 14+ 要求投影会话跑在
@@ -12,6 +15,7 @@
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
@@ -22,6 +26,11 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- 初始引导在打开设置前需要查询这些系统入口是否存在。 -->
+        <intent><action android:name="android.settings.ACCESSIBILITY_SETTINGS" /></intent>
+        <intent><action android:name="android.settings.VOICE_INPUT_SETTINGS" /></intent>
+        <intent><action android:name="android.settings.MANAGE_DEFAULT_APPS_SETTINGS" /></intent>
+        <intent><action android:name="android.settings.SETTINGS" /></intent>
     </queries>
 
     <!--
@@ -38,10 +47,20 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.OpenAndroidIntelligence"
         android:usesCleartextTraffic="true">
+        <activity android:name=".RemoteOAuthCallbackActivity" android:exported="true" android:noHistory="true" android:excludeFromRecents="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="dshremote" android:host="oauth" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".RemotePairingCaptureActivity" android:exported="false" android:screenOrientation="fullSensor" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
+            android:enableOnBackInvokedCallback="true"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.OpenAndroidIntelligence">
             <intent-filter>
@@ -98,6 +117,19 @@
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.OpenAndroidIntelligence" />
         <service
+            android:name=".RemoteHostStandbyService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="为已登录并登记为远程主机的手机维持出站控制连接，使同账号设备可发起受本机授权约束的控制会话" />
+        </service>
+        <receiver android:name=".RemoteHostBootReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+        <service
             android:name=".AgentSessionForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
@@ -109,10 +141,8 @@
         <!--
             系统数字助理（VoiceInteractionService / VoiceInteractionSessionService）。
 
-            声明必须放在 app 模块：`android.voice_interaction` 元数据里的 sessionService
-            要求写成 `<applicationId>/<类全名>` 的扁平组件名，只有这里确定最终
-            applicationId；写成短类名时 ComponentName.unflattenFromString 返回 null，
-            系统会把应用判成 unqualified，用户在「默认数字助理」里根本看不到本应用。
+            `android.voice_interaction` 元数据中的 sessionService 和 recognitionService
+            使用完整类名，系统用当前安装包名和类名组成服务组件。
 
             会话服务必须 exported=true（系统以不同 UID 绑定），权限仍由
             BIND_VOICE_INTERACTION 收口，只有系统能绑定。
@@ -152,6 +182,25 @@
             android:exported="true"
             android:permission="android.permission.BIND_VOICE_INTERACTION" />
         <!--
+            附件选择器：``VoiceInteractionSession`` 没有 ActivityResultRegistry，
+            因此由这个透明、不可导出、不进最近任务的 Activity 承载系统选择器。
+            同 ``AssistantActivity`` 一样跑在 ``:assistant_session`` 进程，结果由进程级
+            broker 交回当前会话。
+
+            **不要加 ``android:noHistory``**：本 Activity 拉起系统选择器时自己会 stop，
+            而 noHistory 在 stop 时直接销毁它，ActivityResultRegistry 的登记随之丢失，
+            用户选完文件却拿不到结果。它本来就选完即 ``finish()``、也不进最近任务，
+            不需要靠 noHistory 兜底。``singleTask`` 保持不变：同一次唤起只允许一个选择器。
+        -->
+        <activity
+            android:name="com.openandroidintelligence.assistant.AssistantAttachmentPickerActivity"
+            android:process=":assistant_session"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:launchMode="singleTask" />
+        <!--
             数字助理资格判定要求存在 recognitionService（见 voice_interaction_service.xml）。
             本应用不做系统级语音识别，服务里明确返回「未接入」，不伪造识别结果。
         -->
@@ -160,14 +209,8 @@
             android:process=":assistant_keeper"
             android:exported="true"
             android:permission="android.permission.BIND_SPEECH_RECOGNITION" />
+        <service android:name=".DevicePushJobService" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="false" />
         <service android:name=".plugins.PluginTimerService" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="false" />
-        <service
-            android:name=".GatewayAccountAuthenticatorService"
-            android:exported="true"
-            android:permission="android.permission.BIND_ACCOUNT_AUTHENTICATOR">
-            <intent-filter><action android:name="android.accounts.AccountAuthenticator" /></intent-filter>
-            <meta-data android:name="android.accounts.AccountAuthenticator" android:resource="@xml/gateway_account_authenticator" />
-        </service>
 
         <!--
             仅供 JVM 单元测试（Robolectric + Compose createComposeRule）解析的

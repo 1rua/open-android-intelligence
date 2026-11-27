@@ -12,7 +12,10 @@ import com.openandroidintelligence.policy.PersistentNotificationPolicyAuthority
 import com.openandroidintelligence.policy.PolicyStateCorrupted
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.combine
 
 /**
  * `NotificationPolicyPort` 的权威实现：快照与更新全部落在同一个
@@ -25,14 +28,21 @@ import kotlinx.coroutines.flow.callbackFlow
  */
 class PersistentNotificationPolicyPort(
     private val authority: PersistentNotificationPolicyAuthority,
+    private val outboxAvailable: Boolean = false,
+    private val dispatcherWired: StateFlow<Boolean> = MutableStateFlow(false),
 ) : NotificationPolicyPort {
 
     override fun snapshot(): NotificationPolicySnapshot = authority.snapshot().toPortSnapshot()
 
-    override fun observe(): Flow<NotificationPolicySnapshot> = callbackFlow {
-        trySend(authority.snapshot().toPortSnapshot())
-        val registration = authority.addListener { state -> trySend(state.toPortSnapshot()) }
-        awaitClose { registration.close() }
+    override fun observe(): Flow<NotificationPolicySnapshot> {
+        val policies = callbackFlow {
+            trySend(authority.snapshot())
+            val registration = authority.addListener { state -> trySend(state) }
+            awaitClose { registration.close() }
+        }
+        return combine(policies, dispatcherWired) { policy, wired ->
+            policy.toPortSnapshot().copy(deliveryDispatcherWired = wired)
+        }
     }
 
     override fun update(request: NotificationPolicyUpdate): NotificationPolicyUpdateOutcome {
@@ -59,6 +69,9 @@ class PersistentNotificationPolicyPort(
         } catch (corrupted: PolicyStateCorrupted) {
             // 持久化证据损坏时权威保持 deny-first；更新同样被拒绝。
             NotificationPolicyUpdateOutcome.Rejected(LOCAL_POLICY_CORRUPTED)
+        } catch (failure: Exception) {
+            if (failure is kotlinx.coroutines.CancellationException) throw failure
+            NotificationPolicyUpdateOutcome.Rejected("LOCAL_POLICY_SAVE_FAILED")
         }
     }
 
@@ -96,6 +109,8 @@ class PersistentNotificationPolicyPort(
             fieldAccess = policy.fieldAccess,
             mode = deliveryMode,
             revision = authorizationRevision,
+            outboxAvailable = outboxAvailable,
+            deliveryDispatcherWired = dispatcherWired.value,
         )
 
     private companion object {

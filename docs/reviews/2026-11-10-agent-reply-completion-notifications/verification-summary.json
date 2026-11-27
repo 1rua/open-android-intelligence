@@ -1,0 +1,57 @@
+{
+  "业务提交": "44ee51551e0ece43b529e8f9ecba3ff22fb8bef4",
+  "基线": "4cbe21b8324e7dc2b5bee44bce0174213c627980",
+  "验证日期": "2026-11-11",
+  "设备": "emulator-5562",
+  "Android": "15 / API 35 / x86_64",
+  "验收包名": "com.openandroidintelligence.mobile.replyvalidation",
+  "Android测试用户": 11,
+  "Android回归": {
+    "tests": 353,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "宿主回归": {
+    "tests": 13,
+    "failures": 0
+  },
+  "设备场景": [
+    {
+      "scenario": "background",
+      "passed": true,
+      "log": "docs/reviews/2026-11-10-agent-reply-completion-notifications/background.txt",
+      "conversationId": "conv_4b3d8978-2aa1-40e2-b392-e0b994ad21e6"
+    },
+    {
+      "scenario": "screenOff",
+      "passed": true,
+      "log": "docs/reviews/2026-11-10-agent-reply-completion-notifications/screenOff.txt",
+      "conversationId": "conv_ccee9b66-669f-4845-aa95-e7ba5c0254de"
+    },
+    {
+      "scenario": "otherConversation",
+      "passed": true,
+      "log": "docs/reviews/2026-11-10-agent-reply-completion-notifications/otherConversation.txt",
+      "conversationId": "conv_524e26fa-629e-49be-9893-7a2f41c495db"
+    },
+    {
+      "scenario": "reconnectDuringCompletion",
+      "passed": true,
+      "log": "docs/reviews/2026-11-10-agent-reply-completion-notifications/reconnectDuringCompletion.txt",
+      "conversationId": "conv_30ff167e-1b3a-4ccf-8e6b-3436f93f167f"
+    }
+  ],
+  "构建产物": [
+    {
+      "path": "apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk",
+      "sha256": "2ed3c06d791b9c468baf085105a896f9dca94bd651f4f0d7db1c75caff420e40"
+    },
+    {
+      "path": "apps/android/app/build/outputs/apk/androidTest/full/debug/app-full-debug-androidTest.apk",
+      "sha256": "c346bab5b16bb5c459766bbe1eeed8ea9bfc5ba52d0e402133a8a20033d83224"
+    }
+  ],
+  "点击验证": "发送实际系统通知所持有的 PendingIntent，由 Android 分发并校验对应 Agent 和会话",
+  "气泡证据": "实际系统通知 BubbleMetadata、有效 shortcut 和会话目标；未验证 SystemUI 悬浮气泡展开"
+}

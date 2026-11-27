@@ -1,0 +1,62 @@
+{
+  "sourceCommit": "2caabfb1206fd93cd0232171f0bf287fdfeea498",
+  "sourceRelativePath": "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/CoreAgentConversationRepository.kt",
+  "rootAndFinalSourceByteEqual": true,
+  "sourceSha256": "ea29f6170f62192ee60f674160985f62ac660efa388ddc9c966facc55ecaf4cf",
+  "compiledClassSha256": "408064becff10b6f0dc052480a2f2e114774919182363b399e6990e075d49a29",
+  "networkCalls": 0,
+  "devicesOperated": false,
+  "servicesOperated": false,
+  "productionSourceModified": false,
+  "candidateIsIsolatedShadowSourceOnly": true,
+  "runs": [
+    {
+      "case": "baseline-red-1",
+      "exitCode": 1,
+      "lines": [
+        "QUEUE_CONNECTION_PROBE mode=done_cancelled beforeHealth=IDLE pendingBefore=0 pendingAfterConnection=0 readsBefore=2 readsAfterConnection=2 barrierAfterConnection=0 ownersAfterConnection=0 cancelledEvents=2 postsAfterExplicitRetry=first,second pendingAfterExplicitRetry=0 unknownInputResubmitted=false",
+        "ORIGINAL_CLIENT_QUERY state=cancelled sameClient=true sameGeneration=true resubmitted=false",
+        "QUEUE_CONNECTION_PROBE mode=error_cancelled beforeHealth=FAILED pendingBefore=1 pendingAfterConnection=1 readsBefore=0 readsAfterConnection=0 barrierAfterConnection=1 ownersAfterConnection=0 cancelledEvents=0 postsAfterExplicitRetry=first,second pendingAfterExplicitRetry=0 unknownInputResubmitted=false",
+        "QUEUE_CONNECTION_PROBE mode=unknown beforeHealth=FAILED pendingBefore=1 pendingAfterConnection=1 readsBefore=1 readsAfterConnection=1 barrierAfterConnection=1 ownersAfterConnection=1 cancelledEvents=0 postsAfterExplicitRetry=first pendingAfterExplicitRetry=1 unknownInputResubmitted=false"
+      ]
+    },
+    {
+      "case": "baseline-red-2",
+      "exitCode": 1,
+      "lines": [
+        "QUEUE_CONNECTION_PROBE mode=done_cancelled beforeHealth=IDLE pendingBefore=0 pendingAfterConnection=0 readsBefore=2 readsAfterConnection=2 barrierAfterConnection=0 ownersAfterConnection=0 cancelledEvents=2 postsAfterExplicitRetry=first,second pendingAfterExplicitRetry=0 unknownInputResubmitted=false",
+        "ORIGINAL_CLIENT_QUERY state=cancelled sameClient=true sameGeneration=true resubmitted=false",
+        "QUEUE_CONNECTION_PROBE mode=error_cancelled beforeHealth=FAILED pendingBefore=1 pendingAfterConnection=1 readsBefore=0 readsAfterConnection=0 barrierAfterConnection=1 ownersAfterConnection=0 cancelledEvents=0 postsAfterExplicitRetry=first,second pendingAfterExplicitRetry=0 unknownInputResubmitted=false",
+        "QUEUE_CONNECTION_PROBE mode=unknown beforeHealth=FAILED pendingBefore=1 pendingAfterConnection=1 readsBefore=1 readsAfterConnection=1 barrierAfterConnection=1 ownersAfterConnection=1 cancelledEvents=0 postsAfterExplicitRetry=first pendingAfterExplicitRetry=1 unknownInputResubmitted=false"
+      ]
+    },
+    {
+      "case": "shadow-cancelled-recovery",
+      "exitCode": 0,
+      "lines": [
+        "QUEUE_CONNECTION_PROBE mode=done_cancelled beforeHealth=IDLE pendingBefore=0 pendingAfterConnection=0 readsBefore=2 readsAfterConnection=2 barrierAfterConnection=0 ownersAfterConnection=0 cancelledEvents=2 postsAfterExplicitRetry=first,second pendingAfterExplicitRetry=0 unknownInputResubmitted=false",
+        "QUEUE_CONNECTION_PROBE mode=error_cancelled beforeHealth=IDLE pendingBefore=0 pendingAfterConnection=0 readsBefore=2 readsAfterConnection=2 barrierAfterConnection=0 ownersAfterConnection=0 cancelledEvents=1 postsAfterExplicitRetry=first,second pendingAfterExplicitRetry=0 unknownInputResubmitted=false",
+        "QUEUE_CONNECTION_PROBE mode=unknown beforeHealth=FAILED pendingBefore=1 pendingAfterConnection=1 readsBefore=1 readsAfterConnection=1 barrierAfterConnection=1 ownersAfterConnection=1 cancelledEvents=0 postsAfterExplicitRetry=first pendingAfterExplicitRetry=1 unknownInputResubmitted=false"
+      ]
+    }
+  ],
+  "formalRegression": {
+    "class": "NativeCancelledStreamRecoveryTest",
+    "baseline": {
+      "tests": 5,
+      "passed": 1,
+      "failed": 4,
+      "skipped": 0
+    },
+    "candidate": {
+      "tests": 5,
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0
+    },
+    "method": "现有Kotlin2.1.20编译器与JUnit4.13.2直接编译正式新类；候选同时编译本分支真实生产仓储源码，依赖复用固定2caab既有模块产物",
+    "standardGradleStatus": "初始两次缓存/锁失败保留；后续主任务已用既有可写缓存完成真实Gradle5/0/0/0，见gradle-focused-public-result.json。",
+    "subsequentGradleResult": "gradle-focused-public-result.json"
+  },
+  "evidencePhase": "初始受控探针：基线及影子候选；非当前分支最终状态"
+}

@@ -1,0 +1,11 @@
+{
+  "endpoint": "B",
+  "operation": "oai endpoint ack",
+  "eventId": "push_7e267b91...fd8e0b79",
+  "deliveryId": "delivery_13ef41a1...338d885d",
+  "state": "acknowledged",
+  "acknowledgedAt": "2026-11-01T03:14:00.170Z",
+  "payloadExpiresAt": null,
+  "completeRouteMatchesObservedReceipt": true,
+  "otherEndpointsAcknowledgedByThisOperation": false
+}

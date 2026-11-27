@@ -1,0 +1,48 @@
+{
+  "repository": "liguobao/ds-harness-remote",
+  "commit": "eef232d2c43b0c9d04998a18db98cbc9e673e488",
+  "release": "v0.6.5",
+  "baseCommit": "ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7",
+  "files": [
+    {
+      "path": "packages/client-core/src/harness-alpha-client.ts",
+      "sha256": "08892d60ba1be0433f9e0f9a3e85841c60d392a77ba54b813e8709b8d9caa5f3",
+      "gitBlob": "6e8b3aa41a542b3fc034a39ce8dc100cabd4e991"
+    },
+    {
+      "path": "packages/client-core/src/remote-gateway.ts",
+      "sha256": "757dba778bec367401afdea436e20deaf9014369cd74eafaaf8657bcff9b0bd8",
+      "gitBlob": "c19169c8fedc7d956dd8c9f8387a50e6873dcdaf"
+    },
+    {
+      "path": "packages/crypto/src/noise.ts",
+      "sha256": "f598b01826ee16af999d4219ede929c5fa58e85fd8b93c007aea89d2e586698b",
+      "gitBlob": "27d4b4aa97cba98a7be9364964eb0765c72c7b3c"
+    },
+    {
+      "path": "packages/protocol/src/binary-upload.ts",
+      "sha256": "f65fccc0bfef1635030af146a9f1206bec0caa483abb3c7fbc5b3895c68bde9f",
+      "gitBlob": "b913ac931a29c352de6d3513fc1e3b9f2a9d596f"
+    },
+    {
+      "path": "packages/protocol/src/index.ts",
+      "sha256": "16f5b2b9018598e6ac878cf68f70ddbe0d719938ed434d1c5b01c70109931907",
+      "gitBlob": "71b1351243fec4d2f362f0974f6a311414e9e5e2"
+    },
+    {
+      "path": "packages/protocol/src/lan-upload.ts",
+      "sha256": "b1efda8c3e7f5212167cff7f0a5d33abf67e2b466bba4082a30e66a788d1dc85",
+      "gitBlob": "5f219c774a067f1f1d69850ee8c8ae746ce3b1e7"
+    },
+    {
+      "path": "packages/webrtc/src/rtc-adapter.ts",
+      "sha256": "646b3d3b1abb9bc941e95287698d8cb501128172b5069b40cd9397470c8172cb",
+      "gitBlob": "1fa4242bb138a8ae2cb49e9407e4887aa452c2a8"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "6e41a78bbbe0c3ed54d085b661eb5af5a7836f4d40460d54f1469f43b386285d",
+      "gitBlob": "d2c3468f3a4e2ffac2a66d07e85fe0f4f6369122"
+    }
+  ]
+}

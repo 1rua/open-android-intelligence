@@ -20,6 +20,10 @@ import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -172,6 +176,31 @@ class NotificationHostInstallerTest {
         assertNull("桥未接入前 dispatcher 必须为空（fail-closed，无发送路径）", keyed.buildDispatcher())
         assertTrue(keyed.attachBridge(FakeBridgeTransport, FakeBindingSource))
         assertNotNull("接入桥后 dispatcher 必须真实装配", keyed.buildDispatcher())
+    }
+
+    @Test
+    fun snapshot_and_flow_report_actual_outbox_and_last_created_dispatcher_without_changing_revision() = runBlocking {
+        val keyless = buildComposition()
+        assertFalse(keyless.policyPort.snapshot().outboxAvailable)
+        assertFalse(keyless.policyPort.snapshot().deliveryDispatcherWired)
+
+        val keyed = buildComposition(testKey())
+        val initial = keyed.policyPort.snapshot()
+        assertTrue(initial.outboxAvailable)
+        assertFalse(initial.deliveryDispatcherWired)
+        assertTrue(keyed.attachBridge(FakeBridgeTransport, FakeBindingSource))
+        // 接桥不会更改之前构造的运行时，只有重新创建运行时才使用新 dispatcher。
+        assertFalse(keyed.policyPort.snapshot().deliveryDispatcherWired)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            keyed.runtimeFactory.create(scope)
+            val observed = withTimeout(5_000) { keyed.policyPort.observe().first { it.deliveryDispatcherWired } }
+            assertTrue(observed.outboxAvailable)
+            assertEquals(initial.revision, observed.revision)
+            assertTrue(keyed.policyPort.snapshot().deliveryDispatcherWired)
+        } finally {
+            scope.cancel()
+        }
     }
 
     @Test

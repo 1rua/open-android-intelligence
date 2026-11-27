@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -15,11 +16,13 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.conversation.theme.LocalWindowMaxWidth
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.material3.Text
 import androidx.compose.foundation.layout.Spacer
@@ -34,24 +37,33 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.openandroidintelligence.ui.resources.R as UiR
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
-import com.openandroidintelligence.mobile.onboarding.data.GatewayTutorials
+import com.openandroidintelligence.conversation.theme.ThemePalette
+import com.openandroidintelligence.mobile.AppearancePreferences
+import com.openandroidintelligence.mobile.AppearanceSettings
+import com.openandroidintelligence.mobile.ThemePreference
+import com.openandroidintelligence.mobile.onboarding.screens.AppearanceSetupScreen
+import com.openandroidintelligence.mobile.onboarding.data.RemoteTutorials
 import com.openandroidintelligence.mobile.onboarding.motion.ButtonRevealTransition
 import com.openandroidintelligence.mobile.onboarding.motion.RevealOrigin
 import com.openandroidintelligence.mobile.onboarding.motion.RevealPhase
 import com.openandroidintelligence.mobile.onboarding.motion.RevealDurationMillis as RevealDurationMillisOfMotion
-import com.openandroidintelligence.mobile.onboarding.screens.DeploymentChoiceScreen
-import com.openandroidintelligence.mobile.onboarding.screens.GatewayGuideScreen
+import com.openandroidintelligence.mobile.onboarding.screens.RemoteConnectionChoiceScreen
+import com.openandroidintelligence.mobile.onboarding.screens.RemoteGuideScreen
 import com.openandroidintelligence.mobile.onboarding.screens.PermissionsScreen
 import com.openandroidintelligence.mobile.onboarding.screens.WelcomeScreen
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.launch
 
 /**
@@ -63,7 +75,7 @@ import kotlinx.coroutines.launch
  *    这样登录、配对、会话逻辑一行都不用改（需求五.5、六.9）。
  * 3. **不伪造状态**：完成引导只写「用户走完了引导」，与 Gateway 是否连接完全无关。
  *
- * @param onFinished 用户点下「我已部署」或「部署完毕」并完成转场后回调。
+ * @param onFinished 用户点下「准备登录」或「了解完毕」并完成转场后回调。
  *   宿主据此把引导标记为完成，并显示原有的登录界面。
  * @param onExit 用户在欢迎页再按返回时退出引导（不标记完成，下次启动仍会展示）。
  * @param pluginPrimitives 已启用插件声明的 kernel primitive 集合，
@@ -72,6 +84,8 @@ import kotlinx.coroutines.launch
 @Composable
 fun OnboardingFlow(
     state: OnboardingState,
+    appearanceSettings: AppearanceSettings,
+    appearancePreferences: AppearancePreferences,
     onStageChange: (OnboardingStage) -> Unit,
     onGatewaySelected: (String) -> Unit,
     onFinished: () -> Unit,
@@ -81,20 +95,41 @@ fun OnboardingFlow(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     val lifecycleOwner = LocalLifecycleOwner.current
 
     // ---- 权限状态：进入页面时查询一次，回到前台时再查（用户可能去系统设置里改过） ----
+    val entries = remember(pluginPrimitives) { buildVisiblePermissions(pluginPrimitives) }
     val statuses = remember { mutableStateMapOf<String, PermissionStatus>() }
+    fun showSettingsNotice(messageRes: Int) {
+        Toast.makeText(context, messageRes, Toast.LENGTH_LONG).show()
+    }
+
+    var assistantSettingsVisit by rememberSaveable { mutableStateOf(AssistantSettingsVisit.IDLE) }
     fun refreshPermissions() {
-        val entries = buildVisiblePermissions(pluginPrimitives)
         entries.forEach { entry ->
             statuses[entry.id] = resolvePermissionStatus(context, entry)
         }
     }
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(lifecycleOwner, context, entries) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) refreshPermissions()
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> {
+                    if (assistantSettingsVisit == AssistantSettingsVisit.LAUNCHED) {
+                        assistantSettingsVisit = AssistantSettingsVisit.PAUSED
+                    }
+                }
+                Lifecycle.Event.ON_RESUME -> {
+                    refreshPermissions()
+                    if (assistantSettingsVisit == AssistantSettingsVisit.PAUSED) {
+                        assistantSettingsVisit = AssistantSettingsVisit.IDLE
+                        if (statuses["assistant_role"] == PermissionStatus.DENIED) {
+                            showSettingsNotice(UiR.string.perm_role_assistant_not_set_hint)
+                        }
+                    }
+                }
+                else -> Unit
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         refreshPermissions()
@@ -114,7 +149,7 @@ fun OnboardingFlow(
             // 用户刚在这里拒绝，连上网关时又会被弹一次——正是需求禁止的重复弹窗。
             if (id == "notifications") {
                 (context.applicationContext as? OpenAndroidIntelligenceApplication)
-                    ?.gatewayRuntime?.replyNotifications?.markPermissionRequested()
+                    ?.remoteRuntime?.replyNotifications?.markPermissionRequested()
             }
         }
         pendingPermissionId = null
@@ -132,21 +167,26 @@ fun OnboardingFlow(
         pendingPermissionId = null
         refreshPermissions()
     }
-
-    val entries = remember(pluginPrimitives) { buildVisiblePermissions(pluginPrimitives) }
+    fun requestSystemRole(role: SystemRole) {
+        val opened = when (role) {
+            SystemRole.ASSISTANT -> AssistantRole.openSettings(context)
+        }
+        // 启动后须观察到引导页离开前台，才在返回时确认用户的选择。
+        if (opened) {
+            assistantSettingsVisit = AssistantSettingsVisit.LAUNCHED
+        } else {
+            assistantSettingsVisit = AssistantSettingsVisit.IDLE
+            showSettingsNotice(UiR.string.perm_role_assistant_settings_unavailable)
+        }
+    }
 
     fun requestPermission(id: String) {
         val entry = entries.firstOrNull { it.id == id } ?: return
-        pendingPermissionId = id
-        when (id) {
-            // 屏幕采集不是运行时权限：走 MediaProjection 授权对话框，由业务侧在使用时发起。
-            // 引导页只解释机制，**不主动拉起投屏授权**（那会让用户以为必须现在授权）。
-            // 因此这里把它标为「无需现在处理」，让卡片显示「使用时询问」而不是留下
-            // 一个点了没反应的按钮。
-            "screen_capture" -> statuses[id] = PermissionStatus.NOT_REQUIRED
+        when {
+            entry.systemRole != null -> requestSystemRole(entry.systemRole)
             // 通知使用权是特殊权限：只能引导用户去系统设置页开启。
-            "notification_access" -> openNotificationAccessSettings(context)
-            "sms", "call_log" -> {
+            id == "notification_access" -> openNotificationAccessSettings(context)
+            id == "sms" || id == "call_log" -> {
                 val needed = entry.manifestPermissions
                     .filter { ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
                 if (needed.isEmpty()) {
@@ -158,6 +198,7 @@ fun OnboardingFlow(
             }
             else -> {
                 val permission = entry.manifestPermissions.firstOrNull() ?: return
+                pendingPermissionId = id
                 notePermissionRequested(listOf(permission))
                 singlePermissionLauncher.launch(permission)
             }
@@ -218,24 +259,35 @@ fun OnboardingFlow(
         if (previous != null) onStageChange(previous) else onExit()
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.surface,
-        ) {
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        CompositionLocalProvider(LocalWindowMaxWidth provides maxWidth) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.surface,
+            ) {
             // 阶段之间用统一的淡入淡出：引导页之间是「同一流程内的连续步骤」，
             // 用位移会让人误以为是层级的跳转；只有最后进入登录才用几何展开。
             AnimatedContent(
                 targetState = state.stage,
                 transitionSpec = {
-                    fadeIn(MotionSpecs.emphasized(reduceMotion)) togetherWith
+                    fadeIn(MotionSpecs.fade(reduceMotion)) togetherWith
                         fadeOut(MotionSpecs.fade(reduceMotion))
                 },
                 label = "onboarding-stage",
             ) { stage ->
                 when (stage) {
                     OnboardingStage.WELCOME -> WelcomeScreen(
-                        onStart = { onStageChange(OnboardingStage.PERMISSIONS) },
+                        onStart = { onStageChange(OnboardingStage.APPEARANCE) },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+
+                    OnboardingStage.APPEARANCE -> AppearanceSetupScreen(
+                        settings = appearanceSettings,
+                        onSetTheme = appearancePreferences::setTheme,
+                        onSetDynamicColor = appearancePreferences::setDynamicColor,
+                        onSetPalette = appearancePreferences::selectPalette,
+                        onNext = { onStageChange(OnboardingStage.PERMISSIONS) },
+                        onBack = { onStageChange(OnboardingStage.WELCOME) },
                         modifier = Modifier.fillMaxSize(),
                     )
 
@@ -244,28 +296,30 @@ fun OnboardingFlow(
                         statuses = statuses.toMap(),
                         onRequestPermission = ::requestPermission,
                         onOpenSystemSettings = { id ->
-                            if (id == "notification_access") {
-                                openNotificationAccessSettings(context)
-                            } else {
-                                openAppDetailsSettings(context)
+                            when (id) {
+                                "screen_capture" -> if (!openOnboardingAccessibilitySettings(context)) {
+                                    showSettingsNotice(UiR.string.perm_accessibility_settings_unavailable)
+                                }
+                                "notification_access" -> openNotificationAccessSettings(context)
+                                else -> openAppDetailsSettings(context)
                             }
                         },
                         onNext = { onStageChange(OnboardingStage.DEPLOYMENT) },
                         onSkipOptional = { onStageChange(OnboardingStage.DEPLOYMENT) },
-                        onBack = { onStageChange(OnboardingStage.WELCOME) },
+                        onBack = { onStageChange(OnboardingStage.APPEARANCE) },
                         modifier = Modifier.fillMaxSize(),
                     )
 
-                    OnboardingStage.DEPLOYMENT -> DeploymentChoiceScreen(
+                    OnboardingStage.DEPLOYMENT -> RemoteConnectionChoiceScreen(
                         onAlreadyDeployed = ::beginReveal,
                         onNotDeployed = { onStageChange(OnboardingStage.GUIDE) },
                         onBack = { onStageChange(OnboardingStage.PERMISSIONS) },
                         modifier = Modifier.fillMaxSize(),
                     )
 
-                    OnboardingStage.GUIDE -> GatewayGuideScreen(
+                    OnboardingStage.GUIDE -> RemoteGuideScreen(
                         selectedGatewayId = state.lastGatewayId
-                            ?: GatewayTutorials.ALL.first().id,
+                            ?: "remote",
                         onSelectGateway = onGatewaySelected,
                         onDone = ::beginReveal,
                         onBack = { onStageChange(OnboardingStage.DEPLOYMENT) },
@@ -292,6 +346,7 @@ fun OnboardingFlow(
                 RevealLandingMark()
             }
         }
+        }
     }
 }
 
@@ -302,6 +357,12 @@ fun OnboardingFlow(
  * 必须是同一个值，两处各写一份迟早会漂移。
  */
 private val RevealDurationMillis = RevealDurationMillisOfMotion
+
+private enum class AssistantSettingsVisit {
+    IDLE,
+    LAUNCHED,
+    PAUSED,
+}
 
 /** 打开本应用的系统详情页：权限被永久拒绝后的唯一可靠出口。 */
 private fun openAppDetailsSettings(context: Context) {
@@ -339,7 +400,7 @@ private fun manifestPermissionToEntryId(permission: String): String? = when (per
  * 转场期间显示的品牌标识。
  *
  * 只画「信号缝线 + 字标 + 一句说明」这三样登录页本来就有的东西，
- * 不复制登录表单——表单属于既有 [GatewayLoginScreen]，引导流程不重复实现。
+ * 不复制登录表单——表单属于既有 Remote 连接页，引导流程不重复实现。
  * 它由 [ButtonRevealTransition] 裁剪在扩展面内，所以视觉上是随展开一起长出来的。
  */
 @Composable
@@ -360,7 +421,7 @@ private fun RevealLandingMark() {
         )
         Spacer(modifier = Modifier.height(Dimensions.SpaceTiny))
         Text(
-            text = "连接你的 Agent Gateway",
+            text = stringResource(UiR.string.conn_onboarding_welcome_connect_title),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

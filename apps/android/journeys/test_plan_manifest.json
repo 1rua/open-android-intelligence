@@ -144,19 +144,19 @@
     },
     {
       "id": "MOD-06",
-      "name": "浮动助理与屏幕圈选交互",
-      "journeyFile": "MOD-06-assistant-surface-selection.journey.xml",
-      "entryPoint": "WorkbenchScreen 顶部助理操作入口",
+      "name": "会话更多菜单",
+      "journeyFile": "MOD-06-workbench-overflow-menu.journey.xml",
+      "entryPoint": "WorkbenchScreen 右上角更多操作菜单",
       "criticalPaths": [
-        "展开浮动对话层 FloatingConversationPanel",
-        "体验浮动面板内的对话与附件操作",
-        "最小化或关闭浮动面板",
-        "检查底层工作台的几何连续性与生命周期保留"
+        "打开更多菜单，确认不再显示浮动助理",
+        "重命名对话并确认标题更新",
+        "打开并关闭附件库",
+        "通过更多菜单进入设置"
       ],
       "acceptanceCriteria": [
-        "浮动面板状态可打断、可逆，且内容保持挂载",
-        "不越权假造系统录屏或无感截屏权限",
-        "关闭浮动层后主窗口焦点与状态无损"
+        "重命名对话、附件库和设置正常显示并执行",
+        "无活动会话时重命名仍不可用",
+        "不新增占位菜单或替代入口，保持原有菜单样式与动画"
       ],
       "testData": {}
     },
@@ -166,9 +166,9 @@
       "journeyFile": "MOD-07-platform-settings.journey.xml",
       "entryPoint": "MainActivity 顶部平台设置按钮",
       "criticalPaths": [
-        "展开设置与平台管理界面",
+        "展开设置界面",
         "切换主题模式 (浅色/深色/跟随系统)",
-        "切换减弱动态效果开关",
+        "切换减少动画开关",
         "开发者信任模式二次确认弹窗",
         "触发插件紧急熔断机制"
       ],

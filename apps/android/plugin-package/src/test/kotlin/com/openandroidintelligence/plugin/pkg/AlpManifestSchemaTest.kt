@@ -92,7 +92,7 @@ class AlpManifestSchemaTest {
             """"plugin":{"description":"d","id":"org.example.notifications","name":"n","version":"1.0.0"},""" +
             """"author":{"algorithm":"Ed25519","publicKey":"$publicKeyBase64url"},""" +
             """"runtime":{"abiVersion":"1.0","entrypoint":"open_android_intelligence_plugin_main","payload":"payload/plugin.wasm","type":"protected-wasm"},""" +
-            """"compatibility":{"androidHost":">=2.0.0 <3.0.0","gatewayProtocol":">=2.0 <3.0"},""" +
+            """"compatibility":{"androidHost":">=2.0.0 <3.0.0"},""" +
             """"capabilities":{"depends":[],"kernelPrimitives":[],"provides":[]},""" +
             """"security":{"background":{"minimumIntervalSeconds":null,"requested":false},"network":[],"resources":{"maxConcurrentInvocations":1,"maxDailyNetworkBytes":0,"maxInvocationMillis":5000,"maxMemoryBytes":16777216,"maxStorageBytes":10485760}},""" +
             """"ui":{"cards":[],"settings":[]},"state":{"portableExport":false,"schemaVersion":1}}"""
@@ -122,6 +122,21 @@ class AlpManifestSchemaTest {
         val verified = verifier().verify(signedPackage(validManifest()).inputStream())
         assertEquals("org.example.notifications", verified.identity.pluginId)
         assertEquals("1.0.0", verified.identity.version)
+    }
+
+    @Test fun rejectsRetiredGatewayCompatibilityFieldEvenInCorrectlySignedPackage() {
+        val manifest = validManifest().replace("\"compatibility\":{", "\"compatibility\":{\"gatewayProtocol\":\">=2.0 <3.0\",")
+        assertRejected(signedPackage(manifest)) { it.contains("compatibilityField") }
+    }
+
+    @Test fun rejectsUnknownTransportVersionInsteadOfInventingRemoteCompatibility() {
+        val manifest = validManifest().replace("\"compatibility\":{", "\"compatibility\":{\"remoteProtocol\":\"1.0\",")
+        assertRejected(signedPackage(manifest)) { it.contains("compatibilityField") }
+    }
+
+    @Test fun stillEnforcesTheDeclaredAndroidHostRange() {
+        val manifest = validManifest().replace(">=2.0.0 <3.0.0", ">=9.0.0 <10.0.0")
+        assertRejected(signedPackage(manifest)) { it.contains("INCOMPATIBLE_HOST") }
     }
 
     @Test

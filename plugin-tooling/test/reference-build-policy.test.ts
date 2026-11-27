@@ -1,4 +1,5 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { retainTestDirectory } from "./safe-test-files.js";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -19,7 +20,7 @@ describe("release reference package boundaries", () => {
       await writeFile(path, privateSeed, { mode: 0o600 });
       expect(await referenceSigningKey(false, path)).toEqual(privateSeed);
       expect(await referenceSigningKey(true)).toEqual(FIXTURE_SEED);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { await retainTestDirectory(root); }
   });
   it("never accepts an empty module as a release plugin", () => {
     expect(() => validateReferenceWasm(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]))).toThrow("PLUGIN_WASM_ABI_INVALID");

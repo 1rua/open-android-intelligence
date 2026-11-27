@@ -1,0 +1,152 @@
+{
+  "canonicalRepository": "1rua/openclaw-android-gateway",
+  "sourceCommit": "8ad90bcb52e298242f7726acc7724eb52b2551d8",
+  "baseline": "35b2a595fd4374eb64761d08a90d83ea5390570f",
+  "contractCommit": "02ad53e09049c2b06c21cacd9d009c2f14e6d5bd",
+  "core": "sha256:38786286ca26f601747cf7e52953e1cd4a57b8089e3b95cdc31fbb6f7a8b6d83",
+  "tests": {
+    "initialCompatibilityRed": {
+      "failed": 10,
+      "passed": 0
+    },
+    "initialFullManifestRed": {
+      "passed": 217,
+      "failed": 1
+    },
+    "eventFixtureRed": {
+      "passed": 218,
+      "failed": 2
+    },
+    "finalCompatibility": {
+      "passed": 12,
+      "failed": 0
+    },
+    "finalFull": {
+      "files": 38,
+      "passed": 220,
+      "failed": 0
+    },
+    "contractSourcePython": {
+      "passed": 5,
+      "failed": 0
+    },
+    "sourceVectors": {
+      "passed": 70,
+      "failed": 0
+    },
+    "runtimeVectors": {
+      "passed": 70,
+      "failed": 0
+    }
+  },
+  "checks": {
+    "typecheck": true,
+    "contractCheck": true,
+    "generatorMatchesAll26Inputs": true,
+    "rawRuntimeMatches21JsonInputs": true,
+    "twoBuildsSame61RuntimeFiles": true,
+    "sourceRuntimeVectorsIdentical": true,
+    "originalOaiPinChecker": true,
+    "diffCheck": true
+  },
+  "pending": [
+    "独立两轴审查",
+    "远端本PR CI",
+    "OAI #170 独立实现pin更新及完整跨宿主集成",
+    "真实宿主或Android端到端验证"
+  ],
+  "evidenceSha256": {
+    "build-1.txt": "0bf7154220898ca8f400992fa3fed7e47ee5274befb673dc0a421d3087789477",
+    "build-2.txt": "0bf7154220898ca8f400992fa3fed7e47ee5274befb673dc0a421d3087789477",
+    "compatibility-green-final.txt": "e0e7abe58ec95d8e0a92d6af784908d7712cea3fb0467c4e75e1cc3c7d44873c",
+    "compatibility-green.txt": "d73606697a90b53a8d963266b5c2fd56c05db24f6644bf5da57ceb43e896b47e",
+    "compatibility-red.txt": "4d1423e4e3a4e8faadc69464301165232057ad5fda4b87937d51a57cd49fc065",
+    "contract-check.txt": "31b1da1abdbd87646189b66f35da7fa4b98fb555867f2495273b83ed2776eefe",
+    "contract-generate.txt": "a502aa2a038a08a5cf6559a02b5bbf423ab8c5cc1e5cdaac85e68dd72614efbe",
+    "contract-tools.txt": "888a0c0ed615e57d32cf72be501b0c355f33b8613c81dfdaa99db33d7959487e",
+    "current-contract-file-verification.json": "e6aee31973f4da1ea55c91dd52c753f4b2253951208ccc225e45bdfe986d6a33",
+    "diagnostic-original-file-hashes.json": "265a5d22b41083bf877e9f96bbc8157dd5e7f52ed526bb08127aeaf2bc17255d",
+    "environment.json": "2dae4d4edb4c02e603a345bb0d5b32348d9d3bf379e37cbd914a3a3034cd4ad6",
+    "existing-candidate-contracts.json": "e6933b92d082d262bf6eee7bf29b44c55906ac546cd5adbd0614f2c661e9db21",
+    "full-suite-caller-fixture-red.txt": "5c1cce866e7d0da096b1d394423404c2a2441159457c3e79ecf2cbdd9bdf5fde",
+    "full-suite-green-final.txt": "ba2011f896de4ad3b13f5a2d3bfc66d3e3dfa5f567dea71ce89d50f37d3acab2",
+    "full-suite-manifest-red.txt": "2b74bf7bea3a5e384df44a468fa75b545f5f66dd652fc892a40997e219737be8",
+    "generated-changes.json": "2f4eb95f91fcc069ddb860bb1968c1359f0799390cd667107aea44164a51b6e2",
+    "oai-strict-pin-green.txt": "22a8e169d63d72ce5a9388a590d1af40841341784f35560577fc9da96941e610",
+    "original-gate-failure.json": "ee24ec2e74dbe5694c19430f162a23aeed18060611796172b7d784271226a3f9",
+    "original-snapshot-failure.json": "cc9951b7631ab345b04f69a9f34d2538235af3cb49610af7c6bf22b501f84fd2",
+    "runtime-build-1.json": "b3d5e043d2f4dfcfd82b6aadd89f0ab80a15571f0378f02f46c8fdd9a7c6ebfc",
+    "runtime-build-2.json": "19580cf705fb083e6c71f2afbb826c40e09fe6b92a70fcf79ae7af62062871b4",
+    "shared-vector-results.json": "d2af62e81a78f03433e8a292a0045ee234c78711b6aebbebf1ed423542ab6ff9",
+    "shared-vectors.txt": "030c8b127670884ccc81ab8a6601f8a167bc18bccab90e71b60fb0585016f297",
+    "typecheck-final.txt": "3db39fcc149e997906b3afaeac8eff797a8f8510ee11814f37fcc244d77c0769",
+    "typecheck.txt": "3db39fcc149e997906b3afaeac8eff797a8f8510ee11814f37fcc244d77c0769"
+  },
+  "diffCheckScope": {
+    "baseline": "35b2a595fd4374eb64761d08a90d83ea5390570f",
+    "originalExecutionCommit": "8ad90bcb52e298242f7726acc7724eb52b2551d8",
+    "originalExecutionDiffCheckExitCode": 0,
+    "previousEvidenceCommit": "2f1a08a33ec0255302789a03b48194364dd754ed",
+    "previousEvidenceFullDiffCheckExitCode": 2,
+    "previousEvidenceFailure": "八份新增文本日志末尾多一个空行；此前 checks.diffCheck=true 仅对应执行源码提交，未覆盖后续证据提交。",
+    "normalizedWorkingTreeCommand": "git diff 35b2a595fd4374eb64761d08a90d83ea5390570f --check",
+    "normalizedWorkingTreeExitCode": 0,
+    "uncommittedDiffCommand": "git diff --check",
+    "uncommittedDiffExitCode": 0,
+    "postCommitVerification": "同一文档提交完成后再执行 git diff 35b2a595fd4374eb64761d08a90d83ea5390570f...HEAD --check；最终 HEAD 与退出码记入交付，避免自引用提交 SHA。"
+  },
+  "evidenceNormalization": {
+    "previousEvidenceCommit": "2f1a08a33ec0255302789a03b48194364dd754ed",
+    "semanticsUnchanged": true,
+    "files": [
+      {
+        "path": "compatibility-green-final.txt",
+        "removedTrailingNewlineBytes": 1,
+        "previousSha256": "18d001e4b89b0c290fb942ab839adb54c2e8f89858c3f8290f67e119c9d69c1e",
+        "normalizedSha256": "e0e7abe58ec95d8e0a92d6af784908d7712cea3fb0467c4e75e1cc3c7d44873c"
+      },
+      {
+        "path": "compatibility-green.txt",
+        "removedTrailingNewlineBytes": 1,
+        "previousSha256": "a631207392e9f13e856912a65f207ab11048cdf1ce4aa034e8b833407b322acb",
+        "normalizedSha256": "d73606697a90b53a8d963266b5c2fd56c05db24f6644bf5da57ceb43e896b47e"
+      },
+      {
+        "path": "compatibility-red.txt",
+        "removedTrailingNewlineBytes": 1,
+        "previousSha256": "dd2b1cf40ce0a7bd563d85d7482cb6880a87b2a252857803bbe87ea36082a4ad",
+        "normalizedSha256": "4d1423e4e3a4e8faadc69464301165232057ad5fda4b87937d51a57cd49fc065"
+      },
+      {
+        "path": "full-suite-caller-fixture-red.txt",
+        "removedTrailingNewlineBytes": 1,
+        "previousSha256": "336212fca4282ea832a4a5cdb8f32a81290ce6bbbd7b81694b7eb814db6ad4bc",
+        "normalizedSha256": "5c1cce866e7d0da096b1d394423404c2a2441159457c3e79ecf2cbdd9bdf5fde"
+      },
+      {
+        "path": "full-suite-green-final.txt",
+        "removedTrailingNewlineBytes": 1,
+        "previousSha256": "5cbd85d17f5b22d2aec20dbcd81f3225293da33e423f04dd36df0b12ef2d0c76",
+        "normalizedSha256": "ba2011f896de4ad3b13f5a2d3bfc66d3e3dfa5f567dea71ce89d50f37d3acab2"
+      },
+      {
+        "path": "full-suite-manifest-red.txt",
+        "removedTrailingNewlineBytes": 1,
+        "previousSha256": "e949a439516b24bd19d62d1deb1778a67f9c0cbfb233927e99c9003c9e1263bd",
+        "normalizedSha256": "2b74bf7bea3a5e384df44a468fa75b545f5f66dd652fc892a40997e219737be8"
+      },
+      {
+        "path": "typecheck-final.txt",
+        "removedTrailingNewlineBytes": 1,
+        "previousSha256": "46bd22a34242b234b6020efcb1cd1309ae4b6ef8229d1dda2cdef2f04633df72",
+        "normalizedSha256": "3db39fcc149e997906b3afaeac8eff797a8f8510ee11814f37fcc244d77c0769"
+      },
+      {
+        "path": "typecheck.txt",
+        "removedTrailingNewlineBytes": 1,
+        "previousSha256": "46bd22a34242b234b6020efcb1cd1309ae4b6ef8229d1dda2cdef2f04633df72",
+        "normalizedSha256": "3db39fcc149e997906b3afaeac8eff797a8f8510ee11814f37fcc244d77c0769"
+      }
+    ]
+  }
+}

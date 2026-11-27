@@ -3,6 +3,8 @@ package com.openandroidintelligence.mobile
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
@@ -48,8 +50,8 @@ class BubbleConversationTest {
         val scope = CoroutineScope(job + Dispatchers.Unconfined)
         val host = Host()
         val created = mutableListOf<WorkbenchController>()
-        val workspace = BubbleConversationWorkspace("profile-a", "account-a") { id ->
-            controller(scope, host).also { it.openThread(id); created += it }
+        val workspace = BubbleConversationWorkspace("profile-a", "account-a") { bubbleTarget ->
+            controller(scope, host).also { it.openThread(bubbleTarget.conversationId); created += it }
         }
         try {
             assertNull(workspace.open(target.copy(accountId = "foreign")))
@@ -68,7 +70,9 @@ class BubbleConversationTest {
         val scope = CoroutineScope(job + Dispatchers.Unconfined)
         val host = Host()
         val main = controller(scope, host)
-        val workspace = BubbleConversationWorkspace("profile-a", "account-a") { id -> controller(scope, host).also { it.openThread(id) } }
+        val workspace = BubbleConversationWorkspace("profile-a", "account-a") { bubbleTarget ->
+            controller(scope, host).also { it.openThread(bubbleTarget.conversationId) }
+        }
         try {
             main.openThread("main-thread")
             main.editDraft("主窗口草稿")
@@ -93,100 +97,43 @@ class BubbleConversationTest {
         } finally { workspace.close(); main.close(); job.cancel() }
     }
 
-    @Test fun authenticatedRuntimeBubbleUsesItsOwnControllerAndSendsThroughTheEstablishedGatewaySession() {
-        val gateway = LoopbackGatewayStub()
-        val runtimeDispatcher = PausableDispatcher()
-        val scope = CoroutineScope(SupervisorJob() + runtimeDispatcher)
-        var bubble: WorkbenchController? = null
-        var releaseAcceptance: java.util.concurrent.CountDownLatch? = null
-        try {
-            gateway.respond("/open-android-intelligence/v2/negotiate", """{"protocol":"2.1","data":{"protocol":{"major":2,"minor":1},"features":{"auth":["password","refresh"],"messages":"chat-v1","attachments":"staged-sha256-v1","events":"sse-cursor-v1","deviceRequests":"risk-queue-v1","conversationUi":[]},"limits":{"attachmentTtlSeconds":3600,"eventRetentionSeconds":86400,"maxClockSkewSeconds":120},"gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}""")
-            gateway.respond("/open-android-intelligence/v2/sessions/password", """{"data":{"accountId":"account-a","deviceId":"device-a","sessionId":"session-a","accessToken":"token","refreshCredential":"refresh"}}""")
-            gateway.respond("/open-android-intelligence/v2/conversations", """{"protocol":"2.1","data":{"conversations":[{"conversationId":"main-thread","title":"Main","lastMessageAt":"2026-10-17T02:00:00Z"}]}}""")
-            val emptyTimeline = """{"protocol":"2.1","data":{"messages":[],"nextCursor":null,"snapshotRevision":1}}"""
-            gateway.respond("/open-android-intelligence/v2/conversations/main-thread/messages", emptyTimeline)
-            gateway.respond("/open-android-intelligence/v2/conversations/conv-a/messages", emptyTimeline)
-            gateway.respond("/open-android-intelligence/v2/events", "", contentType = "text/event-stream")
-            val runtime = GatewayRuntime(context, scope,
-                PairingGrantStateHolder(InMemoryPairingGrantStore(), AndroidAuditStore(InMemoryAuditSink())),
-                credentialStore = InMemoryCredentialStore(), deviceKeys = InMemoryDeviceKeySource(), localDocumentKeyProvider = TestDocumentKeys)
-            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
-            await { runtime.phase.value is ConnectionPhase.Connected && runtime.controller.value?.state?.value?.activeThreadId == "main-thread" }
-            val main = runtime.controller.value!!
-            main.editDraft("主窗口草稿")
-            if (android.os.Build.VERSION.SDK_INT >= 33) {
-                shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+    @Test fun nativeBubbleOpensTheNotificationConversationWhenItsSessionArrivesLate() {
+        val job = SupervisorJob()
+        val scope = CoroutineScope(job + Dispatchers.Unconfined)
+        val host = Host()
+        val native = target.copy(agentId = "hermes")
+        val store = ViewModelStore()
+        val window = BubbleConversationWindow(SavedStateHandle())
+        store.put("bubble", window)
+        val opened = mutableListOf<String>()
+        val controllers = mutableListOf<WorkbenchController>()
+        val open: (ReplyNotificationTarget) -> WorkbenchController = { selected ->
+            controller(scope, host).also {
+                it.openThread(selected.conversationId); opened += selected.conversationId; controllers += it
             }
-            runtime.replyNotifications.setEnabled(true)
-            runtime.onAppForegrounded()
-            val profileId = Base64.getUrlEncoder().withoutPadding().encodeToString("${gateway.baseUrl}|operator".toByteArray())
-            val current = target.copy(profileId = profileId)
-            assertNull(runtime.createBubbleConversation(current.copy(accountId = "other-account")))
-            bubble = runtime.createBubbleConversation(current)!!
-            val chat = requireNotNull(bubble)
-            assertNotSame(main, chat)
-            await { chat.state.value.historyHydrated && chat.state.value.timeline !is com.openandroidintelligence.conversation.state.Loadable.Loading }
-            releaseAcceptance = gateway.holdResponse("/open-android-intelligence/v2/conversations/conv-a/messages", """{"protocol":"2.1","data":{"message":{"status":"accepted","conversationId":"conv-a","messageId":"bubble-reply","generationId":"bubble-generation"}}}""")
-            // Reproduce STOP without UI disposal while the process-owned
-            // observers have not yet consumed the synchronous send fact.
-            runtimeDispatcher.paused = true
-            chat.editDraft("气泡中的真实回复")
-            chat.sendDraft()
-            assertTrue(chat.hasActiveWork.value)
-            runtime.onAppBackgrounded()
-            assertEquals(AgentSessionForegroundService::class.java.name, requireNotNull(shadowOf(context).nextStartedService).component!!.className)
-            runtimeDispatcher.resume()
-            await { gateway.requests.any { it.method == "POST" && it.target == "/open-android-intelligence/v2/conversations/conv-a/messages" } }
-            assertEquals("main-thread", main.state.value.activeThreadId)
-            assertEquals("主窗口草稿", main.state.value.draft)
-            val request = gateway.requests.single { it.method == "POST" && it.target.endsWith("/conv-a/messages") }
-            // The loopback recorder keeps HTTP bytes as Latin-1, including the UTF-8 body.
-            val payload = com.openandroidintelligence.gateway.schema.JsonFields.obj(
-                com.openandroidintelligence.gateway.schema.Json.parse(request.body.toByteArray(Charsets.ISO_8859_1).toString(Charsets.UTF_8)),
-            )
-            assertEquals("气泡中的真实回复", com.openandroidintelligence.gateway.schema.JsonFields.string(payload, "text"))
-            runtime.releaseBubbleConversation(chat)
-            assertTrue("No native frame or HTTP receipt has yet taken ownership", runtime.nativeConversationNotifications.sessions.value.isEmpty())
-            assertTrue(chat.hasActiveWork.value)
-            assertTrue("Disposing the bubble UI must not cancel its POST or event stream", chat.state.value.isOnline)
+        }
+        try {
+            // 账号恢复或 Agent 发现还没完成：这一帧拿不到 session，控制器建不出来。
+            window.bind(null, native, open) {}
+            assertNull(window.controller)
+            assertNull(window.selectedConversationId)
 
-            val clientId = requireNotNull(com.openandroidintelligence.gateway.schema.JsonFields.string(payload, "clientMessageId"))
-            val terminal = """{"accountId":"account-a","occurredAt":"${java.time.Instant.now()}","payload":{"conversationId":"conv-a","generationId":"bubble-generation","messageId":"bubble-reply","clientMessageId":"$clientId","status":"completed","revision":1,"errorCode":null}}"""
-            gateway.respond("/open-android-intelligence/v2/events", "id: bubble-terminal\nevent: conversation.message.status\ndata: $terminal\n\n", contentType = "text/event-stream")
-            requireNotNull(releaseAcceptance).countDown()
-            await { !chat.hasActiveWork.value && !chat.state.value.isOnline }
-            await { shadowOf(context).nextStoppedService?.component?.className == AgentSessionForegroundService::class.java.name }
+            // session 到达后必须仍然进入通知指向的会话，而不是停在会话列表。
+            window.bind(native, native, open) {}
+            assertTrue(window.isBoundTo(native, native))
+            assertEquals("conv-a", window.selectedConversationId)
+            assertEquals("conv-a", window.controller?.state?.value?.activeThreadId)
+            assertEquals(listOf("conv-a"), opened)
 
-            // Rotating credentials keeps the authenticated workspace and its
-            // in-flight bubble task until the Gateway supplies its terminal event.
-            gateway.respond("/open-android-intelligence/v2/conversations/conv-a/messages", emptyTimeline)
-            runtime.onAppForegrounded()
-            val retired = requireNotNull(runtime.createBubbleConversation(current))
-            bubble = retired
-            await { retired.state.value.timeline !is com.openandroidintelligence.conversation.state.Loadable.Loading }
-            gateway.respond("/open-android-intelligence/v2/conversations/conv-a/messages", """{"protocol":"2.1","data":{"message":{"status":"accepted","conversationId":"conv-a","messageId":"second-bubble-reply","generationId":"second-bubble-generation"}}}""")
-            retired.editDraft("刷新凭据时仍运行的任务"); retired.sendDraft()
-            await { gateway.requests.count { it.method == "POST" && it.target.endsWith("/conv-a/messages") } == 2 }
-            runtime.releaseBubbleConversation(retired)
-            assertTrue(retired.hasActiveWork.value)
-            gateway.respond("/open-android-intelligence/v2/sessions/refresh", """{"data":{"accountId":"account-a","deviceId":"device-a","sessionId":"refreshed-session","accessToken":"refreshed-token","refreshCredential":"refreshed-credential"}}""")
-            runtime.refreshSession()
-            await { !runtime.isRefreshingSession.value && gateway.requests.any { it.target.endsWith("/sessions/refresh") } }
-            assertSame(main, runtime.controller.value)
-            assertTrue(retired.state.value.isOnline)
-            assertTrue(retired.hasActiveWork.value)
-            await { gateway.requests.any { request -> request.target.substringBefore('?').endsWith("/events") &&
-                request.headers.any { it.equals("Authorization: Bearer refreshed-token", true) } } }
-            val secondRequest = gateway.requests.last { it.method == "POST" && it.target.endsWith("/conv-a/messages") }
-            val secondPayload = com.openandroidintelligence.gateway.schema.JsonFields.obj(
-                com.openandroidintelligence.gateway.schema.Json.parse(secondRequest.body.toByteArray(Charsets.ISO_8859_1).toString(Charsets.UTF_8)))
-            val secondClientId = requireNotNull(com.openandroidintelligence.gateway.schema.JsonFields.string(secondPayload, "clientMessageId"))
-            val secondTerminal = """{"accountId":"account-a","occurredAt":"${java.time.Instant.now()}","payload":{"conversationId":"conv-a","generationId":"second-bubble-generation","messageId":"second-bubble-reply","clientMessageId":"$secondClientId","status":"completed","revision":1,"errorCode":null}}"""
-            gateway.respond("/open-android-intelligence/v2/events", "id: second-bubble-terminal\nevent: conversation.message.status\ndata: $secondTerminal\n\n", contentType = "text/event-stream")
-            await { !retired.hasActiveWork.value && !retired.state.value.isOnline }
-            await { shadowOf(context).nextStoppedService?.component?.className == AgentSessionForegroundService::class.java.name }
-            assertFalse(retired.hasActiveWork.value)
-        } finally { releaseAcceptance?.countDown(); runtimeDispatcher.resume(); bubble?.close(); scope.cancel(); gateway.closed() }
+            // 用户回到列表是明确的导航选择，之后的绑定不能把他绑回聊天页。
+            window.showBrowser()
+            window.bind(native, native, open) {}
+            assertNull(window.selectedConversationId)
+        } finally {
+            store.clear()
+            controllers.forEach(WorkbenchController::close)
+            job.cancel()
+        }
     }
 
     private fun await(condition: () -> Boolean) {

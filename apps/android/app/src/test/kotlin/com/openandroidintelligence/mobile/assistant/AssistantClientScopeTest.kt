@@ -4,42 +4,65 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AssistantClientScopeTest {
-    @Test fun aColdClientCanConsentAfterTheAsynchronousSessionRestores() {
+    @Test fun anAvailableAccountBindsWithoutAnyConsentStep() {
         val client = AssistantClientScope(null)
-        assertFalse(client.canConsent(null))
-        assertFalse(client.consentTo(null))
-        assertTrue(client.canConsent("restored-account"))
-        assertFalse(client.canShare("restored-account"))
+        assertFalse(client.canShare(null))
+        assertFalse(client.canShare("account-a"))
+        assertTrue(client.bind("account-a"))
+        assertEquals("account-a",client.accountId)
+        assertTrue(client.canShare("account-a"))
+    }
+
+    @Test fun anInitiallyUnboundClientBindsOnceTheSessionRestores() {
+        val client = AssistantClientScope(null)
+        assertFalse(client.bind(null))
         assertNull(client.accountId)
-        assertTrue(client.consentTo("restored-account"))
+        assertFalse(client.canShare(null))
+        assertTrue(client.bind("restored-account"))
         assertEquals("restored-account",client.accountId)
         assertTrue(client.canShare("restored-account"))
     }
-    @Test fun switchingAccountsBeforeConsentBindsOnlyAtTheExplicitConsentStep() {
+
+    @Test fun anInitialAccountIdAloneGrantsNothingUntilTheClientBinds() {
         val client = AssistantClientScope("account-a")
-        assertTrue(client.canConsent("account-b"))
-        assertFalse(client.canShare("account-b"))
-        assertEquals("account-a",client.accountId)
-        assertTrue(client.consentTo("account-b"))
-        assertEquals("account-b",client.accountId)
-    }
-    @Test fun aConsentedClientCannotFollowAnAccountSwitchOrTransferAnOldScreenCapture() {
-        val client = AssistantClientScope(null)
-        assertTrue(client.consentTo("account-a"))
-        assertFalse(client.canShare("account-b"))
-        assertFalse(client.canConsent("account-b"))
-        assertFalse(client.consentTo("account-b"))
-        assertEquals("account-a",client.accountId)
         assertFalse(client.canShare("account-a"))
-        assertTrue(client.consentTo("account-a"))
+        assertTrue(client.bind("account-a"))
         assertTrue(client.canShare("account-a"))
     }
-    @Test fun reconnectingTheSameAccountRequiresFreshConsentAfterTheConnectionWasLost() {
-        val client = AssistantClientScope("account-a")
-        assertTrue(client.consentTo("account-a"))
+
+    @Test fun switchingAccountsInvalidatesTheBindingImmediately() {
+        val client = AssistantClientScope(null)
+        assertTrue(client.bind("account-a"))
+        assertTrue(client.canShare("account-a"))
+        assertTrue(client.accountChanged("account-b"))
+        assertEquals("account-a",client.accountId)
+        assertFalse(client.canShare("account-b"))
+        // 失效之后旧账号也不能再复用，必须重新绑定。
+        assertFalse(client.accountChanged("account-b"))
+        assertFalse(client.canShare("account-a"))
+        assertTrue(client.bind("account-b"))
+        assertTrue(client.canShare("account-b"))
+        assertFalse(client.canShare("account-a"))
+    }
+
+    @Test fun aCrossAccountRequestFailsClosedForEveryLaterCheck() {
+        val client = AssistantClientScope(null)
+        assertTrue(client.bind("account-a"))
+        assertFalse(client.canShare("account-b"))
+        assertFalse(client.canShare("account-a"))
+        assertEquals("account-a",client.accountId)
+        assertTrue(client.bind("account-a"))
+        assertTrue(client.canShare("account-a"))
+    }
+
+    @Test fun aDisconnectedClientCannotReuseItsOldBinding() {
+        val client = AssistantClientScope(null)
+        assertTrue(client.bind("account-a"))
+        assertTrue(client.canShare("account-a"))
         assertFalse(client.canShare(null))
         assertFalse(client.canShare("account-a"))
-        assertTrue(client.canConsent("account-a"))
-        assertTrue(client.consentTo("account-a"))
+        assertFalse(client.accountChanged(null))
+        assertTrue(client.bind("account-a"))
+        assertTrue(client.canShare("account-a"))
     }
 }

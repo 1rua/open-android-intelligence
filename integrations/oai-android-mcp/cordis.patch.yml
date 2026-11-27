@@ -1,0 +1,8 @@
+# Default-off host row. Enable it only from an isolated profile patch after
+# replacing the empty deployment value with an absolute private MCP path.
+- insert:
+    - id: oai-android-mcp
+      name: '@open-android-intelligence/oai-android-mcp-server'
+      disabled: true
+      config:
+        privateConfigPath: ''

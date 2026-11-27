@@ -1,0 +1,216 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-08T06:57:04.990271+00:00",
+  "scope": "本机既有Core和Hermes、原测试会话；不包含手机连续3小时或真机结论",
+  "requiredSeconds": 10800,
+  "runtimeCoreCandidateCommit": "164a7c0159ecd917c47e69b92b463fe07672ed69",
+  "finalProductionFixCommit": "8f6f7703464454c2c292431e06f04111edcfc495",
+  "integrationTargetDev": "3f63ae2db8e48a57dc2f90f6501419a3da302d9b",
+  "auditCommand": [
+    "python3",
+    "tools/audit-communication.py",
+    "--evidence-dir",
+    "docs/reviews/evidence/2026-11-08-core-agent-stability",
+    "--output",
+    "docs/reviews/evidence/2026-11-08-core-agent-stability/acceptance-3h-final-summary.json"
+  ],
+  "auditToolSha256": "e543f50176c7124f9b68af68008d3a61b6025cc58a0a357aa8a613514bacc1fb",
+  "localAuditSha256": "f1ca9141582b76d3b669825d37b7b048d88773e7eec91b9d49a21cb844eb5203",
+  "result": {
+    "authorization": {
+      "at": "2026-11-08T06:22:38.716392+00:00",
+      "reason": "user_changed_acceptance_duration",
+      "startHashesMatched": {
+        "observe-24h": true,
+        "periodic-messages": true
+      },
+      "status": "stop_requested"
+    },
+    "failureCategories": [],
+    "files": {
+      "acceptance-duration-amendment.json": {
+        "present": true,
+        "sha256": "a22d346ae4d7a45b38288d37563377789f9c28182107637c5c9298906ef136a4",
+        "sizeBytes": 2163
+      },
+      "observe-24h/end.json": {
+        "present": true,
+        "sha256": "b312f6698bc20ab8cced5c7f7f55e35b0782947b4c44df519bdc338c60757b00",
+        "sizeBytes": 270
+      },
+      "observe-24h/observations.jsonl": {
+        "present": true,
+        "sha256": "c69b7db733a45d5f98c69dbd96f9292bdd14861159cee2783f18bb4599522307",
+        "sizeBytes": 1929848
+      },
+      "observe-24h/start.json": {
+        "present": true,
+        "sha256": "dce88e5c62a17823cef03d2c8b1b9e6721594b43217042ad893c3a5ec2d498d0",
+        "sizeBytes": 323
+      },
+      "observe-24h/summary.json": {
+        "present": true,
+        "sha256": "b38844f25b6f9d805f4eafb8ae1c7bb68b7994c01916da92186d8c6ad47ed413",
+        "sizeBytes": 739
+      },
+      "periodic-final-history-verification.json": {
+        "present": true,
+        "sha256": "41a5fd7aa72d47a788933e9161d7cb3e4a9df8f343606f8d40f600dac52e9950",
+        "sizeBytes": 7869
+      },
+      "periodic-messages-5b5bdf2d-partial/observations.jsonl": {
+        "present": true,
+        "sha256": "36b75b254111b2720f40d6c517405a37351321c98b0362458017a5835e19da0f",
+        "sizeBytes": 436
+      },
+      "periodic-messages/end.json": {
+        "present": true,
+        "sha256": "1eaa2b2c7f33ab7f0a0834e2ddb84ec13343f17bf787b76a08b313372d83ee79",
+        "sizeBytes": 205
+      },
+      "periodic-messages/observations.jsonl": {
+        "present": true,
+        "sha256": "fa08838bd19eb68bccc867922f1b47fe4588cb52c44e3dbc61a3bc654e2fbc9b",
+        "sizeBytes": 6981
+      },
+      "periodic-messages/start.json": {
+        "present": true,
+        "sha256": "475bd101ccd9c3de2f22c9c0d13dec4a8694e6bd7da40b19547077426a8efee8",
+        "sizeBytes": 568
+      },
+      "periodic-messages/state.json": {
+        "present": true,
+        "sha256": "bed67737ef244d3a7e7b2e69230951445b88316955c5bd4816c8253057c61c3b",
+        "sizeBytes": 76
+      },
+      "periodic-messages/summary.json": {
+        "present": true,
+        "sha256": "1b2ecaae7451e2986aa903938b5c6d3892fa1f88714601f00d8327f4963d16fc",
+        "sizeBytes": 797
+      },
+      "periodic-stop-boundary-reconciliation.json": {
+        "present": true,
+        "sha256": "f870ca8c04f5388b54cc06c0ce61078f54e78d7ac2b83e870f3deb42720de61d",
+        "sizeBytes": 1330
+      }
+    },
+    "manifest": {
+      "changedPaths": [],
+      "declaredSha256": "00ba87f7f4adf6c66a091526303b877b5e2f598657364be3d65a449cc655570a",
+      "digestMatched": true,
+      "filesChecked": 76,
+      "filesMatched": 76,
+      "path": ".toolchains/deployment/observer-manifest.json",
+      "sha256": "00ba87f7f4adf6c66a091526303b877b5e2f598657364be3d65a449cc655570a"
+    },
+    "minimumDurationSeconds": 10800,
+    "observer": {
+      "actualDurationSeconds": 28815.054,
+      "endedAt": "2026-11-08T06:22:38.716Z",
+      "first3h": {
+        "firstTimestamp": "2026-11-07T22:22:23.719000Z",
+        "lastTimestamp": "2026-11-08T01:22:18.388000Z",
+        "maxGapSeconds": 11.425,
+        "sampleCount": 1072,
+        "spanSeconds": 10794.669
+      },
+      "full": {
+        "firstTimestamp": "2026-11-07T22:22:23.719000Z",
+        "hopErrorFreeSamples": 2860,
+        "httpStatus200Samples": 2860,
+        "lastTimestamp": "2026-11-08T06:22:35.380000Z",
+        "maxGapSeconds": 11.425,
+        "nonemptyCapabilitySamples": 2860,
+        "sampleCount": 2860,
+        "spanSeconds": 28811.661,
+        "targetOnlineSamples": 2860,
+        "uniqueRequestIds": 2860
+      },
+      "intervalSeconds": 10.0,
+      "maxAllowedGapSeconds": 25.0,
+      "originalTerminal": "interrupted/incomplete",
+      "requestTimeoutSeconds": 5.0,
+      "requestedDurationSeconds": 86400.0,
+      "startedAt": "2026-11-07T22:22:23.663Z",
+      "wallDurationSeconds": 28815.053
+    },
+    "originalRequiredSeconds": 86400,
+    "passed": true,
+    "periodic": {
+      "actualDurationSeconds": 28803.824,
+      "actualMessagePostsAtLeast": 17,
+      "completedPostsObserved": 17,
+      "endedAt": "2026-11-08T06:22:38.717Z",
+      "finalHistoryVerification": {
+        "historyRowsReceived": 36,
+        "passed": true,
+        "present": true,
+        "roundsChecked": 16
+      },
+      "first3h": {
+        "firstStartedAt": "2026-11-07T22:22:34.901000Z",
+        "lastStartedAt": "2026-11-08T00:52:34.910000Z",
+        "maxGapSeconds": 1800.016,
+        "roundCount": 6,
+        "spanSeconds": 9000.009
+      },
+      "full": {
+        "firstStartedAt": "2026-11-07T22:22:34.901000Z",
+        "historyMatchedCount": 16,
+        "lastStartedAt": "2026-11-08T05:52:34.915000Z",
+        "maxGapSeconds": 1800.065,
+        "postCountOneCount": 16,
+        "roundCount": 16,
+        "spanSeconds": 27000.014,
+        "terminalCompletedCount": 16,
+        "uniqueClientMessageIdCount": 16,
+        "uniqueGenerationIdCount": 16,
+        "uniqueKeyCount": 16,
+        "uniqueMessageIdCount": 16
+      },
+      "intervalSeconds": 1800,
+      "maxAllowedGapSeconds": 2070,
+      "messagePostsRecorded": 16,
+      "observationStartedAt": "2026-11-07T22:22:34.893Z",
+      "observationTimeoutSeconds": 90,
+      "originalTerminal": "interrupted/incomplete",
+      "requestedDurationSeconds": 86400,
+      "startedAt": "2026-11-07T22:22:34.879Z",
+      "stopBoundary": {
+        "actualMessagePostsAtLeast": 17,
+        "additionalCompletedPosts": 1,
+        "clientMessageId": "periodic-20261108-f5001dc4d6164df3b75f6b1e87171764",
+        "excludedFromFirst3h": true,
+        "generationId": "gen_e76ab237a824dee5119b24eebd2f8653ccf3d7a6",
+        "historyAssistantRows": 1,
+        "historyUserRows": 1,
+        "present": true,
+        "recordedMessagePosts": 16,
+        "terminal": "completed"
+      },
+      "summaryPostCounts": {
+        "messagePosts": 16,
+        "roundsAttempted": 16,
+        "totalPostCount": 16
+      },
+      "wallDurationSeconds": 28803.838
+    },
+    "requiredSeconds": 10800,
+    "schemaVersion": 1,
+    "verdict": "passed"
+  },
+  "capabilitiesObservation": {
+    "onlineTrue": 2860,
+    "capabilityMapRetained": 2860,
+    "steerTrue": 2856,
+    "steerFalseSingleSamples": 4,
+    "steerSpecificCause": "not established from current evidence"
+  },
+  "limitations": {
+    "androidTargetAvailability": "original task emulator unavailable; another AVD not operated",
+    "mobileContinuous3h": "not verified",
+    "physicalDevice": "not verified",
+    "androidAuthRotationResult": "16 AUTH/null rows lack exception/action fields; cannot prove each recovery",
+    "maintainerApproval": "not granted at time of source review"
+  }
+}

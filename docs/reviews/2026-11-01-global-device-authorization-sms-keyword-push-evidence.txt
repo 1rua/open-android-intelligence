@@ -1,0 +1,57 @@
+{
+  "started": {
+    "event": "started",
+    "deadlineSeconds": 300,
+    "pollSeconds": 2,
+    "notBeforeEpochMs": 1793529489218,
+    "ackSubmitted": false,
+    "markerNotDisclosedByPhone": true
+  },
+  "sample": {
+    "event": "metadata_sample_observed",
+    "eventId": "push_d962b57e...d6a93169",
+    "deliveryId": "delivery_0a66aed6...35d71e31",
+    "senderAddress": "15550105505",
+    "eventType": "sms.received",
+    "occurredAt": "2026-11-01T10:39:45.988Z",
+    "receivedAtEpochMs": 1793529582801,
+    "route": {
+      "coreInstanceId": "core_...a4ea1e54",
+      "accountScope": "acct_...acb77745",
+      "endpointId": "endpoint_...b16ddda6",
+      "generation": 1
+    },
+    "bodyFieldAbsent": true,
+    "newEventAfterObserverStart": true,
+    "unselectedCount": 0,
+    "ackSubmitted": false,
+    "localMarkerVerification": "phone_configuration_and_controlled_injection_required"
+  },
+  "matchingRoundCounts": {
+    "event": "receive_count",
+    "selectedCount": 1,
+    "selectedNonTargetCount": 0,
+    "unselectedCount": 0,
+    "ackSubmitted": false
+  },
+  "finished": {
+    "event": "finished",
+    "result": "PASS",
+    "reason": "NEW_SENDER55_BODY_ABSENT_AND_UNSELECTED_EMPTY",
+    "rounds": 49,
+    "elapsedSeconds": 97.727,
+    "ackSubmitted": false
+  },
+  "unselectedZeroOnAllObservedRounds": true,
+  "localKeyword": "OAI-SAMPLE-SMS-KEYWORD-PUSH-20261101",
+  "controlledInjectionReported": {
+    "sender": "15550105505",
+    "hostBeforeAsiaShanghai": "2026-11-01T18:39:43.369978741+08:00",
+    "hostAfterAsiaShanghai": "2026-11-01T18:39:43.387304266+08:00",
+    "osExitCode": 0
+  },
+  "remoteBodyOrMarkerInspected": false,
+  "correlationLimit": "sender/time/route match plus coordinating agent controlled injection; body was not transmitted",
+  "privateSourceLog": "docs/plans/2026-11-01-global-device-authorization/runtime/sms-emulator/unselected-receiver/keyword-push-20261101T103809Z-6be92d56.jsonl",
+  "privateReceipt": "docs/plans/2026-11-01-global-device-authorization/runtime/sms-emulator/unselected-receiver/keyword-push-20261101T103809Z-6be92d56.receipt.json"
+}

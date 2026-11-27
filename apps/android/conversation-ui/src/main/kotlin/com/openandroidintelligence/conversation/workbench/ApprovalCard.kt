@@ -58,6 +58,7 @@ import com.openandroidintelligence.conversation.state.isSettled
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.delay
 
 /** Test hooks: a card is asserted through these tags, never by its text alone. */
@@ -109,6 +110,7 @@ fun ApprovalCard(
     val waiting = state is ApprovalCardState.Waiting
     val submitting = (state as? ApprovalCardState.Submitting)?.choice
     val settledOutcome = (state as? ApprovalCardState.Resolved)?.outcome
+    val textOnly = state as? ApprovalCardState.TextOnly
     // The ticker is the only writer of this clock, and nothing in this scope reads
     // it: the badge reads it through the lambda handed to the header, inside the
     // badge's own scope, so a second passing redraws that badge and not the card.
@@ -118,7 +120,7 @@ fun ApprovalCard(
     // instead of once per tick.
     val windowClosed = remember(request) { derivedStateOf { request.countdownAt(now.longValue).expired } }
     LaunchedEffect(state) {
-        if (state.isSettled) return@LaunchedEffect
+        if (state.isSettled || state is ApprovalCardState.TextOnly) return@LaunchedEffect
         while (true) {
             val tick = clock()
             now.longValue = tick
@@ -128,20 +130,20 @@ fun ApprovalCard(
             delay(APPROVAL_COUNTDOWN_TICK_MILLIS)
         }
     }
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     // A card that already carried its answer when it was first drawn (re-entering
     // a thread past the fact) is shown as it is; only a card watched until the
     // Gateway answered earns the conclusion's fade.
     val settledWhenFirstDrawn = remember(request) { state.isSettled }
 
     Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .testTag(ApprovalCardTags.ROOT),
         shape = RoundedCornerShape(AppRadius.Medium),
         color = MaterialTheme.colorScheme.surfaceContainerHighest,
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(Dimensions.StrokeHairline, MaterialTheme.colorScheme.outlineVariant),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag(ApprovalCardTags.ROOT),
     ) {
         Column(
             modifier = Modifier.padding(Dimensions.SpaceMedium),
@@ -150,6 +152,7 @@ fun ApprovalCard(
             CardHeader(
                 request = request,
                 settled = settled,
+                textOnly = textOnly != null,
                 countdown = { request.countdownAt(now.longValue) },
             )
             CommandPreview(request.command)
@@ -162,7 +165,27 @@ fun ApprovalCard(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (!settled) {
+            if (textOnly != null) {
+                Text(
+                    text = "审批卡当前无法显示或提交。命令仍在等待审批，尚未执行；请手动输入以下命令之一。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                textOnly.commands.forEach { command ->
+                    Surface(
+                        shape = RoundedCornerShape(AppRadius.Small),
+                        color = MaterialTheme.colorScheme.surfaceContainerLowest,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = command,
+                            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                            modifier = Modifier.padding(Dimensions.SpaceSmall),
+                        )
+                    }
+                }
+            }
+            if (!settled && textOnly == null) {
                 // Read once, ahead of the `waiting &&` shortcut below: a press in
                 // flight has to notice the window closing too, or the card would
                 // keep a spinner over a command that can no longer run.
@@ -211,6 +234,7 @@ fun ApprovalCard(
 private fun CardHeader(
     request: ApprovalRequest,
     settled: Boolean,
+    textOnly: Boolean,
     /**
      * Deferred read: the countdown is evaluated inside [CountdownBadge], so the tick
      * redraws the badge rather than this header, the card, or the timeline.
@@ -229,13 +253,13 @@ private fun CardHeader(
         )
         Spacer(Modifier.width(Dimensions.SpaceSmall))
         Text(
-            text = "命令需要你的批准",
+            text = if (textOnly) "审批卡不可用，命令仍在等待" else "命令需要你的批准",
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f, fill = false),
         )
         Spacer(Modifier.width(Dimensions.SpaceSmall))
-        if (!settled) {
+        if (!settled && !textOnly) {
             CountdownBadge(countdown)
         }
     }
@@ -397,7 +421,7 @@ private fun OutcomeRow(outcome: ApprovalOutcome, awaitingGateway: Boolean) {
     val (icon, tint, text) = when (outcome) {
         ApprovalOutcome.ALLOWED_ONCE -> Triple(Icons.Default.Check, MaterialTheme.colorScheme.primary, "已允许这一次执行")
         ApprovalOutcome.ALLOWED_SESSION -> Triple(Icons.Default.Check, MaterialTheme.colorScheme.primary, "已在本次会话内允许")
-        ApprovalOutcome.ALLOWED_ALWAYS -> Triple(Icons.Default.Check, MaterialTheme.colorScheme.primary, "已始终允许这类命令")
+        ApprovalOutcome.ALLOWED_ALWAYS -> Triple(Icons.Default.Check, MaterialTheme.colorScheme.primary, "已添加到白名单")
         ApprovalOutcome.DENIED -> Triple(Icons.Default.Close, MaterialTheme.colorScheme.error, "已拒绝，命令不会执行")
         ApprovalOutcome.TIMED_OUT -> Triple(
             Icons.Default.Schedule,
@@ -477,7 +501,7 @@ fun ApprovalUnsupportedHint(onDismiss: (() -> Unit)? = null, modifier: Modifier 
 fun choiceLabel(choice: ApprovalChoice): String = when (choice) {
     ApprovalChoice.ONCE -> "允许一次"
     ApprovalChoice.SESSION -> "本次会话允许"
-    ApprovalChoice.ALWAYS -> "始终允许"
+    ApprovalChoice.ALWAYS -> "添加到白名单"
     ApprovalChoice.DENY -> "拒绝"
     ApprovalChoice.UNKNOWN -> "未知"
 }

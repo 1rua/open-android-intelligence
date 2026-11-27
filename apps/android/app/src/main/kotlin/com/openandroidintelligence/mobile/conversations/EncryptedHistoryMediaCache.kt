@@ -6,19 +6,20 @@ import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
 import com.openandroidintelligence.encrypted.store.AndroidKeystoreOutboxKeyProvider
 import com.openandroidintelligence.encrypted.store.EncryptedAttachmentStagingStore
-import com.openandroidintelligence.gateway.http.*
 import com.openandroidintelligence.gateway.schema.*
 import com.openandroidintelligence.mobile.plugins.EncryptedDocuments
+import com.openandroidintelligence.mobile.plugins.digestName
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FilterInputStream
 import java.io.IOException
 import java.io.InputStream
+import java.security.KeyStore
 import java.security.MessageDigest
-import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import javax.crypto.SecretKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
@@ -26,10 +27,16 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-/** 账号隔离的持久原件库；正文独立保存，原件使用有界缓冲分块格式且不按 TTL 淘汰。 */
-class EncryptedHistoryMediaCache(context: Context, private val scope: ConversationScope,
-    private val http: GatewayHttpClient? = null, keyProvider: AesGcmKeyProvider? = null) : HistoricalMediaPort {
-    private val scopeKey = Json.canonical(Json.of(listOf(scope.profileId, scope.gatewayId, scope.accountId, scope.installId)))
+/** 账号与原生 Agent 隔离的持久原件库；正文独立保存，原件使用有界缓冲分块格式且不按 TTL 淘汰。 */
+class EncryptedHistoryMediaCache(private val context: Context, private val scope: ConversationScope,
+    private val source: HistoricalMediaSource? = null, private val keyProvider: AesGcmKeyProvider? = null,
+    private val nativeAgentId: String? = null,
+    private val afterReferenceCommit: (() -> Unit)? = null) : HistoricalMediaPort {
+    private val localScope = nativeAgentId?.let { NativeLocalPartitions.partitionScope(scope, it) } ?: scope
+    private val partitions = nativeAgentId?.let { agentId ->
+        NativeLocalPartitions(context, scope, keyProvider).also { it.register(agentId) }
+    }
+    private val scopeKey = Json.canonical(Json.of(listOf(localScope.profileId, localScope.gatewayId, localScope.accountId, localScope.installId)))
     private val scopeHash = MessageDigest.getInstance("SHA-256").digest(scopeKey.toByteArray()).joinToString("") { "%02x".format(it) }
     private val directory = File(context.noBackupFilesDir, "history-media/$scopeHash")
     private val retiredRoot = File(context.noBackupFilesDir, "history-media-retired/$scopeHash")
@@ -53,20 +60,69 @@ class EncryptedHistoryMediaCache(context: Context, private val scope: Conversati
     @Volatile private var generation = 0L
     @Volatile private var retired = false
     @Volatile private var pendingTransitionsBlocked = false
-    internal val conversationScope get() = scope
+    internal val conversationScope get() = localScope
     internal fun setPendingTransitionsBlocked(blocked: Boolean) { synchronized(index) { pendingTransitionsBlocked = blocked } }
     private fun checkTransitionsReady() { check(!pendingTransitionsBlocked) { "MEDIA_TRANSITIONS_PENDING" } }
 
-    private data class Entry(val metadata: HistoricalMediaMetadata, val contentId: String, val localDraftIds: List<String> = emptyList())
+    private data class Entry(val metadata: HistoricalMediaMetadata, val contentId: String,
+        val localDraftIds: List<String> = emptyList(), val sourceAgent: String? = null)
+    private data class SourceRecord(val contentVersion: String, val domain: String?, val revision: Long?, val epoch: Long)
+    private fun sourceRecord(key: String): SourceRecord? {
+        index.read("source-state:$key")?.let { bytes ->
+            val record = JsonFields.obj(Json.parse(bytes.decodeToString())) ?: error("LOCAL_MEDIA_INVALID")
+            return SourceRecord(JsonFields.string(record, "contentVersion") ?: error("LOCAL_MEDIA_INVALID"),
+                JsonFields.string(record, "domain"), JsonFields.long(record, "revision"),
+                (JsonFields.long(record, "epoch") ?: error("LOCAL_MEDIA_INVALID")).also { check(it >= 0) { "LOCAL_MEDIA_INVALID" } })
+        }
+        // 只读取先前已写的本机格式，不重置或删除没有新来源记录的原件。
+        val content = index.read("source-version:$key")?.decodeToString() ?: return null
+        val watermark = index.read("source-watermark:$key")?.let { JsonFields.obj(Json.parse(it.decodeToString())) }
+        return SourceRecord(content, JsonFields.string(watermark, "domain"), JsonFields.long(watermark, "revision"), 0)
+    }
+    private val sourceVersionRegistration = source?.observeReferenceVersions(::acceptReferenceVersion)
+    private fun acceptReferenceVersion(conversationId: String, attachmentId: String, sourceVersion: String) = synchronized(index) {
+        check(!retired) { "LOCAL_MEDIA_GENERATION_CHANGED" }
+        val key = entryKey(conversationId, attachmentId)
+        val previous = sourceRecord(key)
+        val oldSource = previous?.contentVersion
+        val state = source?.referenceState(conversationId, attachmentId) ?: HistoricalMediaReferenceState(sourceVersion)
+        val incomingRevision = state.highestRevision
+        val previousRevision = previous?.revision
+        if (previous?.domain != null && previous.domain == state.revisionDomain && previousRevision != null && incomingRevision != null) {
+            check(incomingRevision >= previousRevision) { "REMOTE_MEDIA_REVISION_STALE" }
+            check(incomingRevision > previousRevision || oldSource == sourceVersion) { "REMOTE_MEDIA_REVISION_UNCONFIRMED" }
+        }
+        check(previous?.domain != "harness-session-v3" || state.revisionDomain == previous?.domain || oldSource == sourceVersion) { "REMOTE_MEDIA_REVISION_UNCONFIRMED" }
+        val changed = oldSource != sourceVersion
+        val epoch = if (changed) Math.addExact(previous?.epoch ?: 0L, 1L) else previous?.epoch ?: 0L
+        val domain = state.revisionDomain ?: previous?.domain
+        val revision = state.highestRevision ?: previous?.revision
+        // 一个加密原子文档同时绑定内容、水位和原件代数；崩溃只能看到完整旧状态或完整新状态。
+        index.write("source-state:$key", Json.canonical(Json.of(mapOf("contentVersion" to sourceVersion,
+            "domain" to domain, "revision" to revision, "epoch" to epoch))).toByteArray())
+        if (changed) afterReferenceCommit?.invoke()
+        val old = version(key)
+        val existing = scopedEntry(conversationId, attachmentId)
+        if (changed || (existing != null && existing.metadata.sourceVersion != sourceVersion)) {
+            val confirmed = source?.knownMetadata(conversationId, attachmentId)
+            if (!old.deleted && existing != null && confirmed != null &&
+                existing.metadata.sizeBytes == confirmed.sizeBytes && existing.metadata.sha256 == confirmed.sha256) {
+                // 上传回执携带本机已验证摘要时重绑原件，不能删掉提交前归档的唯一离线副本。
+                writeEntry(existing.copy(metadata = confirmed.copy(remoteAvailable = false)))
+            } else purgeOriginal(conversationId, attachmentId)
+        }
+    }
     private fun entryKey(conversationId: String, id: String): String = MessageDigest.getInstance("SHA-256")
         .digest(Json.canonical(Json.of(listOf(conversationId, id))).toByteArray()).joinToString("") { "%02x".format(it) }
-    private fun recordAt(key: String): Entry? = index.read(key)?.let { bytes ->
+    private fun recordAt(key: String): Entry? = index.read(key)?.let(::decodeEntry)
+    private fun decodeEntry(bytes: ByteArray): Entry {
         val o = JsonFields.obj(Json.parse(bytes.decodeToString())) ?: error("LOCAL_MEDIA_INVALID")
         val id = JsonFields.string(o, "attachmentId") ?: error("LOCAL_MEDIA_INVALID")
-        Entry(HistoricalMediaMetadata(JsonFields.string(o, "conversationId") ?: error("LOCAL_MEDIA_INVALID"), id,
+        return Entry(HistoricalMediaMetadata(JsonFields.string(o, "conversationId") ?: error("LOCAL_MEDIA_INVALID"), id,
             JsonFields.string(o, "filename").orEmpty(), JsonFields.string(o, "mediaType").orEmpty(),
             JsonFields.long(o, "sizeBytes") ?: error("LOCAL_MEDIA_INVALID"), JsonFields.string(o, "sha256") ?: error("LOCAL_MEDIA_INVALID"),
-            false, JsonFields.long(o, "sizeBytes") ?: 0L), JsonFields.string(o, "contentId") ?: error("LOCAL_MEDIA_INVALID"), JsonFields.strings(o, "localDraftIds"))
+            false, JsonFields.long(o, "sizeBytes") ?: 0L, JsonFields.string(o, "sourceVersion")), JsonFields.string(o, "contentId") ?: error("LOCAL_MEDIA_INVALID"),
+            JsonFields.strings(o, "localDraftIds"), JsonFields.string(o, "sourceAgent"))
     }
     private fun scopedEntry(conversationId: String, id: String): Entry? = recordAt("metadata:${entryKey(conversationId, id)}")?.also {
         check(it.metadata.conversationId == conversationId && it.metadata.attachmentId == id) { "HISTORY_MEDIA_SCOPE_MISMATCH" }
@@ -92,11 +148,18 @@ class EncryptedHistoryMediaCache(context: Context, private val scope: Conversati
         checkTransitionsReady()
         val value = version(entryKey(conversationId, attachmentId))
         check(!retired && !value.deleted) { "LOCAL_MEDIA_DELETED" }
-        "$scopeEpoch:$generation:${value.epoch}"
+        val sourceState = sourceRecord(entryKey(conversationId, attachmentId))
+        "$scopeEpoch:$generation:${value.epoch}:${sourceState?.epoch ?: 0L}:${sourceState?.contentVersion.orEmpty()}"
     }
-    override fun <T> withOriginalEpoch(conversationId: String, attachmentId: String, epoch: String, commit: () -> T): T = synchronized(index) {
-        check(originalEpoch(conversationId, attachmentId) == epoch) { "LOCAL_MEDIA_GENERATION_CHANGED" }
-        commit()
+    override fun <T> withOriginalEpoch(conversationId: String, attachmentId: String, epoch: String, commit: () -> T): T {
+        fun checked(): T = synchronized(index) {
+            check(originalEpoch(conversationId, attachmentId) == epoch) { "LOCAL_MEDIA_GENERATION_CHANGED" }
+            commit()
+        }
+        val remote = source ?: return checked()
+        val expected = remote.referenceVersion(conversationId, attachmentId)
+        // 来源更新与缓存/导出提交统一按 source → index 的锁顺序，避免旧版本在最后一步发布。
+        return remote.withReferenceVersion(conversationId, attachmentId, expected, ::checked)
     }
     private fun currentEpoch(conversationId: String, attachmentId: String, epoch: String) =
         runCatching { originalEpoch(conversationId, attachmentId) == epoch }.getOrDefault(false)
@@ -106,30 +169,18 @@ class EncryptedHistoryMediaCache(context: Context, private val scope: Conversati
         check(hex.matches(Regex("[a-f0-9]{64}"))) { "MEDIA_INTEGRITY_FAILED" }
         return "sha256:$hex"
     }
-    private fun target(conversationId: String, id: String, operation: String): String {
-        require(listOf(conversationId, id).all { it.matches(Regex("[A-Za-z0-9._~-]{1,128}")) })
-        return "/open-android-intelligence/v2/conversations/$conversationId/attachments/$id/$operation?format=stream-v1"
-    }
-    private suspend fun request(method: String, target: String, body: ByteArray = ByteArray(0)): JsonValue.JObject {
-        val response = (http ?: error("REMOTE_UNAVAILABLE")).execute(SignedGatewayRequest(method, target, body = body,
-            headers = if (body.isEmpty()) emptyList() else listOf(RawHeader("Content-Type", "application/json"))))
-        check(response.status in 200..299) { if (response.status == 404) "REMOTE_UNAVAILABLE" else "HISTORY_MEDIA_FAILED:${response.status}" }
-        return JsonFields.obj(JsonFields.field(JsonFields.obj(Json.parse(response.body.decodeToString())), "data")) ?: error("HISTORY_MEDIA_INVALID")
-    }
-
     override suspend fun metadata(conversationId: String, attachmentId: String): HistoricalMediaMetadata = withContext(Dispatchers.IO) {
         val epoch = originalEpoch(conversationId, attachmentId)
         localMetadata(conversationId, attachmentId)?.let { return@withContext withOriginalEpoch(conversationId, attachmentId, epoch) { it } }
         remoteMetadata(conversationId, attachmentId).also { withOriginalEpoch(conversationId, attachmentId, epoch) {} }
     }
     private suspend fun remoteMetadata(conversationId: String, id: String): HistoricalMediaMetadata {
-        val o = JsonFields.obj(JsonFields.field(request("GET", target(conversationId, id, "metadata")), "metadata")) ?: error("HISTORY_MEDIA_INVALID")
-        check(JsonFields.string(o, "attachmentId") == id && JsonFields.string(o, "conversationId") == conversationId) { "HISTORY_MEDIA_SCOPE_MISMATCH" }
-        val size = JsonFields.long(o, "sizeBytes") ?: error("HISTORY_MEDIA_INVALID")
-        check(size >= 0) { "HISTORY_MEDIA_INVALID" }
-        return HistoricalMediaMetadata(conversationId, id, JsonFields.string(o, "filename").orEmpty(),
-            JsonFields.string(o, "mediaType").orEmpty(), size, digest(JsonFields.string(o, "sha256") ?: error("HISTORY_MEDIA_INVALID")),
-            JsonFields.bool(o, "remoteAvailable") == true, size)
+        val metadata = (source ?: error("REMOTE_UNAVAILABLE")).metadata(conversationId, id)
+        check(metadata.conversationId == conversationId && metadata.attachmentId == id) { "HISTORY_MEDIA_SCOPE_MISMATCH" }
+        check(metadata.sizeBytes >= 0 && (metadata.sha256.isEmpty() || digest(metadata.sha256) == metadata.sha256)) { "HISTORY_MEDIA_INVALID" }
+        val knownSource = synchronized(index) { sourceRecord(entryKey(conversationId, id))?.contentVersion }
+        check(knownSource == null || metadata.sourceVersion == knownSource) { "REMOTE_MEDIA_REFERENCE_CHANGED" }
+        return metadata
     }
     override suspend fun localMetadata(conversationId: String, attachmentId: String): HistoricalMediaMetadata? = withContext(Dispatchers.IO) {
         writes.withLock { localOrMigrate(conversationId, attachmentId)?.metadata }
@@ -138,6 +189,11 @@ class EncryptedHistoryMediaCache(context: Context, private val scope: Conversati
         checkTransitionsReady()
         if (revoked(conversationId, id)) return null
         scopedEntry(conversationId, id)?.let {
+            val knownSource = synchronized(index) { sourceRecord(entryKey(conversationId, id))?.contentVersion }
+            if (knownSource != null && it.metadata.sourceVersion != knownSource) {
+                synchronized(index) { purgeOriginal(conversationId, id) }
+                return null
+            }
             if (File(directory, "${it.contentId}.stage").isFile) return it
             index.delete("metadata:${entryKey(conversationId, id)}")
             index.delete("preview:${entryKey(conversationId, id)}")
@@ -158,6 +214,71 @@ class EncryptedHistoryMediaCache(context: Context, private val scope: Conversati
             return scopedEntry(conversationId, id)
         } finally { content.fill(0) }
     }
+    /**
+     * 原件长度和摘要只能校验内容；归属还必须由旧加密 v2 索引保存的 sourceAgent 精确确认。
+     * 没有来源的旧缓存继续留存；当前 registry 不代表完整的旧分区清单，不能以首次认领补造来源。
+     */
+    override suspend fun restoreKnownOriginal(conversationId: String, attachmentId: String, sizeBytes: Long, sha256: String): Boolean =
+        migrateLegacyOriginal(conversationId,attachmentId,sizeBytes,sha256)
+
+    suspend fun migrateLegacyOriginal(conversationId: String, attachmentId: String,
+        expectedSize: Long, expectedSha256: String): Boolean = withContext(Dispatchers.IO) {
+        val agentId = nativeAgentId ?: return@withContext false
+        if (expectedSize < 0L) return@withContext false
+        val expectedDigest = runCatching { digest(expectedSha256) }.getOrNull() ?: return@withContext false
+        val job = currentCoroutineContext()
+        writes.withLock {
+            checkTransitionsReady()
+            if (revoked(conversationId, attachmentId)) return@withLock false
+            val epoch = originalEpoch(conversationId, attachmentId)
+            val baseKey = Json.canonical(Json.of(listOf(scope.profileId, scope.gatewayId, scope.accountId, scope.installId)))
+            val oldIndexScope = "history-media-index-v2:$baseKey"
+            val oldIndex = EncryptedDocuments(context, oldIndexScope,
+                keyProvider ?: existingKeyProvider("oai_documents_${digestName(oldIndexScope)}"))
+            val oldRoot = File(context.noBackupFilesDir, "private-documents/${digestName(oldIndexScope)}")
+            fun readOld(key: String): ByteArray? =
+                if (File(oldRoot, digestName(key)).isFile) oldIndex.read(key) else null
+            val key = entryKey(conversationId, attachmentId)
+            val record = readOld("metadata:$key") ?: return@withLock false
+            val entry = decodeEntry(record)
+            // 来源只取自旧索引的认证明文；不能用请求参数、相同摘要或已登记 Mirror 推断。
+            if (entry.sourceAgent != agentId) return@withLock false
+            if (entry.metadata.conversationId != conversationId || entry.metadata.attachmentId != attachmentId ||
+                entry.metadata.sizeBytes != expectedSize || digest(entry.metadata.sha256) != expectedDigest) return@withLock false
+            val versionRecord = readOld("version:$key")
+            val version = versionRecord?.let { JsonFields.obj(Json.parse(it.decodeToString())) ?: error("LOCAL_MEDIA_INVALID") }
+            val owners = version?.let { JsonFields.objects(it, "owners") }.orEmpty()
+            if (version?.let { JsonFields.bool(it, "permanent") } == true ||
+                (owners.isNotEmpty() && owners.all { JsonFields.bool(it, "deleted") == true })) return@withLock false
+            fun unchanged(): Boolean = readOld("revoked:$key") == null &&
+                readOld("metadata:$key")?.contentEquals(record) == true &&
+                (if (versionRecord == null) readOld("version:$key") == null else readOld("version:$key")?.contentEquals(versionRecord) == true)
+            if (!unchanged()) return@withLock false
+            val oldHash = digestName(baseKey)
+            val oldDirectory = File(context.noBackupFilesDir, "history-media/$oldHash")
+            if (!File(oldDirectory, "${entry.contentId}.stage").isFile) return@withLock false
+            val current = localOrMigrate(conversationId, attachmentId)
+            if (current != null && (current.metadata.sizeBytes != expectedSize || digest(current.metadata.sha256) != expectedDigest)) return@withLock false
+            if (partitions?.claimLegacyOriginal(agentId, conversationId, attachmentId) != true) return@withLock false
+            if (current != null) return@withLock true
+            val oldFiles = EncryptedAttachmentStagingStore(oldDirectory,
+                (keyProvider ?: existingKeyProvider("oai_history_media_$oldHash")).getOrCreate(), baseKey, persistent = true)
+            // save 保留现有分块认证、长度/摘要校验及原图预算；绝不退休旧文件或旧密钥。
+            save(entry.metadata, oldFiles.openStream(entry.contentId), { !job.isActive || !unchanged() }, epoch)
+            true
+        }
+    }
+
+    /** 迁移读取只能使用旧密钥；缺失时保留密文并失败，不能生成替代密钥。 */
+    private fun existingKeyProvider(alias: String) = object : AesGcmKeyProvider {
+        private val key by lazy {
+            KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.getKey(alias, null) as? SecretKey
+                ?: error("LOCAL_MEDIA_KEY_UNAVAILABLE")
+        }
+        override fun getOrCreate(): SecretKey = key
+        override fun delete(): Unit = error("LEGACY_MEDIA_READ_ONLY")
+    }
+
     suspend fun migrateLegacy() = withContext(Dispatchers.IO) {
         writes.withLock {
             legacy.keys().filter { it.startsWith("metadata:") }.forEach { key ->
@@ -186,48 +307,17 @@ class EncryptedHistoryMediaCache(context: Context, private val scope: Conversati
     private suspend fun fetch(metadata: HistoricalMediaMetadata, epoch: String) {
         withOriginalEpoch(metadata.conversationId, metadata.attachmentId, epoch) {}
         check(metadata.remoteAvailable) { "REMOTE_UNAVAILABLE" }
-        val grant = request("POST", target(metadata.conversationId, metadata.attachmentId, "cache-grant"), "{}".toByteArray())
-        val id = JsonFields.string(grant, "grantId") ?: error("MEDIA_GRANT_INVALID")
-        require(id.matches(Regex("[A-Za-z0-9_-]{43}")))
         val job = currentCoroutineContext()
-        val streamRequest = SignedGatewayRequest("GET", target(metadata.conversationId, metadata.attachmentId, "content") + "&grantId=$id")
-        (http ?: error("REMOTE_UNAVAILABLE")).consumeResponse(streamRequest) { status, headers, input ->
-            check(status in 200..299) { if (status == 404) "REMOTE_UNAVAILABLE" else "HISTORY_MEDIA_FAILED:$status" }
-            val format = headers.filter { it.name.equals("X-Open-Android-Intelligence-Media-Format", true) }
-            check(format.size <= 1) { "MEDIA_RESPONSE_INVALID" }
-            check(format.isEmpty() || format.single().value == "stream-v1") { "MEDIA_STREAM_UNSUPPORTED" }
-            if (format.singleOrNull()?.value == "stream-v1") {
-                val type = headers.filter { it.name.equals("Content-Type", true) }.singleOrNull()?.value
-                check(type == metadata.mediaType) { "MEDIA_TYPE_MISMATCH" }
-                save(metadata, input, { !job.isActive }, epoch)
-            } else {
-                // 旧服务器的 JSON 回退仅允许有界响应；更大附件要求支持流式下载的插件版本。
-                val bytes = readLegacyResponse(input)
-                try {
-                    val data = JsonFields.obj(JsonFields.field(JsonFields.obj(Json.parse(bytes.decodeToString())), "data")) ?: error("MEDIA_CONTENT_INVALID")
-                    check(JsonFields.string(data, "mediaType") == metadata.mediaType) { "MEDIA_TYPE_MISMATCH" }
-                    val content = Base64.getDecoder().decode(JsonFields.string(data, "contentBase64") ?: error("MEDIA_CONTENT_INVALID"))
-                    try { save(metadata, ByteArrayInputStream(content), { !job.isActive }, epoch) } finally { content.fill(0) }
-                } finally { bytes.fill(0) }
-            }
+        val remote = source ?: error("REMOTE_UNAVAILABLE")
+        remote.consumeOriginal(metadata) { input ->
+            save(metadata, input, { !job.isActive || runCatching { remote.checkCurrent() }.isFailure }, epoch)
         }
-    }
-    private fun readLegacyResponse(input: InputStream): ByteArray {
-        val output = ByteArrayOutputStream()
-        val buffer = ByteArray(EncryptedAttachmentStagingStore.DEFAULT_CHUNK_BYTES)
-        while (true) {
-            val count = input.read(buffer)
-            if (count < 0) break
-            if (count == 0) continue
-            check(output.size().toLong() + count <= LEGACY_RESPONSE_BYTES) { "MEDIA_STREAM_UNSUPPORTED" }
-            output.write(buffer, 0, count)
-        }
-        return output.toByteArray()
     }
     override suspend fun archiveSubmitted(conversationId: String, attachmentId: String, filename: String, mediaType: String,
         content: AttachmentContentSource, sizeBytes: Long, sha256: String, localDraftId: String?) = withContext(Dispatchers.IO) {
         check(sizeBytes >= 0) { "MEDIA_INTEGRITY_FAILED" }
-        val metadata = HistoricalMediaMetadata(conversationId, attachmentId, filename, mediaType, sizeBytes, digest(sha256), false, sizeBytes)
+        val metadata = HistoricalMediaMetadata(conversationId, attachmentId, filename, mediaType, sizeBytes, digest(sha256), false, sizeBytes,
+            source?.referenceVersion(conversationId, attachmentId))
         val epoch = originalEpoch(conversationId, attachmentId)
         val job = currentCoroutineContext()
         writes.withLock {
@@ -258,7 +348,9 @@ class EncryptedHistoryMediaCache(context: Context, private val scope: Conversati
         index.write("metadata:${entryKey(metadata.conversationId, metadata.attachmentId)}", Json.canonical(Json.of(mapOf(
             "conversationId" to metadata.conversationId, "attachmentId" to metadata.attachmentId,
             "filename" to metadata.filename, "mediaType" to metadata.mediaType, "sizeBytes" to metadata.sizeBytes,
-            "sha256" to digest(metadata.sha256), "contentId" to entry.contentId, "localDraftIds" to entry.localDraftIds))).toByteArray())
+            "sha256" to digest(metadata.sha256), "contentId" to entry.contentId, "localDraftIds" to entry.localDraftIds,
+            "sourceVersion" to metadata.sourceVersion) +
+            entry.sourceAgent?.let { mapOf("sourceAgent" to it) }.orEmpty())).toByteArray())
     }
     private fun save(metadata: HistoricalMediaMetadata, source: InputStream, cancelled: () -> Boolean, epoch: String,
         localDraftIds: List<String> = emptyList()) {
@@ -268,13 +360,16 @@ class EncryptedHistoryMediaCache(context: Context, private val scope: Conversati
         }
         var committed = false
         try {
-            check(content.sizeBytes == metadata.sizeBytes && digest(content.sha256Hex) == digest(metadata.sha256)) { "MEDIA_INTEGRITY_FAILED" }
+            check(content.sizeBytes == metadata.sizeBytes &&
+                (metadata.sha256.isEmpty() || digest(content.sha256Hex) == digest(metadata.sha256))) { "MEDIA_INTEGRITY_FAILED" }
+            val verifiedMetadata = metadata.copy(sha256 = digest(content.sha256Hex), remoteAvailable = false)
             val preview = previewBytes(content.id, metadata.mediaType)
             withOriginalEpoch(metadata.conversationId, metadata.attachmentId, epoch) {
                 check(!cancelled()) { "LOCAL_MEDIA_DELETED" }
                 val key = entryKey(metadata.conversationId, metadata.attachmentId)
                 if (preview != null) index.write("preview:$key", preview)
-                writeEntry(Entry(metadata, content.id, localDraftIds))
+                // 来源随手机实际归档的原件写入；无归属的旧索引不会因读取或首次认领被补写来源。
+                writeEntry(Entry(verifiedMetadata, content.id, localDraftIds, nativeAgentId))
                 committed = true
             }
         } finally {
@@ -327,6 +422,8 @@ class EncryptedHistoryMediaCache(context: Context, private val scope: Conversati
             checkTransitionsReady()
             if (revoked(conversationId, attachmentId)) return@synchronized null
             val entry = scopedEntry(conversationId, attachmentId) ?: return@synchronized null
+            val knownSource = sourceRecord(entryKey(conversationId, attachmentId))?.contentVersion
+            if (knownSource != null && entry.metadata.sourceVersion != knownSource) return@synchronized null
             index.read("preview:${entryKey(conversationId, entry.metadata.attachmentId)}")
         }
     }
@@ -379,7 +476,14 @@ class EncryptedHistoryMediaCache(context: Context, private val scope: Conversati
             legacy.delete("content:$attachmentId"); legacy.delete("preview:$attachmentId"); legacy.delete("metadata:$attachmentId")
         }
     }
+    /** 切换账户或端点立即阻止旧读取和导出提交，同时保留离线原件。 */
+    fun retireConnection() {
+        sourceVersionRegistration?.close()
+        synchronized(index) { generation++; retired = true }
+    }
+
     fun clearMedia() {
+        sourceVersionRegistration?.close()
         synchronized(index) {
             generation++
             retired = true
@@ -391,5 +495,4 @@ class EncryptedHistoryMediaCache(context: Context, private val scope: Conversati
             originalKey.delete()
         }
     }
-    companion object { private const val LEGACY_RESPONSE_BYTES = 12L * 1024 * 1024 }
 }

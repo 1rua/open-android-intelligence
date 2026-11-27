@@ -1,8 +1,0 @@
-
-com.openandroidintelligence.mobile.ConversationDownloadsInstrumentedTest:...
-
-Time: 4.198
-
-OK (3 tests)
-
-

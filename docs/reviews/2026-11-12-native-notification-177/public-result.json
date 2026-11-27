@@ -1,0 +1,36 @@
+{
+  "baseline": "2caabfb1206fd93cd0232171f0bf287fdfeea498",
+  "issue": 177,
+  "pullRequest": 178,
+  "scope": "测试夹具关闭；生产源码零变更",
+  "mechanism": "cancel不等于子任务退出，同步终态回调可跨测试通知重置继续发布",
+  "ciExtraNotificationIdentityCaptured": false,
+  "originalSingleAndBusinessAssertionsPreserved": true,
+  "temporaryReflectionLatchDebugCommitted": false,
+  "runs": [
+    {
+      "evidence": "controlled-real-stream-cancellation.xml",
+      "sha256": "4ce396e1741ee55166156eb621932c2bea27ee13605db2631e89823db0f888e3",
+      "tests": 1,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "evidence": "controlled-real-stream-fixture-joined.xml",
+      "sha256": "0fb43c3ae88fcbb026a191ef0f4d0845baeb3b92b383b4d16d60d7d404e921e9",
+      "tests": 36,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "evidence": "minimal-fixture-joined-class-both.xml",
+      "sha256": "ce8b409a1c6fd2f8c6acaa1fd60e021616d7faec91c02b7edadb4bccc5301f02",
+      "tests": 34,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ]
+}

@@ -1,0 +1,401 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "click",
+        "longPress",
+        "swipe",
+        "drag",
+        "scroll",
+        "setText",
+        "global",
+        "launchApp"
+      ]
+    },
+    "expectedRevision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "nodeId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "x": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 32768
+    },
+    "y": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 32768
+    },
+    "endX": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 32768
+    },
+    "endY": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 32768
+    },
+    "durationMs": {
+      "type": "integer",
+      "minimum": 50,
+      "maximum": 3000
+    },
+    "direction": {
+      "type": "string",
+      "enum": [
+        "forward",
+        "backward",
+        "up",
+        "down",
+        "left",
+        "right"
+      ]
+    },
+    "text": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "globalAction": {
+      "type": "string",
+      "enum": [
+        "back",
+        "home",
+        "recents",
+        "notifications",
+        "quickSettings"
+      ]
+    },
+    "packageName": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$"
+    }
+  },
+  "required": [
+    "action",
+    "expectedRevision"
+  ],
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "click"
+        },
+        "expectedRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "nodeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32768
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32768
+        }
+      },
+      "required": [
+        "action",
+        "expectedRevision"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "nodeId"
+          ]
+        },
+        {
+          "required": [
+            "x",
+            "y"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "longPress"
+        },
+        "expectedRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "nodeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32768
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32768
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 50,
+          "maximum": 3000
+        }
+      },
+      "required": [
+        "action",
+        "expectedRevision"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "nodeId"
+          ]
+        },
+        {
+          "required": [
+            "x",
+            "y"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "swipe"
+        },
+        "expectedRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32768
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32768
+        },
+        "endX": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32768
+        },
+        "endY": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32768
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 50,
+          "maximum": 3000
+        }
+      },
+      "required": [
+        "action",
+        "expectedRevision",
+        "x",
+        "y",
+        "endX",
+        "endY"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "drag"
+        },
+        "expectedRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32768
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32768
+        },
+        "endX": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32768
+        },
+        "endY": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32768
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 50,
+          "maximum": 3000
+        }
+      },
+      "required": [
+        "action",
+        "expectedRevision",
+        "x",
+        "y",
+        "endX",
+        "endY"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "scroll"
+        },
+        "expectedRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "nodeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "forward",
+            "backward",
+            "up",
+            "down",
+            "left",
+            "right"
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "expectedRevision",
+        "nodeId",
+        "direction"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "setText"
+        },
+        "expectedRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "nodeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "action",
+        "expectedRevision",
+        "nodeId",
+        "text"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "global"
+        },
+        "expectedRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "globalAction": {
+          "type": "string",
+          "enum": [
+            "back",
+            "home",
+            "recents",
+            "notifications",
+            "quickSettings"
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "expectedRevision",
+        "globalAction"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "const": "launchApp"
+        },
+        "expectedRevision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "packageName": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+$"
+        }
+      },
+      "required": [
+        "action",
+        "expectedRevision",
+        "packageName"
+      ]
+    }
+  ]
+}

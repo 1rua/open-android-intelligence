@@ -152,6 +152,22 @@ class SqliteConversationMigrationTest {
         assertTrue(runCatching { reopened.saveCursor("other_account","evt_bad") }.isFailure)
     }
 
+    @Test fun `不透明事件检查点保留冒号与Unicode且仍限制空控制字符和字节预算`() = runBlocking {
+        val mirror = EncryptedConversationMirror(context, scope, key)
+        val cursor = "message:reply/原生:42"
+        mirror.saveCursor(scope.accountId, cursor)
+        assertEquals(cursor, mirror.loadCursor(scope.accountId))
+        val reopened = EncryptedConversationMirror(context, scope, key)
+        assertEquals(cursor, reopened.loadCursor(scope.accountId))
+        mirror.saveCursor(scope.accountId, "界".repeat(1365))
+        assertEquals("界".repeat(1365), mirror.loadCursor(scope.accountId))
+        listOf("", " ", "line\nnext", "nul\u0000tail", "a".repeat(4097), "界".repeat(1366), "坏\uD800字符").forEach { invalid ->
+            assertThrows(IllegalArgumentException::class.java) { mirror.saveCursor(scope.accountId, invalid) }
+        }
+        mirror.closeStore()
+        reopened.closeStore()
+    }
+
     @Test fun authenticatedPayloadCannotBeCopiedToAnotherMessageRecord() {
         val mirror=EncryptedConversationMirror(context,scope,key)
         mirror.saveTimeline("conv_bound",TimelinePage(listOf(

@@ -3,9 +3,14 @@ package com.openandroidintelligence.mobile.plugins
 import android.content.Context
 import com.openandroidintelligence.plugin.ui.*
 import com.openandroidintelligence.gateway.schema.Json
-import com.openandroidintelligence.gateway.http.*
+import com.openandroidintelligence.network.HttpsResourceClient
 import com.openandroidintelligence.gateway.schema.*
 import com.openandroidintelligence.kernel.*
+import com.openandroidintelligence.notification.control.NotificationBindingPort
+import com.openandroidintelligence.notification.control.NotificationControlRegistry
+import com.openandroidintelligence.notification.control.NotificationPolicyPort
+import com.openandroidintelligence.notification.control.NotificationPolicyUpdate
+import com.openandroidintelligence.notification.control.NotificationPolicyUpdateOutcome
 import com.openandroidintelligence.plugin.pkg.*
 import com.openandroidintelligence.plugin.wasm.ChicoryPluginRuntime
 import com.openandroidintelligence.plugin.wasm.InvocationBudget
@@ -15,6 +20,7 @@ import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 
 data class VerifiedCapability(val identity: PluginIdentity, val id: String, val version: String, val schema: JsonValue,
     val risk: String, val primitives: Set<String>) {
@@ -28,7 +34,17 @@ data class CapabilitySnapshot(val bindings: List<Map<String,Any?>>, val inventor
 
 /** Installed code is reverified once before registration; invocations use immutable verified bytes. */
 class ProductionPluginHost(private val context: Context, private val grants: PairingGrantStateHolder,
-    private val trustMode: DeveloperTrustMode, val nativeLoader: NativePluginLoader, private val installationId: String) {
+    private val trustMode: DeveloperTrustMode, val nativeLoader: NativePluginLoader, private val installationId: String,
+    /** 官方能力包的来源；生产读 APK 资源，测试可注入字节。缺包时如实报告而不是假装可用。 */
+    private val builtInPackages: BuiltInPackageReader = BuiltInPackageReader { plugin -> readBundledPluginPackage(context, plugin) },
+    /**
+     * 官方能力的固定 ID 集合，默认覆盖 [BundledPlugin.entries]。
+     *
+     * 只应在测试里换成空集合：那时官方 ID 被当作普通第三方插件对待，用来验证“安装/启用/卸载”
+     * 链路本身。生产永远用完整的默认值。
+     */
+    private val reservedBuiltInIds: Set<String> = BundledPlugin.entries.map { it.pluginId }.toSet(),
+) {
     val installStore = PluginInstallStore(context)
     val runtimes = ConcurrentHashMap<String,PluginRuntime>()
     val hostCapabilities: MutableSet<String> = ConcurrentHashMap.newKeySet<String>()
@@ -36,10 +52,27 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     private val defaults = ConcurrentHashMap<String,PluginIdentity>()
     val selector = CapabilityProviderSelector(defaults)
     val revision = MutableStateFlow(0L)
+    private val notificationPolicySyncLock = Any()
+
+    /** 原子推进宿主状态修订号，供跨线程系统服务连接态变化通知 UI 刷新。 */
+    fun notifyCapabilityStateChanged() {
+        revision.update { it + 1L }
+    }
     /** Local installation diagnostics only; unverified manifests never declare Agent capabilities. */
     @Volatile var loadFailures: Map<String,String> = emptyMap(); private set
+
+    /**
+     * 内建能力本次启动的加载失败原因（稳定原因码）。
+     *
+     * 内建能力由 APK 提供，没有“安装”这一步，因此也不能用 [loadFailures] 的
+     * “已安装但损坏”语义；界面必须能区分“加载失败”和“尚未验证”。
+     */
+    @Volatile var builtInFailures: Map<String,String> = emptyMap(); private set
+    /** 内建能力的安全声明，供私有存储与网络代理沿用与普通插件相同的限额来源。 */
+    private val builtInSurfaces = ConcurrentHashMap<String,VerifiedBuiltInCapability>()
     private val modules = ConcurrentHashMap<PluginIdentity,ByteArray>()
     private val capabilities = ConcurrentHashMap<String,List<VerifiedCapability>>()
+    private val backgroundRequests = ConcurrentHashMap<String,Boolean>()
     private val uiDeclarations = ConcurrentHashMap<String,List<com.openandroidintelligence.plugin.ui.UiContribution>>()
     private val cardIds = ConcurrentHashMap<String,Set<String>>()
     private val stores = ConcurrentHashMap<PluginIdentity,PluginPrivateStore>()
@@ -48,13 +81,17 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     private lateinit var kernel: PluginKernel
     private val nativeInFlight = ConcurrentHashMap.newKeySet<String>()
     private val crashPreferences = context.getSharedPreferences("native-plugin-recovery-v1",Context.MODE_PRIVATE)
-    private val serviceIds = setOf("kernel.store.read","kernel.store.write","kernel.store.delete","kernel.store.keys",
-        "kernel.network.request","kernel.scheduler.set","kernel.scheduler.cancel","kernel.scheduler.read","kernel.background.run")
+    private val serviceIds = setOf("kernel.store.read","kernel.store.write","kernel.store.delete","kernel.store.keys","kernel.network.request","kernel.scheduler.set","kernel.scheduler.cancel","kernel.scheduler.read","kernel.background.run")
 
     fun attach(kernel: PluginKernel) {
         this.kernel = kernel
         hostCapabilities.addAll(KernelPrimitiveRegistry.ids() + serviceIds); phoneCapabilities.addAll(hostCapabilities)
-        if (!com.openandroidintelligence.mobile.BuildConfig.ALLOW_RUNTIME_PLUGINS) return
+        if (!com.openandroidintelligence.mobile.BuildConfig.ALLOW_RUNTIME_PLUGINS) {
+            // 这个渠道不装配插件运行时，也不带内置能力包。逐项记下原因，
+            // 让能力页显示「不可用 + 可执行说明」，而不是把六项能力当成“找不到提供者”。
+            builtInFailures = BundledPlugin.entries.associate { it.pluginId to "BUILT_IN_CHANNEL_UNSUPPORTED" }
+            return
+        }
         // An interrupted native frame/loading operation survives process death.
         crashPreferences.all.filter { it.key.startsWith("loading:") && it.value == true }.keys.forEach {
             quarantineNative(it.removePrefix("loading:"))
@@ -76,18 +113,76 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         }
         reload()
         trustMode.onChange { enabled ->
-            if (!enabled) { capabilities.keys.filter { kernel.registrationFor(it)?.runtimeType == "developer-native" }.forEach { kernel.disable(it) }; revision.value++ }
+            if (!enabled) { capabilities.keys.filter { kernel.registrationFor(it)?.runtimeType == "developer-native" }.forEach { kernel.disable(it) }; notifyCapabilityStateChanged() }
         }
     }
 
+    /**
+     * 把 APK 内置的官方能力直接注册进内核。
+     *
+     * 与普通插件走同一套校验（签名、清单、容器限额、ABI），但**不落盘、不写启用标记**：
+     * 校验通过即注册为已启用，于是用户装完 App 就能用，不需要“安装 + 启用”两步。
+     * 这不扩大任何设备能力授权——能力开关、授权模式与系统权限仍各自独立裁决。
+     */
+    private fun registerBuiltInCapabilities() {
+        val results = loadBuiltInCapabilities(BundledPlugin.entries, builtInPackages, File(context.cacheDir, "built-in-staging"))
+        val failures = linkedMapOf<String,String>()
+        for (result in results) {
+            when (result) {
+                is BuiltInLoadResult.Failed -> failures[result.pluginId] = result.code
+                is BuiltInLoadResult.Loaded -> {
+                    val capability = result.capability
+                    runCatching {
+                        kernel.register(PluginRegistration(capability.identity, capability.runtimeType, capability.declaredPrimitives,
+                            ResourceBudget(capability.surface.maxInvocationMillis, capability.surface.maxMemoryBytes, 65_536,
+                                capability.surface.maxConcurrentInvocations, capability.surface.maxDailyNetworkBytes),
+                            identityScopedGrants = true))
+                        kernel.enable(capability.pluginId)
+                        capabilities[capability.pluginId] = capability.capabilities
+                        builtInSurfaces[capability.pluginId] = capability
+                        backgroundRequests[capability.pluginId] = capability.backgroundRequested
+                        modules[capability.identity] = capability.payload
+                        hostCapabilities.addAll(capability.capabilities.map { it.key })
+                        phoneCapabilities.addAll(capability.capabilities.map { it.key })
+                    }.onFailure {
+                        // 注册失败按加载失败如实呈现；绝不留下半注册状态。
+                        kernel.unregister(capability.pluginId)
+                        capabilities.remove(capability.pluginId); builtInSurfaces.remove(capability.pluginId)
+                        backgroundRequests.remove(capability.pluginId); modules.remove(capability.identity)
+                        failures[capability.pluginId] = "BUILT_IN_REGISTRATION_FAILED"
+                    }
+                }
+            }
+        }
+        builtInFailures = failures.toMap()
+    }
+
+    /**
+     * 内建能力的安全声明随注册一并保存在内存里；第三方插件仍从磁盘上的已校验目录读取。
+     * 内建能力不落盘，因此不能走 [PluginInstallStore.openVerified]。
+     */
+    private fun securitySurfaceFor(pluginId: String): SecuritySurface =
+        builtInSurfaces[pluginId]?.surface ?: installStore.openVerified(pluginId).let { verified ->
+            try { verified.security.surface } finally { verified.stagedDirectory.deleteRecursively() }
+        }
+
+    fun isBuiltIn(pluginId: String): Boolean = pluginId in reservedBuiltInIds
+
     @Synchronized fun reload() {
         capabilities.keys.toList().forEach { kernel.unregister(it) }
-        nativeLoader.unloadAll(); modules.clear(); capabilities.clear(); defaults.clear(); stores.clear(); proxies.clear(); uiDeclarations.clear();cardIds.clear()
+        nativeLoader.unloadAll(); modules.clear(); capabilities.clear(); backgroundRequests.clear(); defaults.clear(); stores.clear(); proxies.clear(); uiDeclarations.clear();cardIds.clear(); builtInSurfaces.clear()
         val failures = linkedMapOf<String,String>()
+        registerBuiltInCapabilities()
         val installed = runCatching { installStore.listInstalled() }.getOrElse {
             failures["*"] = "PLUGIN_SCAN_FAILED"
             emptyList()
         }
+            // 官方能力只从 APK 加载：磁盘上同 ID 的旧副本一律不参与加载，升级后不会用到旧版本残留。
+            // 这里按**固定的官方 ID 集合**过滤，而不是按“本次加载成功的内建能力”：资产缺失或校验
+            // 失败时也不能放任旧副本顶上来执行——那样内核会运行一份过时实现，而能力页却报告加载失败、
+            // 插件管理又不显示它，用户既看不到也无法处理。
+            // 目录本身保持原样，用户此前保存的插件数据仍留在原位置。
+            .filterNot { view -> (view.pluginId ?: view.directory.name) in reservedBuiltInIds }
         for (view in installed) {
             val id = view.pluginId
             if (id == null || id != view.directory.name) {
@@ -104,12 +199,15 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                         val cap = entry as? JsonValue.JObject ?: error("MANIFEST_INVALID")
                         val capabilityId = JsonFields.string(cap,"id") ?: error("MANIFEST_INVALID")
                         val schemaPath = JsonFields.string(cap,"schema") ?: error("MANIFEST_INVALID")
+                        val operationPrimitives = PluginCapabilityRisk.primitivesFor(capabilityId, primitives)
                         VerifiedCapability(verified.identity,capabilityId,JsonFields.string(cap,"version") ?: error("MANIFEST_INVALID"),
                             Json.parse(File(verified.stagedDirectory,schemaPath).readText()),
-                            PluginCapabilityRisk.classify(verified.runtime.type,primitives),primitives)
+                            PluginCapabilityRisk.classify(verified.runtime.type,operationPrimitives),operationPrimitives)
                     }
                     val declared = entries.map { it.key }.toSet() + primitives
                     val surface = verified.security.surface
+                    val security = JsonFields.obj(JsonFields.field(manifest, "security"))
+                    backgroundRequests[id] = JsonFields.bool(JsonFields.obj(JsonFields.field(security, "background")), "requested") == true
                     kernel.register(PluginRegistration(verified.identity,verified.runtime.type,declared,
                         ResourceBudget(surface.maxInvocationMillis,surface.maxMemoryBytes,65_536,surface.maxConcurrentInvocations,surface.maxDailyNetworkBytes),
                         identityScopedGrants = true))
@@ -130,26 +228,27 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                         check(verified.runtime.abiVersion == "1.0" && verified.runtime.entrypoint == "open_android_intelligence_plugin_main") { "UNSUPPORTED_PLUGIN_ABI" }
                         modules[verified.identity] = File(verified.stagedDirectory,verified.runtime.payload ?: error("PAYLOAD_MISSING")).readBytes()
                     }
-                    for (entry in entries) defaults.putIfAbsent(entry.key,verified.identity)
                     if (preferences.getString(id,null) == verified.identity.authorKeyFingerprint && !isQuarantined(id)) enableVerified(verified)
                 } finally { verified.stagedDirectory.deleteRecursively() }
             }.onFailure {
-                kernel.unregister(id); capabilities.remove(id); preferences.edit().remove(id).commit()
+                kernel.unregister(id); capabilities.remove(id); backgroundRequests.remove(id); preferences.edit().remove(id).commit()
                 failures[view.directory.name] = if (it is PackageRejected) "PLUGIN_PACKAGE_INVALID" else "PLUGIN_LOAD_FAILED"
             }
         }
-        selector.refreshOverrides(capabilities.values.flatten().groupBy { it.key }.mapValues { (_, entries) -> entries.map { it.identity } })
+        val providers = capabilities.values.flatten().groupBy { it.key }.mapValues { (_, entries) -> entries.map { it.identity } }
+        // Declaration order is not a provider choice. Only a unique verified
+        // provider can be selected by default; multiple providers need a local choice.
+        providers.filterValues { it.size == 1 }.forEach { (key, values) -> defaults[key] = values.single() }
+        selector.refreshOverrides(providers)
         loadFailures = failures.toMap()
-        revision.value++
+        notifyCapabilityStateChanged()
     }
 
     fun contributions(pluginId: String): List<UiContribution> {
         val identity = kernel.registrationFor(pluginId)?.identity ?: return emptyList()
         val binding = grants.currentBinding() ?: return uiDeclarations[pluginId].orEmpty()
         val store = stores.getOrPut(identity) {
-            val pkg=installStore.openVerified(pluginId)
-            try { PluginPrivateStore(installationId,EncryptedPluginStateBackend(context),pkg.security.surface.maxStorageBytes) }
-            finally { pkg.stagedDirectory.deleteRecursively() }
+            PluginPrivateStore(installationId, EncryptedPluginStateBackend(context), securitySurfaceFor(pluginId).maxStorageBytes)
         }
         val handle=store.open(identity,binding.accountId,binding.pairingId)
         fun component(node: UiComponent): UiComponent {
@@ -169,7 +268,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             check((nativeLoader.plugin(pluginId) as? NativeUiProvider)?.uiApiVersion == 1) { "NATIVE_UI_API_UNSUPPORTED" }
         }
         check(crashPreferences.edit().apply { if (pluginId == null) remove("ui-provider") else putString("ui-provider",pluginId) }.commit())
-        revision.value++
+        notifyCapabilityStateChanged()
     }
     fun nativeUiProvider(): Pair<String,NativeUiProvider>? {
         if (!trustMode.isEnabled()) return null
@@ -182,7 +281,26 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     fun completeNativeFrame(pluginId: String) { nativeInFlight.remove(pluginId); check(crashPreferences.edit().remove("loading:$pluginId").commit()) }
 
     fun entries(pluginId: String): List<VerifiedCapability> = capabilities[pluginId].orEmpty()
+
+    /**
+     * 当前已安装且通过校验的能力策略键。
+     *
+     * 设置备份用它判断「这条策略在本机有没有对应的真实能力」：文件里多出来的键
+     * 不写入，本机未安装的能力也不会凭空出现一条策略。
+     */
+    @Synchronized fun verifiedCapabilityPolicyKeys(): Set<String> =
+        capabilities.values.flatten().map(::policyKey).toSet()
+
+    /** Read-only view of verified declarations; listing never selects a provider. */
+    @Synchronized fun verifiedCapabilities(): List<VerifiedCapability> =
+        capabilities.values.flatten().sortedWith(compareBy({ it.id }, { it.version }, { it.identity.pluginId }))
+
+    /** Match an in-memory approval to its exact author/schema/risk/primitive policy key. */
+    @Synchronized fun capabilityForAuthorizationScope(scope: CapabilityRequestScope): VerifiedCapability? =
+        capabilities.values.asSequence().flatten().firstOrNull { policyKey(it) == scope.capability }
+
     fun minimumBackgroundInterval(pluginId:String):Long {
+        builtInSurfaces[pluginId]?.takeIf { it.backgroundRequested }?.let { return it.backgroundMinimumIntervalSeconds }
         val verified=installStore.openVerified(pluginId)
         try { val manifest=JsonFields.obj(Json.parse(File(verified.stagedDirectory,"manifest.json").readText()))
             val security=JsonFields.obj(JsonFields.field(manifest,"security"));val background=JsonFields.obj(JsonFields.field(security,"background"))
@@ -204,14 +322,31 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     }
     fun recoverNative(pluginId: String) { preferences.edit().remove(pluginId).commit(); crashPreferences.edit().remove("quarantined:$pluginId").remove("loading:$pluginId").commit(); reload() }
     fun enable(pluginId: String, enabled: Boolean) {
-        if (!enabled) { preferences.edit().remove(pluginId).commit(); kernel.disable(pluginId); nativeLoader.unload(pluginId) }
-        else {
+        if (!enabled) {
+            synchronized(notificationPolicySyncLock) {
+                preferences.edit().remove(pluginId).commit()
+                kernel.disable(pluginId)
+                nativeLoader.unload(pluginId)
+                if (entries(pluginId).any { "kernel.notifications.read" in it.primitives }) {
+                    syncNotificationPolicyGrantLocked()
+                }
+            }
+        } else {
             check(!isQuarantined(pluginId)) { "NATIVE_PLUGIN_SAFE_MODE" }
             val verified = installStore.openVerified(pluginId)
-            try { enableVerified(verified); check(preferences.edit().putString(pluginId,verified.identity.authorKeyFingerprint).commit()) }
-            finally { verified.stagedDirectory.deleteRecursively() }
+            try {
+                synchronized(notificationPolicySyncLock) {
+                    enableVerified(verified)
+                    check(preferences.edit().putString(pluginId, verified.identity.authorKeyFingerprint).commit())
+                    if (entries(pluginId).any { "kernel.notifications.read" in it.primitives }) {
+                        syncNotificationPolicyGrantLocked()
+                    }
+                }
+            } finally {
+                verified.stagedDirectory.deleteRecursively()
+            }
         }
-        revision.value++
+        notifyCapabilityStateChanged()
     }
     private fun enableVerified(verified: VerifiedPluginPackage) {
         if (verified.runtime.type == "developer-native") nativeBoundary(verified.identity.pluginId) {
@@ -242,16 +377,461 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             quarantineNative(pluginId); throw cause
         } finally { nativeInFlight.remove(pluginId); crashPreferences.edit().remove("loading:$pluginId").commit() }
     }
+    private data class ActiveAuthorization(val requestId: String, val binding: PairingGrantBinding?,
+        val scope: CapabilityRequestScope, val remote: RemoteCapabilityBinding? = null,
+        val beforeSystemEffect: (() -> Unit)? = null, val inputSha256: String? = null,
+        val background: RemoteBackgroundBinding? = null) {
+        val accountId get() = background?.principal?.accountId ?: remote?.access?.principal?.accountId ?: requireNotNull(binding).accountId
+        val ownerId get() = background?.id ?: remote?.id ?: requireNotNull(binding).pairingId
+    }
+    private val activeAuthorization = ThreadLocal<ActiveAuthorization>()
+
+    private fun authorizationRequestKey(requestId: String, binding: PairingGrantBinding? = null): String {
+        val owner = binding ?: grants.currentBinding() ?: throw CapabilityDenied("AUTHENTICATED_DEVICE_BINDING_REQUIRED")
+        return digestName(owner.storageKey + "\u0000" + requestId)
+    }
+
+    private fun requireBinding(binding: PairingGrantBinding?): PairingGrantBinding {
+        val owner = binding ?: grants.currentBinding() ?: throw CapabilityDenied("AUTHENTICATED_DEVICE_BINDING_REQUIRED")
+        if (!grants.isConnectionCurrent(owner)) throw CapabilityDenied("AUTHENTICATED_DEVICE_BINDING_REQUIRED")
+        return owner
+    }
+
+    private fun policyKey(entry: VerifiedCapability): String = identityGrantKey(entry.identity,
+        "capability:${entry.id}:${Json.sha256(entry.schema)}:${entry.risk}:${Json.sha256(Json.of(entry.primitives.sorted()))}")
+
+    private fun capabilityEntry(pluginId: String, capability: String): VerifiedCapability =
+        entries(pluginId).firstOrNull { it.key == capability } ?: throw CapabilityDenied(capability)
+
+    fun capabilityPolicy(pluginId: String, capability: String): com.openandroidintelligence.kernel.CapabilityPolicy {
+        val entry = capabilityEntry(pluginId, capability)
+        val state = grants.state.value
+        val policy = grants.capabilityPolicy(policyKey(entry))
+        if (state?.localError != null) return policy.copy(enabled = false)
+        val legacyAllows = state != null && (entry.primitives.filterNot { it == "kernel.background.run" } + entry.key).all {
+            state.permits(it) && state.permits(identityGrantKey(entry.identity, it))
+        }
+        val effective = if (legacyAllows) policy else policy.copy(enabled = false)
+        return if (entry.id == "org.openandroidintelligence.sms.send") effective.copy(mode = CapabilityAuthorizationMode.MANUAL) else effective
+    }
+
+    fun setCapabilityPolicy(pluginId: String, capability: String, policy: com.openandroidintelligence.kernel.CapabilityPolicy) {
+        val entry = capabilityEntry(pluginId, capability)
+        fun applyLocalPolicy() {
+            if (policy.enabled && !capabilityPolicy(pluginId, capability).enabled) {
+                // Convert the old group denial to independent choices before reopening this capability.
+                val siblings = entries(pluginId).filter { it.key != entry.key && !capabilityPolicy(pluginId, it.key).enabled }
+                    .associate { policyKey(it) to grants.capabilityPolicy(policyKey(it)).copy(enabled = false) }
+                if (siblings.isNotEmpty()) grants.updateCapabilityPolicies(siblings)
+                val registration = kernel.registrationFor(pluginId) ?: error("PLUGIN_NOT_REGISTERED")
+                grants.updatePluginCapabilities(registration.identity, registration.declaredPrimitives, true)
+                val target = entry.primitives.filterNot { it == "kernel.background.run" }.toSet() + entry.key
+                grants.updatePrimitives(target + target.map { identityGrantKey(entry.identity, it) }, true)
+            }
+            grants.updateCapabilityPolicy(policyKey(entry), policy)
+            if (policy.enabled) selector.setOverride(entry.key, grants.state.value?.pairingId ?: error("LOCAL_POLICY_UNAVAILABLE"), entry.identity)
+        }
+        if ("kernel.notifications.read" in entry.primitives) {
+            synchronized(notificationPolicySyncLock) {
+                applyLocalPolicy()
+                syncNotificationPolicyGrantLocked()
+            }
+        } else {
+            applyLocalPolicy()
+        }
+        notifyCapabilityStateChanged()
+    }
+
+    /**
+     * 底部「通知采集范围 → 允许读取通知」变更后双向同步通知能力总开关与 policy-engine 授权：
+     * - 显式关闭共享的通知采集授权时，同步关闭所有已启用的 `kernel.notifications.read` 能力开关，
+     *   避免多提供者场景下由另一插件在下一次恢复时将其反向重开；
+     * - 显式开启时，同步开启目标插件（或已启用的通知提供者）对应的通知读取总开关，并统一经
+     *   [syncNotificationPolicyGrantLocked] 核验系统通知使用权门禁（未授系统权限时不会将
+     *   `policy-engine.granted` 留在 `true`）。
+     */
+    fun syncNotificationCapabilitiesWithPolicyGrant(granted: Boolean, targetPluginId: String? = null) {
+        synchronized(notificationPolicySyncLock) {
+            val targets = verifiedCapabilities().filter { entry ->
+                "kernel.notifications.read" in entry.primitives &&
+                    isEnabled(entry.identity.pluginId) &&
+                    (!granted || targetPluginId == null || entry.identity.pluginId == targetPluginId)
+            }
+            var changed = false
+            targets.forEach { entry ->
+                val current = runCatching { capabilityPolicy(entry.identity.pluginId, entry.key) }.getOrNull() ?: return@forEach
+                if (current.enabled != granted) {
+                    setCapabilityPolicy(entry.identity.pluginId, entry.key, current.copy(enabled = granted))
+                    changed = true
+                }
+            }
+            val policySynced = syncNotificationPolicyGrantLocked()
+            if (changed || policySynced) notifyCapabilityStateChanged()
+        }
+    }
+
+    /**
+     * 将「Android 系统通知使用权 + 本机能力总开关」与 policy-engine 对齐：
+     * - 系统已授予通知使用权但监听服务尚未连接时，主动请求系统重新绑定，同时对齐本机授权位以解除
+     *   `LOCAL_GRANT_REQUIRED`，让原语如实报告服务未连接（`NOTIFICATION_LISTENER_UNAVAILABLE`）；
+     * - 当本机通知能力开启且系统通知使用权已授予时，在互斥锁内将 policy-engine 的 granted 置为 true；
+     * - 当用户显式关闭通知能力总开关或撤销系统通知使用权时，将 policy-engine 的 granted 置为 false。
+     */
+    fun reconcileNotificationPolicyGrant(
+        policyPort: NotificationPolicyPort = NotificationControlRegistry.policyPort(),
+        bindingPort: NotificationBindingPort = NotificationControlRegistry.bindingPort(),
+    ): Boolean = synchronized(notificationPolicySyncLock) {
+        val updated = syncNotificationPolicyGrantLocked(policyPort, bindingPort)
+        if (updated) notifyCapabilityStateChanged()
+        updated
+    }
+
+    private fun syncNotificationPolicyGrantLocked(
+        policyPort: NotificationPolicyPort = NotificationControlRegistry.policyPort(),
+        bindingPort: NotificationBindingPort = NotificationControlRegistry.bindingPort(),
+    ): Boolean {
+        val snapshot = policyPort.snapshot()
+        if (!snapshot.installed) return false
+        val hasEnabledCapability = hasEnabledNotificationCapability()
+        val systemGranted = runCatching { bindingPort.isListenerBound() }.getOrDefault(false)
+        if (hasEnabledCapability && systemGranted && !runCatching { bindingPort.isListenerConnected() }.getOrDefault(false)) {
+            runCatching { bindingPort.requestListenerRebind() }
+        }
+        val targetGranted = hasEnabledCapability && systemGranted
+        if (snapshot.granted == targetGranted) return false
+        return updateNotificationPolicyGranted(policyPort, granted = targetGranted) {
+            val currentTarget = hasEnabledNotificationCapability() &&
+                runCatching { bindingPort.isListenerBound() }.getOrDefault(false)
+            currentTarget == targetGranted
+        }
+    }
+
+    private fun hasEnabledNotificationCapability(): Boolean {
+        val state = grants.state.value ?: return false
+        if (state.localError != null) return false
+        return verifiedCapabilities().any { entry ->
+            "kernel.notifications.read" in entry.primitives &&
+                isEnabled(entry.identity.pluginId) &&
+                capabilityPolicy(entry.identity.pluginId, entry.key).enabled
+        }
+    }
+
+    private fun updateNotificationPolicyGranted(
+        policyPort: NotificationPolicyPort,
+        granted: Boolean,
+        shouldApply: () -> Boolean,
+    ): Boolean {
+        repeat(3) {
+            if (!shouldApply()) return false
+            val current = policyPort.snapshot()
+            if (!current.installed || current.granted == granted) return false
+            when (val outcome = policyPort.update(NotificationPolicyUpdate(expectedRevision = current.revision, granted = granted))) {
+                is NotificationPolicyUpdateOutcome.Accepted -> return true
+                is NotificationPolicyUpdateOutcome.Rejected -> if (outcome.reason != "REVISION_STALE") return false
+            }
+        }
+        return false
+    }
+
+    fun authorizationScope(entry: VerifiedCapability, parameters: JsonValue): com.openandroidintelligence.kernel.CapabilityRequestScope =
+        com.openandroidintelligence.kernel.CapabilityRequestScope(policyKey(entry), when {
+            "kernel.screen.control" in entry.primitives -> com.openandroidintelligence.kernel.DeviceOperation.CONTROL
+            entry.risk == "read" -> com.openandroidintelligence.kernel.DeviceOperation.READ
+            else -> com.openandroidintelligence.kernel.DeviceOperation.WRITE
+        }, Json.sha256(parameters))
+
+    private class SmsConfirmation(val subscriptionBinding: String) {
+        val effectConsumed = java.util.concurrent.atomic.AtomicBoolean(false)
+    }
+    private val smsConfirmations = ConcurrentHashMap<String, SmsConfirmation>()
+
+    private fun smsConfirmationKey(requestId: String, entry: VerifiedCapability, parameters: JsonValue): String =
+        digestName(requestId) + ":" + digestName(entry.key + "\u0000" + Json.sha256(parameters))
+
+    /** 确认前保存本机订阅快照；确认后和实际发送前都必须与它相同。 */
+    private fun captureSmsSubscription(requestId: String, entry: VerifiedCapability, parameters: JsonValue) {
+        if (entry.id != "org.openandroidintelligence.sms.send") return
+        val binding = KernelPrimitiveRegistry.provider("kernel.sms.send")
+            ?.confirmationBinding(Json.canonical(parameters).encodeToByteArray())
+            ?: throw CapabilityDenied("SMS_SUBSCRIPTION_UNAVAILABLE")
+        if (smsConfirmations.size >= 512) throw CapabilityDenied("SMS_CONFIRMATION_CAPACITY_EXCEEDED")
+        val old = smsConfirmations.putIfAbsent(smsConfirmationKey(requestId, entry, parameters), SmsConfirmation(binding))
+        if (old != null && old.subscriptionBinding != binding) throw CapabilityDenied("SMS_SUBSCRIPTION_CHANGED")
+    }
+
+    private fun requireSmsSubscription(requestId: String, entry: VerifiedCapability, parameters: JsonValue) {
+        if (entry.id != "org.openandroidintelligence.sms.send") return
+        val expected = smsConfirmations[smsConfirmationKey(requestId, entry, parameters)]
+            ?: throw CapabilityDenied("SMS_CONFIRMATION_REQUIRED")
+        if (expected.subscriptionBinding != KernelPrimitiveRegistry.provider("kernel.sms.send")
+                ?.confirmationBinding(Json.canonical(parameters).encodeToByteArray())) {
+            throw CapabilityDenied("SMS_SUBSCRIPTION_CHANGED")
+        }
+    }
+
+    /** 一次本机确认最多进入一次系统发送；系统结果未知也绝不返还许可。 */
+    private fun consumeSmsEffect(requestId: String, entry: VerifiedCapability, parameters: JsonValue, persistFence: (() -> Unit)?) {
+        val confirmation = smsConfirmations[smsConfirmationKey(requestId, entry, parameters)]
+            ?: throw CapabilityDenied("SMS_CONFIRMATION_REQUIRED")
+        val fence = persistFence ?: throw CapabilityDenied("SMS_EXECUTION_FENCE_REQUIRED")
+        if (!confirmation.effectConsumed.compareAndSet(false, true)) throw CapabilityDenied("SMS_EFFECT_ALREADY_CONSUMED")
+        fence()
+    }
+
+    fun requestAuthorization(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
+        binding: PairingGrantBinding? = null): CapabilityAuthorization {
+        captureSmsSubscription(requestId, entry, parameters)
+        return grants.authorization.evaluate(
+            authorizationRequestKey(requestId, requireBinding(binding)), authorizationScope(entry, parameters),
+            capabilityPolicy(entry.identity.pluginId, entry.key), grants.state.value?.revision ?: error("LOCAL_POLICY_UNAVAILABLE"))
+    }
+
+    fun approveRequest(requestId: String, entry: VerifiedCapability, parameters: JsonValue, durationMinutes: Int,
+        remainingRequestMillis: Long, binding: PairingGrantBinding? = null): LocalCapabilityApproval {
+        requireSmsSubscription(requestId, entry, parameters)
+        return grants.authorization.approve(authorizationRequestKey(requestId, requireBinding(binding)),
+            authorizationScope(entry, parameters), if (entry.id == "org.openandroidintelligence.sms.send") 0 else durationMinutes,
+            grants.state.value?.revision ?: error("LOCAL_POLICY_UNAVAILABLE"), remainingRequestMillis,
+            displaySummary = if (entry.id == "org.openandroidintelligence.sms.send") emptyList()
+                else com.openandroidintelligence.mobile.screen.temporaryApprovalParameterSummary(parameters))
+    }
+
+    fun authorizationIsCurrent(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
+        binding: PairingGrantBinding? = null): Boolean = runCatching {
+            requestAuthorization(requestId, entry, parameters, binding) is CapabilityAuthorization.Allowed
+        }.getOrDefault(false)
+
+    fun authorizationScopeIsCurrent(requestId: String, scope: CapabilityRequestScope,
+        approvalId: String?, binding: PairingGrantBinding? = null): Boolean = runCatching {
+        val local = grants.state.value ?: return false
+        val policy = grants.capabilityPolicy(scope.capability)
+        if (!policy.enabled || local.localError != null) return false
+        val key = authorizationRequestKey(requestId, requireBinding(binding))
+        if (approvalId != null) grants.authorization.isCurrent(approvalId, key, scope, local.revision)
+        else grants.authorization.evaluate(key, scope, policy, local.revision) is CapabilityAuthorization.Allowed
+    }.getOrDefault(false)
+
+    fun auditRequestDecision(requestId: String, accountId: String, binding: PairingGrantBinding?, allowed: Boolean,
+        action: String = "capability.request.confirmed") {
+        val owner = binding ?: grants.currentBinding() ?: throw CapabilityDenied("AUTHENTICATED_DEVICE_BINDING_REQUIRED")
+        check(owner.accountId == accountId && grants.isConnectionCurrent(owner)) { "DEVICE_ACCOUNT_BINDING_MISMATCH" }
+        grants.recordRequestDecision(requestId, accountId, owner.pairingId, action, allowed)
+    }
+
+    fun cancelRequestAuthorization(requestId: String, binding: PairingGrantBinding? = null) {
+        runCatching { authorizationRequestKey(requestId, binding) }.getOrNull()?.let(grants.authorization::cancel)
+    }
+    fun finishRequestAuthorization(requestId: String, binding: PairingGrantBinding? = null) {
+        smsConfirmations.keys.removeAll { it.startsWith(digestName(requestId) + ":") }
+        runCatching { authorizationRequestKey(requestId, binding) }.getOrNull()?.let(grants.authorization::finish)
+    }
+    val authorizationChanges get() = grants.authorization.changes
+    fun revokeTemporaryApprovals() { grants.revokeTemporaryApprovals(); notifyCapabilityStateChanged() }
+
+    fun authorizeKernelInvocation(identity: PluginIdentity, capability: String, input: ByteArray, session: SessionConstraints) {
+        val entry = capabilityEntry(identity.pluginId, capability)
+        require(entry.identity == identity) { "PLUGIN_IDENTITY_MISMATCH" }
+        val active = activeAuthorization.get() ?: throw CapabilityDenied("LOCAL_AUTHORIZATION_CONTEXT_REQUIRED")
+        if (active.requestId != session.correlationId || (active.remote == null && active.scope != authorizationScope(entry, Json.parse(input.decodeToString()))))
+            throw CapabilityDenied("LOCAL_AUTHORIZATION_CONTEXT_REQUIRED")
+        if (active.background != null) requireBackgroundAuthorization(entry, Json.parse(input.decodeToString()), active.background)
+        else if (active.remote != null) requireRemoteAuthorization(session.correlationId, entry, Json.parse(input.decodeToString()), active.remote, active.scope.parametersSha256)
+        else requireActiveAuthorization(session.correlationId, entry, Json.parse(input.decodeToString()), active.binding)
+    }
+
+    private fun requireActiveAuthorization(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
+        binding: PairingGrantBinding? = null) {
+        when (val decision = requestAuthorization(requestId, entry, parameters, binding)) {
+            is com.openandroidintelligence.kernel.CapabilityAuthorization.Allowed -> Unit
+            is com.openandroidintelligence.kernel.CapabilityAuthorization.Denied -> throw CapabilityDenied(decision.code)
+            com.openandroidintelligence.kernel.CapabilityAuthorization.AwaitingConfirmation -> throw CapabilityDenied("LOCAL_CONFIRMATION_REQUIRED")
+        }
+    }
+
+    /** 与旧配对共享真实安装策略，但请求拥有者和连接代际来自 Noise 通道。 */
+    fun requestRemoteAuthorization(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
+        binding: RemoteCapabilityBinding, controlDigest: String? = null): CapabilityAuthorization {
+        if (!binding.isCurrent() || grants.currentKernelGrant(binding.id) == null) return CapabilityAuthorization.Denied("REMOTE_AUTHORIZATION_CHANGED")
+        captureSmsSubscription(binding.requestKey(requestId), entry, parameters)
+        val policy = capabilityPolicy(entry.identity.pluginId, entry.key)
+        val scope = authorizationScope(entry, parameters).let { if (controlDigest == null) it else it.copy(parametersSha256 = controlDigest) }
+        // 新通道只允许明确的只读免确认；写入和控制不会继承旧自动许可。
+        val remotePolicy = if (scope.operation == DeviceOperation.READ && policy.mode == CapabilityAuthorizationMode.READ_ONLY) policy
+            else policy.copy(mode = CapabilityAuthorizationMode.MANUAL)
+        return grants.authorization.evaluate(binding.requestKey(requestId), scope, remotePolicy,
+            grants.state.value?.revision ?: return CapabilityAuthorization.Denied("LOCAL_POLICY_UNAVAILABLE"))
+    }
+
+    fun approveRemoteRequest(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
+        binding: RemoteCapabilityBinding, controlDigest: String? = null): LocalCapabilityApproval {
+        check(binding.isCurrent()) { "REMOTE_AUTHORIZATION_CHANGED" }
+        requireSmsSubscription(binding.requestKey(requestId), entry, parameters)
+        return grants.authorization.approve(binding.requestKey(requestId), authorizationScope(entry, parameters).let { if (controlDigest == null) it else it.copy(parametersSha256 = controlDigest) }, 0,
+            grants.state.value?.revision ?: error("LOCAL_POLICY_UNAVAILABLE"), 5 * 60_000,
+            if (entry.id == "org.openandroidintelligence.sms.send") emptyList()
+            else com.openandroidintelligence.mobile.screen.temporaryApprovalParameterSummary(parameters))
+    }
+
+    fun cancelRemoteRequest(requestId: String, binding: RemoteCapabilityBinding) = grants.authorization.cancel(binding.requestKey(requestId))
+    fun finishRemoteRequest(requestId: String, binding: RemoteCapabilityBinding) {
+        grants.authorization.finish(binding.requestKey(requestId))
+        smsConfirmations.keys.removeAll { it.startsWith(digestName(binding.requestKey(requestId)) + ":") }
+    }
+
+    private fun requireRemoteAuthorization(requestId: String, entry: VerifiedCapability, parameters: JsonValue, binding: RemoteCapabilityBinding, controlDigest: String? = null) {
+        if (requestRemoteAuthorization(requestId, entry, parameters, binding, controlDigest) !is CapabilityAuthorization.Allowed)
+            throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+    }
+
+    private fun invocationAuthorizationCurrent(invocation: ActiveAuthorization, requestId: String): Boolean =
+        if (invocation.background != null) {
+            val entry = capabilityForAuthorizationScope(invocation.scope)
+            entry != null && backgroundAuthorizationCurrent(entry, invocation.background)
+        } else if (invocation.remote != null) {
+            val entry = capabilityForAuthorizationScope(invocation.scope)
+            entry != null && invocation.remote.isCurrent() && grants.authorization.evaluate(invocation.remote.requestKey(requestId),
+                invocation.scope, capabilityPolicy(entry.identity.pluginId, entry.key).let { policy ->
+                    if (invocation.scope.operation == DeviceOperation.READ && policy.mode == CapabilityAuthorizationMode.READ_ONLY) policy
+                    else policy.copy(mode = CapabilityAuthorizationMode.MANUAL)
+                }, grants.state.value?.revision ?: -1) is CapabilityAuthorization.Allowed
+        } else authorizationScopeIsCurrent(requestId, invocation.scope, null, invocation.binding)
+
+    fun invokeRemote(entry: VerifiedCapability, parameters: JsonValue, correlationId: String, binding: RemoteCapabilityBinding,
+        controlDigest: String? = null, background: Boolean = false, beforeSystemEffect: (() -> Unit)? = null): ByteArray {
+        check(CapabilitySchemaValidator.accepts(entry.schema, parameters)) { "SCHEMA_INVALID" }
+        requireRemoteAuthorization(correlationId, entry, parameters, binding, controlDigest)
+        val previous = activeAuthorization.get()
+        activeAuthorization.set(ActiveAuthorization(correlationId, null, authorizationScope(entry, parameters).let { if (controlDigest == null) it else it.copy(parametersSha256 = controlDigest) }, binding, beforeSystemEffect, Json.sha256(parameters)))
+        return try {
+            val output = kernel.invoke(entry.identity, binding.access.principal.accountId, binding.id, entry.key,
+                Json.canonical(parameters).toByteArray(), SessionConstraints(entry.primitives + entry.key, background, correlationId)).output
+            requireRemoteAuthorization(correlationId, entry, parameters, binding, controlDigest)
+            output
+        } finally { if (previous == null) activeAuthorization.remove() else activeAuthorization.set(previous) }
+    }
+
+    /** 原生目录复用用户可见的对应屏幕开关；缺失真实安装策略时默认拒绝。 */
+    fun nativePhonePolicy(primitive: String): CapabilityPolicy {
+        val entry = verifiedCapabilities().firstOrNull { primitive in it.primitives && it.primitives.count { p -> p.startsWith("kernel.screen.") } == 1 }
+            ?: return CapabilityPolicy(enabled = false)
+        return capabilityPolicy(entry.identity.pluginId, entry.key)
+    }
+    fun remoteEmergencyStopped(): Boolean = kernel.isEmergencyStopped()
+
+    /** 定时任务只能继承当前真实 Remote 调用的稳定主体，业务 JSON 不能自报拥有者。 */
+    fun remoteBackgroundSubject(call: KernelCallContext): RemoteBackgroundSubject {
+        val active = activeAuthorization.get() ?: throw CapabilityDenied("REMOTE_BACKGROUND_CONTEXT_REQUIRED")
+        val remote = active.remote ?: throw CapabilityDenied("REMOTE_BACKGROUND_CONTEXT_REQUIRED")
+        check(active.requestId == call.session.correlationId && active.accountId == call.accountId && active.ownerId == call.pairingId &&
+            remote.isCurrent()) { "REMOTE_AUTHORIZATION_CHANGED" }
+        return RemoteBackgroundSubject(remote.access.principal, remote.access.authorizationEpoch,
+            grants.state.value?.revision ?: error("LOCAL_POLICY_UNAVAILABLE"))
+    }
+
+    private fun backgroundAuthorizationCurrent(entry: VerifiedCapability, binding: RemoteBackgroundBinding): Boolean {
+        val local = grants.state.value ?: return false
+        val policy = capabilityPolicy(entry.identity.pluginId, entry.key)
+        val grant = local.asKernelGrant()
+        return binding.isCurrent() && local.revision == binding.localGrantRevision && local.localError == null &&
+            isEnabled(entry.identity.pluginId) && !kernel.isEmergencyStopped() && entry.risk == "read" &&
+            policy.enabled && policy.mode in setOf(CapabilityAuthorizationMode.READ_ONLY, CapabilityAuthorizationMode.AUTOMATIC) &&
+            grant.backgroundSync && grant.permits("kernel.background.run") &&
+            grant.permits(identityGrantKey(entry.identity, "kernel.background.run"))
+    }
+
+    private fun requireBackgroundAuthorization(entry: VerifiedCapability, parameters: JsonValue, binding: RemoteBackgroundBinding) {
+        if (!backgroundAuthorizationCurrent(entry, binding) || !CapabilitySchemaValidator.accepts(entry.schema, parameters))
+            throw CapabilityDenied("REMOTE_BACKGROUND_AUTHORIZATION_CHANGED")
+    }
+
+    fun backgroundInvocationAllowed(entry: VerifiedCapability, parameters: JsonValue, binding: RemoteBackgroundBinding): Boolean =
+        entries(entry.identity.pluginId).contains(entry) && backgroundAuthorizationCurrent(entry,binding) &&
+            CapabilitySchemaValidator.accepts(entry.schema,parameters)
+
+    /** 用真实内核执行本机只读定时查询；没有旧配对、网络恢复或临时批准继承。 */
+    fun invokeBackground(entry: VerifiedCapability, parameters: JsonValue, correlationId: String, binding: RemoteBackgroundBinding): ByteArray {
+        requireBackgroundAuthorization(entry, parameters, binding)
+        val registration = grants.attachRemoteBackground(binding)
+        val previous = activeAuthorization.get()
+        activeAuthorization.set(ActiveAuthorization(correlationId, null, authorizationScope(entry, parameters), background = binding))
+        return try {
+            val result = kernel.invoke(entry.identity, binding.principal.accountId, binding.id, entry.key,
+                Json.canonical(parameters).toByteArray(), SessionConstraints(entry.primitives + entry.key, true, correlationId)).output
+            requireBackgroundAuthorization(entry, parameters, binding)
+            result
+        } finally {
+            if (previous == null) activeAuthorization.remove() else activeAuthorization.set(previous)
+            registration.close()
+        }
+    }
+    fun emergencyStopFromPhone(): Int = kernel.emergencyStop("phone-local-emergency-stop")
+    fun observeEmergencyStop(listener: (Boolean) -> Unit): AutoCloseable = kernel.observeEmergencyStop(listener)
+
+    /** Local ability switch; enabling it never grants background, system or screen permissions. */
+    fun setCapabilityEnabled(pluginId: String, enabled: Boolean) {
+        synchronized(notificationPolicySyncLock) {
+            val registration = kernel.registrationFor(pluginId) ?: error("PLUGIN_NOT_REGISTERED")
+            grants.updatePluginCapabilities(registration.identity, registration.declaredPrimitives, enabled)
+            if (enabled) entries(pluginId).forEach {
+                selector.setOverride(it.key, grants.state.value?.pairingId ?: error("PAIRING_REQUIRED"), it.identity)
+            }
+            if (entries(pluginId).any { "kernel.notifications.read" in it.primitives }) {
+                syncNotificationPolicyGrantLocked()
+            }
+        }
+        notifyCapabilityStateChanged()
+    }
+
+    fun isCapabilityEnabled(pluginId: String): Boolean {
+        val state = grants.state.value ?: return false
+        val registration = kernel.registrationFor(pluginId) ?: return false
+        return registration.declaredPrimitives.filterNot { it == "kernel.background.run" }.all {
+            state.permits(it) && state.permits(identityGrantKey(registration.identity, it))
+        }
+    }
+
+    fun supportsBackground(pluginId: String): Boolean =
+        backgroundRequests[pluginId] == true && kernel.registrationFor(pluginId)?.declaredPrimitives?.contains("kernel.background.run") == true
+
+    fun isBackgroundEnabled(pluginId: String): Boolean {
+        if (!supportsBackground(pluginId)) return false
+        val identity = kernel.registrationFor(pluginId)?.identity ?: return false
+        val state = grants.state.value ?: return false
+        return state.permits("kernel.background.run") && state.permits(identityGrantKey(identity, "kernel.background.run"))
+    }
+
+    /** A separate, explicit Android-local background decision; ordinary defaults never change here. */
+    fun setBackgroundEnabled(pluginId: String, enabled: Boolean) {
+        check(supportsBackground(pluginId)) { "BACKGROUND_NOT_DECLARED" }
+        val identity = kernel.registrationFor(pluginId)?.identity ?: error("PLUGIN_NOT_REGISTERED")
+        grants.updatePluginBackground(identity, enabled)
+        notifyCapabilityStateChanged()
+    }
+
+    /** Compatibility for explicit Android consent, including its separate background choice. */
     fun grant(pluginId: String, enabled: Boolean) {
-        val registration = kernel.registrationFor(pluginId) ?: error("PLUGIN_NOT_REGISTERED")
-        val ids = registration.declaredPrimitives
-        grants.updatePrimitives(ids + ids.map { identityGrantKey(registration.identity,it) },enabled)
-        if (enabled) entries(pluginId).forEach { selector.setOverride(it.key,grants.state.value?.pairingId ?: error("PAIRING_REQUIRED"),it.identity) }
-        revision.value++
+        synchronized(notificationPolicySyncLock) {
+            val registration = kernel.registrationFor(pluginId) ?: error("PLUGIN_NOT_REGISTERED")
+            val ids = registration.declaredPrimitives
+            val scoped = ids.map { identityGrantKey(registration.identity,it) }.toSet()
+            grants.updatePluginCapabilities(registration.identity, ids, enabled)
+            grants.updatePrimitives(if (enabled) ids + scoped else scoped, enabled)
+            if (enabled) entries(pluginId).forEach { selector.setOverride(it.key,grants.state.value?.pairingId ?: error("PAIRING_REQUIRED"),it.identity) }
+            if (entries(pluginId).any { "kernel.notifications.read" in it.primitives }) {
+                syncNotificationPolicyGrantLocked()
+            }
+        }
+        notifyCapabilityStateChanged()
     }
     fun authorizedBindings(): List<Map<String,Any?>> = capabilitySnapshot().bindings
 
-    /** Inventory is diagnostic only. Neither installation nor a Gateway switch creates a local grant. */
+    /**
+     * Inventory describes a callable foreground binding, not a promise that
+     * every parameter or background mode has consent. v1 kernelPrimitives is
+     * the whole package's request ceiling, not per-capability dependencies:
+     * the SMS package includes both foreground queries and scheduled work.
+     * Background consent is independently enforced by the kernel/scheduler.
+     */
     @Synchronized fun capabilitySnapshot(): CapabilitySnapshot {
         val state = grants.state.value
         val bindings = mutableListOf<Map<String,Any?>>()
@@ -259,9 +839,13 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             var status = "READY"
             var reason = ""
             when {
+                state?.localError != null -> { status = "LOCAL_GRANT_REQUIRED"; reason = requireNotNull(state.localError) }
                 !isEnabled(entry.identity.pluginId) -> { status = "PLUGIN_DISABLED"; reason = "PLUGIN_DISABLED" }
-                state == null || !(entry.primitives + entry.key).all { identityGrantKey(entry.identity,it) in state.granted && it in state.granted } -> {
-                    status = "LOCAL_GRANT_REQUIRED"; reason = "PAIRING_GRANT_REQUIRED"
+                !capabilityPolicy(entry.identity.pluginId, entry.key).enabled || state == null || !(entry.primitives.filterNot { it == "kernel.background.run" } + entry.key).all {
+                    state.permits(identityGrantKey(entry.identity,it)) && state.permits(it)
+                } -> {
+                    status = "LOCAL_GRANT_REQUIRED"
+                    reason = "LOCAL_CAPABILITY_DISABLED"
                 }
                 !runCatching { selector.select(entry.key,state.pairingId).identity == entry.identity }.getOrDefault(false) -> {
                     status = "PROVIDER_NOT_SELECTED"; reason = "PROVIDER_NOT_SELECTED"
@@ -274,8 +858,15 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                     }.orEmpty()
                     status = when (reason) {
                         "" -> "READY"
-                        "READ_SMS_REQUIRED", "READ_CALL_LOG_REQUIRED", "NOTIFICATION_ACCESS_REQUIRED" -> "ANDROID_PERMISSION_REQUIRED"
-                        "LOCAL_GRANT_REQUIRED", "LOCAL_POLICY_CORRUPTED" -> "LOCAL_GRANT_REQUIRED"
+                        // 授权类：都能由用户操作恢复。区分具体原因是为了让远端与界面
+                        // 知道该引导用户去「申请权限」还是「检查服务是否连接」。
+                        "READ_SMS_REQUIRED", "SEND_SMS_REQUIRED", "READ_CALL_LOG_REQUIRED", "NOTIFICATION_ACCESS_REQUIRED",
+                        "ACCESSIBILITY_SERVICE_UNAVAILABLE", "SCREEN_CAPTURE_AUTHORIZATION_REQUIRED",
+                        "SCREEN_CAPTURE_SYSTEM_REJECTED", "SCREEN_DEVICE_LOCKED" -> "ANDROID_PERMISSION_REQUIRED"
+                        "LOCAL_GRANT_REQUIRED", "LOCAL_POLICY_CORRUPTED", "SCREEN_SESSION_REQUIRED",
+                        "SCREEN_SESSION_EXPIRED", "SCREEN_SESSION_BINDING_CHANGED", "SCREEN_PERMISSION_REQUIRED" -> "LOCAL_GRANT_REQUIRED"
+                        // 其余（含频率限制、受保护窗口、取帧失败、系统不支持）如实报
+                        // 提供者未就绪，具体原因由 reason 携带，不在这里升级成授权问题。
                         else -> "PROVIDER_UNAVAILABLE"
                     }
                 }
@@ -286,13 +877,27 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         }
         return CapabilitySnapshot(bindings, inventory, inventoryComplete = loadFailures.isEmpty())
     }
-    fun invoke(identity: PluginIdentity, accountId: String, capability: String, parameters: JsonValue, correlationId: String, background: Boolean = false): ByteArray {
+    fun invoke(identity: PluginIdentity, accountId: String, capability: String, parameters: JsonValue, correlationId: String,
+        background: Boolean = false, authenticatedBinding: PairingGrantBinding? = null): ByteArray {
         val entry = entries(identity.pluginId).firstOrNull { it.identity == identity && it.key == capability } ?: throw CapabilityDenied(capability)
         check(CapabilitySchemaValidator.accepts(entry.schema,parameters)) { "SCHEMA_INVALID" }
-        val pairingId = grants.state.value?.pairingId ?: error("PAIRING_REQUIRED")
-        return kernel.invoke(identity,accountId,pairingId,capability,Json.canonical(parameters).toByteArray(),
-            SessionConstraints(entry.primitives + entry.key,background,correlationId)).output
+        val binding = authenticatedBinding ?: grants.currentBinding() ?: error("AUTHENTICATED_DEVICE_BINDING_REQUIRED")
+        check(grants.isConnectionCurrent(binding)) { "AUTHENTICATED_DEVICE_BINDING_REQUIRED" }
+        check(binding.accountId == accountId) { "DEVICE_ACCOUNT_BINDING_MISMATCH" }
+        val pairingId = binding.pairingId
+        requireActiveAuthorization(correlationId, entry, parameters, binding)
+        val previousAuthorization = activeAuthorization.get()
+        activeAuthorization.set(ActiveAuthorization(correlationId, binding, authorizationScope(entry, parameters)))
+        try {
+            val output = kernel.invoke(identity,accountId,pairingId,capability,Json.canonical(parameters).toByteArray(),
+                SessionConstraints(entry.primitives + entry.key,background,correlationId)).output
+            requireActiveAuthorization(correlationId, entry, parameters, binding)
+            return output
+        } finally {
+            if (previousAuthorization == null) activeAuthorization.remove() else activeAuthorization.set(previousAuthorization)
+        }
     }
+
     fun scheduledTarget(call: KernelCallContext, args: JsonValue.JObject): VerifiedCapability {
         val id = JsonFields.string(args,"capabilityId") ?: error("SCHEDULE_TARGET_REQUIRED")
         val version = JsonFields.string(args,"capabilityVersion") ?: error("SCHEDULE_TARGET_REQUIRED")
@@ -304,14 +909,68 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         return entry
     }
     fun mediate(call: KernelCallContext, primitive: String, input: ByteArray): ByteArray {
-        KernelPrimitiveRegistry.provider(primitive)?.let { provider -> return runBlocking {
-            withTimeout(call.budget.maxInvocationMillis) { provider.invoke(LocalGrantContext(call.identity.pluginId,call.accountId,call.pairingId,call.session.correlationId),input) }
-        } }
+        val invocation = activeAuthorization.get() ?: throw CapabilityDenied("LOCAL_AUTHORIZATION_CONTEXT_REQUIRED")
+        if (invocation.requestId != call.session.correlationId || invocation.accountId != call.accountId ||
+            invocation.ownerId != call.pairingId || !invocationAuthorizationCurrent(invocation, call.session.correlationId)) {
+            throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+        }
+        if (primitive == "kernel.sms.send" &&
+            Json.sha256(Json.parse(input.decodeToString())) != (invocation.inputSha256 ?: invocation.scope.parametersSha256)) {
+            throw CapabilityDenied("SMS_PARAMETERS_CHANGED")
+        }
+        KernelPrimitiveRegistry.provider(primitive)?.let { provider ->
+            val expectedRevision = grants.state.value?.revision ?: throw CapabilityDenied("LOCAL_POLICY_UNAVAILABLE")
+            val scope = invocation.scope
+            val policy = grants.capabilityPolicy(scope.capability)
+            val localInput = if (primitive == "kernel.sms.read") {
+                val query = JsonFields.obj(Json.parse(input.decodeToString())) ?: error("SCHEMA_INVALID")
+                val fields = query.fields.associate { it.first to it.second }.toMutableMap<String, Any?>()
+                val requested = JsonFields.strings(query, "senders").toSet()
+                if (!policy.includeContent && JsonFields.string(query, "query").orEmpty().isNotBlank())
+                    throw CapabilityDenied("LOCAL_DATA_SCOPE_DENIED")
+                if (!SmsScopeMatcher.hasConditions(policy.smsScopeMode, policy.allowedSources, policy.smsKeywords))
+                    throw CapabilityDenied("LOCAL_DATA_SCOPE_DENIED")
+                if (policy.smsScopeMode == SmsScopeMode.PHONE_NUMBERS) {
+                    if (requested.any { it !in policy.allowedSources }) throw CapabilityDenied("LOCAL_DATA_SCOPE_DENIED")
+                    fields["senders"] = (requested.ifEmpty { policy.allowedSources }).sorted()
+                }
+                fields["smsScopeMode"] = policy.smsScopeMode.name
+                fields["smsPhoneNumbers"] = policy.allowedSources.sorted()
+                fields["smsKeywords"] = policy.smsKeywords.sorted()
+                fields["includeContent"] = policy.includeContent && JsonFields.bool(query, "includeContent") != false
+                Json.canonical(Json.of(fields)).toByteArray()
+            } else input
+            val result = runBlocking {
+                withTimeout(call.budget.maxInvocationMillis) {
+                    if (expectedRevision != grants.state.value?.revision || kernel.isEmergencyStopped() ||
+                        !isEnabled(call.identity.pluginId) || !invocationAuthorizationCurrent(invocation, call.session.correlationId)) throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+                    provider.invoke(LocalGrantContext(call.identity.pluginId,call.accountId,call.pairingId,call.session.correlationId,
+                        beforeSystemEffect = { dispatchedInput ->
+                            if (!dispatchedInput.contentEquals(localInput) || expectedRevision != grants.state.value?.revision ||
+                                kernel.isEmergencyStopped() || !isEnabled(call.identity.pluginId) ||
+                                !invocationAuthorizationCurrent(invocation, call.session.correlationId)) {
+                                throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+                            }
+                            if (primitive == "kernel.sms.send") {
+                                val entry = capabilityForAuthorizationScope(invocation.scope)
+                                    ?: throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+                                requireSmsSubscription(invocation.remote?.requestKey(invocation.requestId) ?: invocation.requestId,
+                                    entry, Json.parse(localInput.decodeToString()))
+                                consumeSmsEffect(invocation.remote?.requestKey(invocation.requestId) ?: invocation.requestId,
+                                    entry, Json.parse(localInput.decodeToString()), invocation.beforeSystemEffect)
+                            }
+                        }),localInput)
+                }
+            }
+            if (expectedRevision != grants.state.value?.revision || kernel.isEmergencyStopped() ||
+                !isEnabled(call.identity.pluginId) ||
+                !invocationAuthorizationCurrent(invocation, call.session.correlationId))
+                throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+            return result
+        }
         val args = JsonFields.obj(Json.parse(input.decodeToString())) ?: error("SCHEMA_INVALID")
         val store = stores.getOrPut(call.identity) {
-            val verified = installStore.openVerified(call.identity.pluginId)
-            try { PluginPrivateStore(installationId,EncryptedPluginStateBackend(context),verified.security.surface.maxStorageBytes) }
-            finally { verified.stagedDirectory.deleteRecursively() }
+            PluginPrivateStore(installationId, EncryptedPluginStateBackend(context), securitySurfaceFor(call.identity.pluginId).maxStorageBytes)
         }
         val handle = store.open(call.identity,call.accountId,call.pairingId)
         fun key() = JsonFields.string(args,"key") ?: error("SCHEMA_INVALID")
@@ -331,36 +990,59 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     private fun exchange(call: KernelCallContext,args: JsonValue.JObject): Map<String,Any?> {
         val uri = URI(JsonFields.string(args,"url") ?: error("SCHEMA_INVALID"))
         check(uri.userInfo == null && uri.fragment == null && uri.host != null) { "NETWORK_TARGET_INVALID" }
-        val proxy = proxies.getOrPut("${call.identity}:${call.accountId}:${call.pairingId}") {
-            val verified = installStore.openVerified(call.identity.pluginId)
-            try {
-                val manifest = JsonFields.obj(Json.parse(File(verified.stagedDirectory,"manifest.json").readText()))!!
-                val rules = (JsonFields.field(JsonFields.obj(JsonFields.field(manifest,"security")),"network") as? JsonValue.JArray)?.items.orEmpty()
-                val methods = rules.flatMap { rule -> (JsonFields.field(rule as? JsonValue.JObject,"methods") as? JsonValue.JArray)?.items.orEmpty().mapNotNull { (it as? JsonValue.JString)?.value } }.toSet()
-                val byHost=rules.mapNotNull { rule ->
-                    val r=rule as? JsonValue.JObject ?: return@mapNotNull null
-                    val host=JsonFields.string(r,"host") ?: return@mapNotNull null
-                    host.lowercase().trimEnd('.') to JsonFields.strings(r,"methods").toSet()
-                }.toMap()
-                val usage=EncryptedDocuments(context,"plugin-network-usage:${call.identity}:${call.accountId}:${call.pairingId}")
-                MediatedNetworkProxy(NetworkAllowlist(verified.security.surface.networkHosts,methods,byHost),object : MediatedTransport {
-                    override fun exchange(request: MediatedRequest): MediatedResponse = runBlocking {
-                        val transport = GatewayTransport(GatewayProfile("plugin","plugin","plugin","https://${request.host}"),maximumResponseBytes=minOf(request.maximumResponseBytes.toLong(),call.budget.maxOutputBytes/2).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
-                        val result = withTimeout(call.budget.maxInvocationMillis) { transport.execute(WireRequest(request.method,request.pathAndQuery,
-                            request.headers.map { RawHeader(it.key,it.value) },request.body ?: ByteArray(0))) }
-                        MediatedResponse(result.status,result.headers.associate { it.name to it.value },result.body)
-                    }
-                },call.budget.maxDailyNetworkBytes,usageStore=object:NetworkUsageStore {
-                    override fun read():NetworkUsage?=usage.read("daily")?.let { bytes -> val o=JsonFields.obj(Json.parse(bytes.decodeToString())) ?: error("NETWORK_USAGE_INVALID");NetworkUsage(JsonFields.long(o,"start") ?: error("NETWORK_USAGE_INVALID"),JsonFields.long(o,"spent") ?: error("NETWORK_USAGE_INVALID")) }
-                    override fun write(value:NetworkUsage)=usage.write("daily",Json.canonical(Json.of(mapOf("start" to value.windowStartMillis,"spent" to value.spentBytes))).toByteArray())
-                })
-            } finally { verified.stagedDirectory.deleteRecursively() }
-        }
+        val proxy = proxies.getOrPut("${call.identity}:${call.accountId}:${call.pairingId}") { builtInNetworkProxy(call) ?: installedNetworkProxy(call) }
         val response = synchronized(proxy) { proxy.exchange(MediatedRequest(uri.scheme,uri.host,if (uri.port == -1) 443 else uri.port,
             JsonFields.string(args,"method") ?: "GET", (uri.rawPath?.takeIf { it.isNotEmpty() } ?: "/") + (uri.rawQuery?.let { "?$it" } ?: ""),
             JsonFields.obj(JsonFields.field(args,"headers"))?.fields.orEmpty().associate { it.first to ((it.second as? JsonValue.JString)?.value ?: error("SCHEMA_INVALID")) },
             JsonFields.string(args,"body")?.let { Base64.getDecoder().decode(it) })) }
         return mapOf("status" to response.status,"headers" to response.headers,"body" to Base64.getEncoder().encodeToString(response.body))
+    }
+
+    /**
+     * 内建能力不落盘，网络规则直接来自本次启动校验出的安全声明。
+     *
+     * 官方能力包都不声明网络主机，因此这里实际是 deny-all：既不因为“内建”而放宽，
+     * 也不需要为它保留一份磁盘清单。
+     */
+    private fun builtInNetworkProxy(call: KernelCallContext): MediatedNetworkProxy? {
+        val builtIn = builtInSurfaces[call.identity.pluginId] ?: return null
+        val usage = EncryptedDocuments(context,"plugin-network-usage:${call.identity}:${call.accountId}:${call.pairingId}")
+        return MediatedNetworkProxy(NetworkAllowlist(builtIn.surface.networkHosts, emptySet(), emptyMap()),
+            httpsMediatedTransport(call), call.budget.maxDailyNetworkBytes, usageStore = encryptedNetworkUsageStore(usage))
+    }
+
+    private fun installedNetworkProxy(call: KernelCallContext): MediatedNetworkProxy {
+        val verified = installStore.openVerified(call.identity.pluginId)
+        try {
+            val manifest = JsonFields.obj(Json.parse(File(verified.stagedDirectory,"manifest.json").readText()))!!
+            val rules = (JsonFields.field(JsonFields.obj(JsonFields.field(manifest,"security")),"network") as? JsonValue.JArray)?.items.orEmpty()
+            val methods = rules.flatMap { rule -> (JsonFields.field(rule as? JsonValue.JObject,"methods") as? JsonValue.JArray)?.items.orEmpty().mapNotNull { (it as? JsonValue.JString)?.value } }.toSet()
+            val byHost=rules.mapNotNull { rule ->
+                val r=rule as? JsonValue.JObject ?: return@mapNotNull null
+                val host=JsonFields.string(r,"host") ?: return@mapNotNull null
+                host.lowercase().trimEnd('.') to JsonFields.strings(r,"methods").toSet()
+            }.toMap()
+            val usage=EncryptedDocuments(context,"plugin-network-usage:${call.identity}:${call.accountId}:${call.pairingId}")
+            return MediatedNetworkProxy(NetworkAllowlist(verified.security.surface.networkHosts,methods,byHost),
+                httpsMediatedTransport(call), call.budget.maxDailyNetworkBytes, usageStore = encryptedNetworkUsageStore(usage))
+        } finally { verified.stagedDirectory.deleteRecursively() }
+    }
+
+    private fun httpsMediatedTransport(call: KernelCallContext): MediatedTransport = object : MediatedTransport {
+        override fun exchange(request: MediatedRequest): MediatedResponse = runBlocking {
+            val result = withTimeout(call.budget.maxInvocationMillis) {
+                HttpsResourceClient().exchange("https://${request.host}${request.pathAndQuery}", request.method,
+                    request.headers.map { it.key to it.value }, request.body ?: ByteArray(0),
+                    maximumBytes = minOf(request.maximumResponseBytes.toLong(), call.budget.maxOutputBytes / 2)
+                        .coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+            }
+            MediatedResponse(result.status,result.headers.toMap(),result.body)
+        }
+    }
+
+    private fun encryptedNetworkUsageStore(usage: EncryptedDocuments): NetworkUsageStore = object : NetworkUsageStore {
+        override fun read():NetworkUsage?=usage.read("daily")?.let { bytes -> val o=JsonFields.obj(Json.parse(bytes.decodeToString())) ?: error("NETWORK_USAGE_INVALID");NetworkUsage(JsonFields.long(o,"start") ?: error("NETWORK_USAGE_INVALID"),JsonFields.long(o,"spent") ?: error("NETWORK_USAGE_INVALID")) }
+        override fun write(value:NetworkUsage)=usage.write("daily",Json.canonical(Json.of(mapOf("start" to value.windowStartMillis,"spent" to value.spentBytes))).toByteArray())
     }
     fun setting(pluginId: String, accountId: String, componentId: String, value: Any?) {
         check(grants.currentBinding()?.accountId == accountId) { "ACCOUNT_MISMATCH" }
@@ -373,14 +1055,15 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         }) { "UI_ACTION_INVALID" }
         val identity = kernel.registrationFor(pluginId)?.identity ?: error("PLUGIN_NOT_REGISTERED")
         val pairingId = grants.state.value?.pairingId ?: error("PAIRING_REQUIRED")
-        val verified = installStore.openVerified(pluginId)
-        try {
-            val store = stores.getOrPut(identity) { PluginPrivateStore(installationId,EncryptedPluginStateBackend(context),verified.security.surface.maxStorageBytes) }
-            store.write(store.open(identity,accountId,pairingId),accountId,"ui:$componentId",Json.canonical(Json.of(value)).toByteArray())
-        } finally { verified.stagedDirectory.deleteRecursively() }
-        revision.value++
+        val store = stores.getOrPut(identity) {
+            PluginPrivateStore(installationId, EncryptedPluginStateBackend(context), securitySurfaceFor(pluginId).maxStorageBytes)
+        }
+        store.write(store.open(identity,accountId,pairingId),accountId,"ui:$componentId",Json.canonical(Json.of(value)).toByteArray())
+        notifyCapabilityStateChanged()
     }
     fun uninstall(pluginId: String) {
+        // 内建能力由 APK 提供，不存在“卸载”：调用方只能改能力开关。
+        check(!isBuiltIn(pluginId)) { "BUILT_IN_CAPABILITY_NOT_REMOVABLE" }
         require(Regex("[A-Za-z0-9][A-Za-z0-9.-]*").matches(pluginId)) { "INVALID_PLUGIN_DIRECTORY" }
         val identity = kernel.registrationFor(pluginId)?.identity
         // Damaged packages have no verified registration; revoke their scoped grants by the actual directory ID.

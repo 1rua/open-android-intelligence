@@ -1,0 +1,11 @@
+{"event":"timing_note","note":"The due actualUTC is a scheduler checkpoint before CLI invoke. Submitted, awaiting, and cancellation records do not contain individual timestamps."}
+{"event":"due","scopeId":"scope-5","durationMinutes":5,"dueUTC":"2026-11-01T04:06:21.530000+00:00","actualUTC":"2026-11-01T04:19:17.152Z","scheduleLateSeconds":775.623,"timingKind":"late_retest"}
+{"event":"submitted","scopeId":"scope-5","durationMinutes":5,"requestId":"devreq_f2d65fb3...61c8a4dd"}
+{"event":"progress","scopeId":"scope-5","requestId":"devreq_f2d65fb3...61c8a4dd","state":"claimed","localAuthorizationState":"awaiting_confirmation","classification":"AWAITING"}
+{"event":"cancellation","scopeId":"scope-5","requestId":"devreq_f2d65fb3...61c8a4dd","outcome":"CANCELLED","reason":"CANCELLED"}
+{"event":"case_finished","scopeId":"scope-5","durationMinutes":5,"requestId":"devreq_f2d65fb3...61c8a4dd","result":"PASS","reason":"AWAITING_THEN_CANCELLED","awaitingObserved":true}
+{"event":"due","scopeId":"scope-30","durationMinutes":30,"dueUTC":"2026-11-01T04:33:39.142000+00:00","actualUTC":"2026-11-01T04:33:39.253Z","scheduleLateSeconds":0.112,"timingKind":"scheduled_window"}
+{"event":"submitted","scopeId":"scope-30","durationMinutes":30,"requestId":"devreq_3d65079a...ccc83609"}
+{"event":"progress","scopeId":"scope-30","requestId":"devreq_3d65079a...ccc83609","state":"claimed","localAuthorizationState":"awaiting_confirmation","classification":"AWAITING"}
+{"event":"cancellation","scopeId":"scope-30","requestId":"devreq_3d65079a...ccc83609","outcome":"CANCELLED","reason":"CANCELLED"}
+{"event":"case_finished","scopeId":"scope-30","durationMinutes":30,"requestId":"devreq_3d65079a...ccc83609","result":"PASS","reason":"AWAITING_THEN_CANCELLED","awaitingObserved":true}

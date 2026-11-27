@@ -1,0 +1,1050 @@
+{
+  "baseline": "733c6a3079cfc33ad3f6f7aa01b7bf242b782ee4",
+  "results": [
+    {
+      "run": "identity-batch-final",
+      "exit": 0,
+      "counts": {
+        "tests": 11,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "suite": "com.openandroidintelligence.conversation.model.LocalSendAtomIdentityTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.model.LocalSendAtomOrderTest",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.model.LocalSendIdentityConflictTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0
+        }
+      ]
+    },
+    {
+      "run": "storage-agent-batch-final",
+      "exit": 0,
+      "counts": {
+        "tests": 23,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "suite": "com.openandroidintelligence.mobile.conversations.NativeConversationMirrorTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.mobile.conversations.NativeLocalSnapshotReadTest",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.mobile.conversations.NativeMediaIsolationTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.mobile.NativeAgentsControllerTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        }
+      ]
+    },
+    {
+      "run": "native-regression-repaired",
+      "exit": 0,
+      "counts": {
+        "tests": 80,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "suite": "com.openandroidintelligence.mobile.AuthSessionLifecycleTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.mobile.ColdStartConnectionTest",
+          "tests": 13,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepositoryTest",
+          "tests": 35,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.mobile.conversations.NativeConversationMirrorTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.mobile.conversations.NativeLocalSnapshotReadTest",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.mobile.conversations.NativeMediaIsolationTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.mobile.LocalConversationFirstFrameTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.mobile.NativeAgentsControllerTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        }
+      ]
+    },
+    {
+      "run": "controller-final-acceptance",
+      "exit": 0,
+      "counts": {
+        "tests": 91,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "suite": "com.openandroidintelligence.conversation.state.NewConversationAuthorityTest",
+          "tests": 10,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchCloseSubmissionTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchLocalFirstTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchPendingAttachmentSwitchTest",
+          "tests": 2,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest",
+          "tests": 45,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchVoiceSendTest",
+          "tests": 13,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.ImagePreviewLoadingComposeTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        }
+      ]
+    },
+    {
+      "run": "followup-local-first-acceptance",
+      "exit": 0,
+      "counts": {
+        "tests": 747,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest",
+          "tests": 17,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest",
+          "tests": 45,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchTitleRegressionTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchVoiceSendTest",
+          "tests": 13,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.theme.ThemeContrastTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.ApprovalCardTest",
+          "tests": 11,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.AttachmentComposerTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.NewConversationAuthorityTest",
+          "tests": 10,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.TimelineTurnDedupTest",
+          "tests": 19,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchActiveWorkLifecycleTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchActiveWorkTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchAttachmentPreviewRegressionTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchCatalogRefreshTest",
+          "tests": 2,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchCloseSubmissionTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchConversationManagementTest",
+          "tests": 35,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchDuplicateAndDeliveryTest",
+          "tests": 14,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchEventCommitRecoveryTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchForegroundResumeTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchGenerationLifecycleTest",
+          "tests": 22,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.ImagePreviewLoadingComposeTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.MarkdownInlineTest",
+          "tests": 24,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.MarkdownInteractionComposeTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.MarkdownMathComposeTest",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.MarkdownMathTest",
+          "tests": 14,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.MarkdownParserNestedTest",
+          "tests": 12,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.MarkdownRenderingComposeTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.MarkdownTableLayoutTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.MessageBubbleLayoutTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.MessageTimelineExecutionTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.MessageTimelineImagePreviewTest",
+          "tests": 2,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.MessageTimelineStreamingTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.MessageTimelineTest",
+          "tests": 14,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.ApprovalStateMachineTest",
+          "tests": 15,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchInitialNavigationTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchRenderReuseTest",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.AttachmentImageCardTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.ImagePreviewGeometryTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.NativeToolTextTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.AttachmentLightboxTest",
+          "tests": 16,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.AttachmentOnlyTimelineTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.CommandAutocompleteTest",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.ComposerBarSendStopTest",
+          "tests": 12,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.ComposerDraftEpochTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.ComposerImagePasteTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.ConversationBrowserTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.ExecutionDisplayTest",
+          "tests": 36,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.ExecutionProcessComposeTest",
+          "tests": 13,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.ExecutionTimingTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.FreehandMaskTest",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.ScreenSelectionWiringLogicTest",
+          "tests": 14,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.ScreenSelectionWiringTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.StructuredExecutionDisplayTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.StructuredToolComposeTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.ThoughtCardTest",
+          "tests": 19,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.ThreadDrawerAccountTest",
+          "tests": 2,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.TimelineUserIdentityTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.ToolCallCardTest",
+          "tests": 22,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.WorkbenchComposerEpochTest",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.WorkbenchLayoutRegressionTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.WorkbenchScrollAnchorTest",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.workbench.WorkbenchScrollToLatestTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.assistant.AssistantGeometryContentHeightTest",
+          "tests": 5,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.assistant.AssistantGeometryTest",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.assistant.AssistantSurfaceInteractionTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.components.SettingsComponentsTest",
+          "tests": 3,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.components.StateViewsTest",
+          "tests": 14,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.motion.AppTransitionsTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.motion.MotionPhysicsTest",
+          "tests": 2,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.selection.ScreenSelectionMinimumSizeTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.selection.SelectionGeometryTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.selection.SelectionHandleGeometryTest",
+          "tests": 7,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchLocalFirstTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchLocalMediaRegressionTest",
+          "tests": 15,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchMessageIdentityConflictTest",
+          "tests": 2,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchNativeExecutionEventsTest",
+          "tests": 6,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchOptimisticBootstrapTest",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchOriginalImageTest",
+          "tests": 10,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchPendingAttachmentSwitchTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchPersistenceThreadTest",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchPromptDeliveryTest",
+          "tests": 2,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.mobile.ColdStartConnectionTest",
+          "tests": 13,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.mobile.conversations.NativeAttachmentDraftMigrationTest",
+          "tests": 1,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.mobile.conversations.NativeConversationMirrorTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.mobile.conversations.NativeMediaIsolationTest",
+          "tests": 10,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        }
+      ]
+    },
+    {
+      "run": "frozen-upload-boundaries-green",
+      "exit": 0,
+      "counts": {
+        "tests": 87,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchLocalFirstTest",
+          "tests": 8,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchPendingAttachmentSwitchTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest",
+          "tests": 17,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchSendRegressionTest",
+          "tests": 45,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchVoiceSendTest",
+          "tests": 13,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        }
+      ]
+    },
+    {
+      "run": "legacy-source-isolation-regression-02",
+      "exit": 0,
+      "counts": {
+        "tests": 10,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "suite": "com.openandroidintelligence.mobile.conversations.NativeMediaIsolationTest",
+          "tests": 10,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        }
+      ]
+    },
+    {
+      "run": "frozen-upload-rebuild-green",
+      "exit": 0,
+      "counts": {
+        "tests": 30,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "suites": [
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchLocalFirstTest",
+          "tests": 9,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchPendingAttachmentSwitchTest",
+          "tests": 4,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        },
+        {
+          "suite": "com.openandroidintelligence.conversation.state.WorkbenchSendPersistenceTest",
+          "tests": 17,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "failure_messages": []
+        }
+      ]
+    }
+  ],
+  "note": "阶段定向集合重叠，不将其相加为唯一用例数；最终门禁另记。",
+  "final_gate": {
+    "command": "npm run test:pr -- --since 733c6a3079cfc33ad3f6f7aa01b7bf242b782ee4",
+    "exit": 0,
+    "business_commit": "8b89011debe36a82ec586f534672386791143ec4",
+    "python": {
+      "passed": 692,
+      "skipped": 1,
+      "subtests_passed": 6
+    },
+    "android": {
+      "conversation-domain": {
+        "tests": 38,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "conversation-ui": {
+        "tests": 715,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "app": {
+        "tests": 1421,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    "note": "test-pr-final-head 实际完整运行通过；后续仅 tools/docs/artifacts 提交。"
+  }
+}

@@ -21,6 +21,10 @@ data class NotificationPolicySnapshot(
     val fieldAccess: NotificationFieldAccess,
     val mode: NotificationDeliveryMode,
     val revision: ULong,
+    /** 旧加密队列是否已装配，不代表队列可写。 */
+    val outboxAvailable: Boolean = false,
+    /** 最近创建的旧通知运行时是否持有投递组件；不代表运行、联网或成功投递。 */
+    val deliveryDispatcherWired: Boolean = false,
 ) {
     companion object {
         /** 未装配时的诚实快照：deny-first 的每一位都是 false/默认/零。 */
@@ -73,7 +77,20 @@ interface NotificationPolicyPort {
  * 本端口只查询绑定状态、并跳转到系统设置页，绝不代替用户授予。
  */
 interface NotificationBindingPort {
+    /** 系统「通知使用权」是否已授予本应用对应的通知监听服务组件。 */
     fun isListenerBound(): Boolean
+
+    /** 通知监听服务当前是否已与系统建立真实连接（收到 onListenerConnected 且未断开）。 */
+    fun isListenerConnected(): Boolean = isListenerBound()
+
+    /** 通知监听服务连接态的响应式流，便于 UI 在异步绑定到达时即时刷新。 */
+    fun observeListenerConnected(): Flow<Boolean> = flowOf(isListenerConnected())
+
+    /**
+     * 系统已授予通知使用权、但监听服务当前尚未连接时，主动请求系统重新绑定监听服务。
+     * 未授权、已连接或未装配时不发起请求并返回 false。
+     */
+    fun requestListenerRebind(): Boolean = false
 
     /**
      * 打开系统「通知使用权」设置页。返回是否真正发起了跳转；
@@ -108,6 +125,26 @@ object NotificationControlRegistry {
         bindingPort = UninstalledNotificationBindingPort
     }
 
+    /**
+     * 检查给定组件名是否存在于系统设置（如 `enabled_notification_listeners`）的冒号分隔列表中，
+     * 兼容完整类名、简写类名及不同大小写格式。
+     */
+    fun isComponentInColonSeparatedSetting(
+        rawList: String,
+        target: android.content.ComponentName,
+    ): Boolean {
+        if (rawList.isBlank()) return false
+        val full = target.flattenToString()
+        val short = target.flattenToShortString()
+        return rawList.split(':').any { raw ->
+            val entry = raw.trim()
+            if (entry.isEmpty()) return@any false
+            android.content.ComponentName.unflattenFromString(entry) == target ||
+                entry.equals(full, ignoreCase = true) ||
+                entry.equals(short, ignoreCase = true)
+        }
+    }
+
     /** 未装配时的策略端口：诚实快照 + 显式拒绝。 */
     internal object UninstalledNotificationPolicyPort : NotificationPolicyPort {
         override fun snapshot(): NotificationPolicySnapshot = NotificationPolicySnapshot.uninstalled()
@@ -121,6 +158,12 @@ object NotificationControlRegistry {
     /** 未装配时的绑定端口：没有监听器可绑定，也没有可授权的系统页。 */
     internal object UninstalledNotificationBindingPort : NotificationBindingPort {
         override fun isListenerBound(): Boolean = false
+
+        override fun isListenerConnected(): Boolean = false
+
+        override fun observeListenerConnected(): Flow<Boolean> = flowOf(false)
+
+        override fun requestListenerRebind(): Boolean = false
 
         override fun openSystemListenerSettings(context: Context): Boolean = false
     }

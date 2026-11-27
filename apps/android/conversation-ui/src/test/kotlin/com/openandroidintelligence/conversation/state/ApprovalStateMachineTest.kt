@@ -29,6 +29,7 @@ import com.openandroidintelligence.conversation.ports.PageRequest
 import com.openandroidintelligence.conversation.ports.TimelineMessage
 import com.openandroidintelligence.conversation.ports.TimelinePage
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -203,6 +204,27 @@ class ApprovalStateMachineTest {
     }
 
     @Test
+    fun aChoiceTheHostDidNotOfferCannotBeSubmitted() = runWorkbench {
+        val repository = FakeRepository()
+        val controller = controller(repository)
+        advanceUntilIdle()
+        repository.events.emit(requested(options = listOf(
+            ApprovalOption(ApprovalChoice.ONCE),
+            ApprovalOption(ApprovalChoice.DENY),
+        )))
+        advanceUntilIdle()
+
+        controller.decideApproval(APPROVAL_ID, ApprovalChoice.ALWAYS)
+        advanceUntilIdle()
+
+        assertTrue(repository.decisions.isEmpty(), "客户端不得提交宿主没有提供的审批操作")
+        assertTrue(cardRow(controller)?.approval is ApprovalCardState.Waiting)
+        controller.decideApproval(APPROVAL_ID, ApprovalChoice.ONCE)
+        advanceUntilIdle()
+        assertEquals(listOf(APPROVAL_ID to ApprovalChoice.ONCE), repository.decisions)
+    }
+
+    @Test
     fun aFailedPressComesBackAsALiveCardWithAStructuredNotice() = runWorkbench {
         val repository = FakeRepository().apply { submissionOutcome = ApprovalSubmissionOutcome.FAILED }
         val controller = controller(repository)
@@ -367,6 +389,40 @@ class ApprovalStateMachineTest {
     }
 
     @Test
+    fun anUnrenderableApprovalStaysPendingAsTextAndNeverSubmitsADecision() = runWorkbench {
+        val repository = FakeRepository()
+        val controller = controller(repository, supportsApprovalCards = false)
+        advanceUntilIdle()
+        repository.events.emit(
+            VerifiedConversationEvent.ApprovalTextFallback(
+                eventId = "fallback",
+                occurredAt = REQUESTED_AT,
+                conversationId = ConversationId(THREAD_ID),
+                approvalId = ApprovalId(APPROVAL_ID),
+                command = "rm -rf /tmp/dangerous_test_backup",
+                reason = "清理测试备份",
+                commands = listOf("/approve", "/deny"),
+                diagnosticCode = "APPROVAL_PAYLOAD_INVALID",
+            ),
+        )
+        advanceUntilIdle()
+
+        val fallback = cardRow(controller)!!.approval
+        assertTrue(fallback is ApprovalCardState.TextOnly, "解析失败必须保留待审批文本：$fallback")
+        assertEquals(listOf("/approve", "/deny"), (fallback as ApprovalCardState.TextOnly).commands)
+        controller.decideApproval(APPROVAL_ID, ApprovalChoice.DENY)
+        advanceUntilIdle()
+        assertTrue(repository.decisions.isEmpty(), "UI 失败不得自动提交拒绝或批准")
+        assertTrue(cardRow(controller)!!.approval is ApprovalCardState.TextOnly)
+
+        repository.events.emit(resolved(outcome = ApprovalOutcome.DENIED))
+        advanceUntilIdle()
+        val settled = cardRow(controller)!!.approval
+        assertTrue(settled is ApprovalCardState.Resolved, "后端终态仍必须落定文本审批：$settled")
+        assertEquals(ApprovalOutcome.DENIED, (settled as ApprovalCardState.Resolved).outcome)
+    }
+
+    @Test
     fun anApprovalTheGatewayDoesNotKnowIsNotClaimedAsWithdrawn() = runWorkbench {
         val repository = FakeRepository().apply { submissionOutcome = ApprovalSubmissionOutcome.NOT_FOUND }
         val controller = controller(repository)
@@ -430,6 +486,59 @@ class ApprovalStateMachineTest {
         )
     }
 
+    @Test
+    fun `权威回执直接落定并使用服务端时间`() = runWorkbench {
+        val repository = FakeRepository().apply {
+            recordedOutcome = ApprovalOutcome.DENIED
+            recordedAt = REQUESTED_AT + 7_000L
+        }
+        val controller = controller(repository)
+        advanceUntilIdle()
+        repository.events.emit(requested())
+        advanceUntilIdle()
+        controller.decideApproval(APPROVAL_ID, ApprovalChoice.ONCE)
+        advanceUntilIdle()
+        val card = cardRow(controller)?.approval as ApprovalCardState.Resolved
+        assertEquals(ApprovalOutcome.DENIED, card.outcome)
+        assertEquals(repository.recordedAt, card.decidedAt)
+    }
+
+    @Test
+    fun `提交结果未知时禁止重发并允许后续事件落定`() = runWorkbench {
+        val repository = FakeRepository().apply { submissionOutcome = ApprovalSubmissionOutcome.OUTCOME_UNKNOWN }
+        val controller = controller(repository)
+        advanceUntilIdle()
+        repository.events.emit(requested())
+        advanceUntilIdle()
+        controller.decideApproval(APPROVAL_ID, ApprovalChoice.ONCE)
+        advanceUntilIdle()
+        assertEquals(ApprovalOutcome.UNKNOWN, (cardRow(controller)?.approval as ApprovalCardState.Resolved).outcome)
+        controller.decideApproval(APPROVAL_ID, ApprovalChoice.DENY)
+        assertEquals(1, repository.decisions.size)
+        repository.events.emit(resolved(outcome = ApprovalOutcome.DENIED))
+        advanceUntilIdle()
+        assertEquals(ApprovalOutcome.DENIED, (cardRow(controller)?.approval as ApprovalCardState.Resolved).outcome)
+    }
+
+    @Test
+    fun `事件先落定时迟到的提交失败不重新开放卡片`() = runWorkbench {
+        val receipt = CompletableDeferred<ApprovalSubmissionResult>()
+        val repository = FakeRepository().apply { pendingReceipt = receipt }
+        val controller = controller(repository)
+        advanceUntilIdle()
+        repository.events.emit(requested())
+        advanceUntilIdle()
+        controller.decideApproval(APPROVAL_ID, ApprovalChoice.ONCE)
+        advanceUntilIdle()
+        assertTrue(cardRow(controller)?.approval is ApprovalCardState.Submitting)
+        repository.events.emit(resolved(outcome = ApprovalOutcome.DENIED))
+        advanceUntilIdle()
+        receipt.complete(ApprovalSubmissionResult(ApprovalSubmissionOutcome.FAILED))
+        advanceUntilIdle()
+        assertEquals(ApprovalOutcome.DENIED, (cardRow(controller)?.approval as ApprovalCardState.Resolved).outcome)
+        assertNull(controller.state.value.notice)
+    }
+
     private class FakeRepository : ConversationRepository {
         val events = MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity = 16)
         val decisions = mutableListOf<Pair<String, ApprovalChoice>>()
@@ -438,6 +547,8 @@ class ApprovalStateMachineTest {
 
         /** The terminal verdict the Gateway already had, when it names one. */
         var recordedOutcome: ApprovalOutcome? = null
+        var recordedAt: Long? = null
+        var pendingReceipt: CompletableDeferred<ApprovalSubmissionResult>? = null
 
         override suspend fun listConversations(
             scope: ConversationScope,
@@ -455,7 +566,7 @@ class ApprovalStateMachineTest {
         )
 
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation =
-            Conversation(ConversationId(clientConversationId), "新对话", 0L)
+            Conversation(ConversationId(clientConversationId), "", 0L)
 
         override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage =
             TimelinePage(
@@ -487,10 +598,12 @@ class ApprovalStateMachineTest {
             choice: ApprovalChoice,
         ): ApprovalSubmissionResult {
             decisions += approvalId.value to choice
+            pendingReceipt?.let { return it.await() }
             return ApprovalSubmissionResult(
                 outcome = submissionOutcome,
                 choice = if (submissionOutcome == ApprovalSubmissionOutcome.SUBMITTED) choice else recordedChoice,
                 settledOutcome = recordedOutcome,
+                decidedAt = recordedAt,
             )
         }
     }

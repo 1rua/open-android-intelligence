@@ -17,6 +17,9 @@ members = [
     "notifications",
     "sms",
     "call-log",
+    "screen-reader",
+    "screen-capture",
+    "screen-control",
 ]
 
 # 受保护插件走 wasm：体积优先、panic 直接 trap（no_std 下没有 unwinding）。

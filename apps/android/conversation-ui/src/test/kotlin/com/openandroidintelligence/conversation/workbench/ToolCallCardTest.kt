@@ -165,76 +165,6 @@ class ToolCallCardTest {
     }
 
     @Test
-    fun hermesInvocationLineParsesAsInvocationOnlyToolCall() {
-        val blocks = MarkdownParser.parse("调用工具：execute_code")
-
-        assertEquals(1, blocks.size)
-        val call = blocks[0] as TimelineBlock.ToolCallBlock
-        assertEquals("execute_code", call.toolName)
-        assertEquals("", call.command)
-        assertTrue(call.invocationOnly, "Hermes 纯文本工具调用应标记为无参数只有调用事实")
-    }
-
-    @Test
-    fun hermesArgumentsContainingACommaStayInOneCard() {
-        val blocks = MarkdownParser.parse("调用工具：execute_code print(a, b)")
-
-        assertEquals(1, blocks.size)
-        val call = blocks[0] as TimelineBlock.ToolCallBlock
-        assertEquals("execute_code", call.toolName)
-        assertEquals("print(a, b)", call.command)
-    }
-
-    @Test
-    fun hermesJoinedToolNamesBecomeOneCardPerTool() {
-        val blocks = MarkdownParser.parse("调用工具：execute_code、search_files、read_file")
-
-        assertEquals(3, blocks.size)
-        assertEquals(
-            listOf("execute_code", "search_files", "read_file"),
-            blocks.map { (it as TimelineBlock.ToolCallBlock).toolName },
-        )
-        assertTrue(blocks.all { (it as TimelineBlock.ToolCallBlock).invocationOnly })
-    }
-
-    @Test
-    fun hermesInvocationWithArgumentsKeepsThemAsCommand() {
-        val blocks = MarkdownParser.parse("调用工具：execute_code({\"sql\":\"select 1\"})")
-
-        assertEquals(1, blocks.size)
-        val call = blocks[0] as TimelineBlock.ToolCallBlock
-        assertEquals("execute_code", call.toolName)
-        assertTrue(call.command.contains("select 1"))
-    }
-
-    @Test
-    fun hermesActivityTextAndInvocationLinesParseIntoNarrativeAndToolCards() {
-        val markdown = """
-            插件状态如下：
-            调用工具：execute_code
-            调用工具：read_file
-        """.trimIndent()
-
-        val blocks = MarkdownParser.parse(markdown)
-        assertTrue(blocks[0] is TimelineBlock.Paragraph)
-        assertEquals("插件状态如下：", (blocks[0] as TimelineBlock.Paragraph).text)
-        assertEquals("execute_code", (blocks[1] as TimelineBlock.ToolCallBlock).toolName)
-        assertEquals("read_file", (blocks[2] as TimelineBlock.ToolCallBlock).toolName)
-        assertTrue((blocks[1] as TimelineBlock.ToolCallBlock).invocationOnly)
-    }
-
-    @Test
-    fun ellipsisTruncatedHermesActivityStillBecomesToolCards() {
-        val blocks = MarkdownParser.parse("Running code import sqlite3 import json conn = sql...\nReading core.py L5510-5549...")
-
-        assertEquals(2, blocks.size)
-        assertEquals(
-            listOf("execute_code", "read_file"),
-            blocks.map { (it as TimelineBlock.ToolCallBlock).toolName },
-        )
-    }
-
-    @Test
     fun ordinaryProseStartingWithReadingIsNotAToolCard() {
         val blocks = MarkdownParser.parse("Reading your question, I found the answer.\nRunning the check next.")
 
@@ -250,23 +180,6 @@ class ToolCallCardTest {
 
         assertEquals(1, blocks.size)
         assertTrue(blocks[0] is TimelineBlock.Paragraph)
-    }
-
-    @Test
-    fun hermesLiveActivityLinesBecomeToolCards() {
-        val markdown = """
-            Running code import sqlite3
-            Searching files for inventory
-            Reading core.py L5510-5549
-        """.trimIndent()
-
-        val blocks = MarkdownParser.parse(markdown)
-        assertEquals(3, blocks.size)
-        val calls = blocks.map { it as TimelineBlock.ToolCallBlock }
-        assertEquals(listOf("execute_code", "search_files", "read_file"), calls.map { it.toolName })
-        assertEquals("import sqlite3", calls[0].command)
-        assertEquals("inventory", calls[1].command)
-        assertTrue(calls.all { it.invocationOnly })
     }
 
     @Test
@@ -378,8 +291,188 @@ class ToolCallCardTest {
         compose.onNodeWithText("执行成功").assertDoesNotExist()
 
         compose.onNodeWithText("已调用").performClick()
-        compose.onNodeWithText("Hermes 在消息中未提供命令参数").assertIsDisplayed()
+        // 规格与需求 R1: 彻底移除硬编码文案 "Hermes 在消息中未提供命令参数"
+        compose.onNodeWithText("Hermes 在消息中未提供命令参数").assertDoesNotExist()
+        // 无参时自动隐藏参数行
+        compose.onNodeWithText("命令").assertDoesNotExist()
         compose.onNodeWithText("此调用未附带返回值").assertIsDisplayed()
+    }
+
+    // ==========================================
+    // 3. Tier 1 功能覆盖测试 (F1 通用工具解析与适配)
+    // ==========================================
+
+    @Test
+    fun t1_F1_01_ToolName_Extraction_Various_Agents() {
+        // 验证来自不同 Agent 的工具名称正确显示在卡片徽标中
+        val agentsTools = listOf("read_file", "web_search", "bash", "execute_code", "browser_action")
+        compose.setContent {
+            MaterialTheme {
+                androidx.compose.foundation.layout.Column {
+                    agentsTools.forEach { name ->
+                        MarkdownToolCallView(block = toolCall(toolName = name, command = "test_arg"))
+                    }
+                }
+            }
+        }
+        agentsTools.forEach { name ->
+            compose.onNodeWithText("[$name]").assertIsDisplayed()
+        }
+    }
+
+    @Test
+    fun t1_F1_02_Input_Args_Object_Formatted_String() {
+        // 验证格式化 JSON 对象入参在展开后正确呈现
+        val jsonArgs = """{"query": "open android intelligence", "limit": 10}"""
+        val block = toolCall(toolName = "web_search", command = jsonArgs)
+
+        compose.setContent {
+            MaterialTheme {
+                MarkdownToolCallView(block = block)
+            }
+        }
+
+        compose.onNodeWithText("执行成功").performClick()
+        compose.onNodeWithText("open android intelligence", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("limit", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun t1_F1_03_Output_Result_Extraction() {
+        // 验证输出结果在展开后正确呈现为输出内容
+        val block = toolCall(output = "Device connected: Pixel 9 Pro", summary = "查询成功")
+
+        compose.setContent {
+            MaterialTheme {
+                MarkdownToolCallView(block = block)
+            }
+        }
+
+        compose.onNodeWithText("查询成功").performClick()
+        compose.onNodeWithText("输出").assertIsDisplayed()
+        compose.onNodeWithText("Device connected: Pixel 9 Pro").assertIsDisplayed()
+    }
+
+    @Test
+    fun t1_F1_04_No_Params_Hide_Label() {
+        // 验证无参数时自动隐藏参数/命令行，不报错
+        val block = toolCall(toolName = "get_network_info", command = "", output = "WiFi Connected")
+
+        compose.setContent {
+            MaterialTheme {
+                MarkdownToolCallView(block = block)
+            }
+        }
+
+        compose.onNodeWithText("执行成功").performClick()
+        // 无参时命令/参数标签与代码块都不存在
+        compose.onNodeWithText("命令").assertDoesNotExist()
+        compose.onNodeWithText("Hermes 在消息中未提供命令参数").assertDoesNotExist()
+        compose.onNodeWithText("输出").assertIsDisplayed()
+        compose.onNodeWithText("WiFi Connected").assertIsDisplayed()
+    }
+
+    @Test
+    fun t1_F1_05_Non_Shell_Tool_Label() {
+        // 验证非 shell 工具（如 web_search）在有参数时标签或内容正常展示，且不显示 shell 专属硬编码
+        val block = toolCall(toolName = "web_search", command = "https://android.google.com")
+
+        compose.setContent {
+            MaterialTheme {
+                MarkdownToolCallView(block = block)
+            }
+        }
+
+        compose.onNodeWithText("执行成功").performClick()
+        compose.onNodeWithText("https://android.google.com").assertIsDisplayed()
+        compose.onNodeWithText("Hermes 在消息中未提供命令参数").assertDoesNotExist()
+    }
+
+    // ==========================================
+    // 4. Tier 2 边界与极端条件测试 (F1 Boundary & Corner Cases)
+    // ==========================================
+
+    @Test
+    fun t2_F1_01_Empty_Command_Never_Shows_Hermes_Copy() {
+        // 边界测试：即使 command 为纯空白字符，也绝不漏出 Hermes 提示词
+        val block = toolCall(toolName = "unknown_agent_tool", command = "   \n\t  ")
+
+        compose.setContent {
+            MaterialTheme {
+                MarkdownToolCallView(block = block)
+            }
+        }
+
+        compose.onNodeWithText("执行成功").performClick()
+        compose.onNodeWithText("Hermes 在消息中未提供命令参数").assertDoesNotExist()
+        compose.onNodeWithText("参数来自 Hermes 预览，可能已被截断").assertDoesNotExist()
+    }
+
+    @Test
+    fun t2_F1_02_Malformed_Json_Arguments() {
+        // 边界测试：非合法 JSON 的原始字符串入参能够安全展示
+        val malformedJson = "{ unclosed_key: 'value' "
+        val block = toolCall(toolName = "legacy_tool", command = malformedJson)
+
+        compose.setContent {
+            MaterialTheme {
+                MarkdownToolCallView(block = block)
+            }
+        }
+
+        compose.onNodeWithText("执行成功").performClick()
+        compose.onNodeWithText(malformedJson, substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun t2_F1_03_Deeply_Nested_Arguments() {
+        // 边界测试：多层极深嵌套 JSON 入参安全展示
+        val deeplyNested = """{"a":{"b":{"c":{"d":{"e":"deep_value"}}}}}"""
+        val block = toolCall(toolName = "config_tool", command = deeplyNested)
+
+        compose.setContent {
+            MaterialTheme {
+                MarkdownToolCallView(block = block)
+            }
+        }
+
+        compose.onNodeWithText("执行成功").performClick()
+        compose.onNodeWithText("deep_value", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun t2_F1_04_Huge_Output_Text() {
+        // 边界测试：巨量文本输出（上万字）正常展开不崩溃
+        val hugeOutput = "LOG_LINE_OUTPUT: " + "A".repeat(10_000)
+        val block = toolCall(toolName = "logcat", output = hugeOutput)
+
+        compose.setContent {
+            MaterialTheme {
+                MarkdownToolCallView(block = block)
+            }
+        }
+
+        compose.onNodeWithText("执行成功").performClick()
+        compose.onNodeWithText("输出").assertIsDisplayed()
+        compose.onNodeWithText("LOG_LINE_OUTPUT", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun t2_F1_05_Escaped_Special_Chars() {
+        // 边界测试：入参及输出包含特殊转义字符、换行符及 Unicode Emoji
+        val specialCommand = "echo \"Hello\tWorld\nSpecial: \uD83D\uDE80 & < > ' \""
+        val specialOutput = "Output: \uD83D\uDE80 Line1\nLine2\r\nLine3"
+        val block = toolCall(toolName = "echo_tool", command = specialCommand, output = specialOutput)
+
+        compose.setContent {
+            MaterialTheme {
+                MarkdownToolCallView(block = block)
+            }
+        }
+
+        compose.onNodeWithText("执行成功").performClick()
+        compose.onNodeWithText(specialCommand, substring = true).assertIsDisplayed()
+        compose.onNodeWithText(specialOutput, substring = true).assertIsDisplayed()
     }
 
     @Test

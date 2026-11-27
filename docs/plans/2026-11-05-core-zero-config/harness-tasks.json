@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "baseline": "f5bd4bd6cd5d4ffd000901b277950a14fb9c62a6",
+  "branch": "feature/oai-core-zero-config-admin-auth",
+  "tasks": [
+    {"id":"01","title":"身份、角色、管理会话、可选2FA与恢复底座","status":"completed","depends_on":[],"validation":"身份专项与真实HTTP认证通过；损坏身份库全自动恢复不在已完成范围"},
+    {"id":"02","title":"账号Token刷新、动态路由、幂等及端点迁移","status":"completed","depends_on":["01"],"validation":"账号刷新、路由、推送和传输自动化通过"},
+    {"id":"03","title":"极简CLI/MCP客户端及实例发现","status":"completed","depends_on":["01","02"],"validation":"真实Core HTTP及CLI/MCP登录、2FA绑定、管理回归通过"},
+    {"id":"04","title":"安装/setup/卸载与配置事务门禁","status":"completed","depends_on":["01"],"validation":"真实PTY及合成部署认证、事务、迁移和卸载通过；完整生产升级回滚仍需环境验收"},
+    {"id":"05","title":"Agent受确认关联及Hermes自动专属空间","status":"completed","depends_on":["01","02"],"validation":"真实Core登录、注册Hermes HTTP桥和固定SDK SessionStore及重启隔离通过；首次跨域公钥确认仍需部署者完成"},
+    {"id":"06","title":"Android增量编译及真实设备验收","status":"pending","depends_on":["01","02"],"validation":"本机Kotlin中文测试class写入Permission denied；未标通过，交CI；真机未执行"},
+    {"id":"07","title":"文档、安全审查与准入验证闭合","status":"pending","depends_on":["01","02","03","04","05","06"],"validation":"已修复确认的认证问题并回归；test:pr后端通过，Android环境受阻；用户要求不再扩展测试"},
+    {"id":"08","title":"提交并创建dev PR","status":"pending","depends_on":[],"validation":"提交内容与未完成边界清楚披露；不自动合并"}
+  ]
+}

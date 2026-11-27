@@ -1,0 +1,337 @@
+package com.openandroidintelligence.gateway.remote.network
+
+import com.openandroidintelligence.gateway.remote.identity.*
+import com.openandroidintelligence.gateway.remote.protocol.RemoteBase64Url
+import com.openandroidintelligence.gateway.remote.protocol.RemoteWireJson
+import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
+import com.openandroidintelligence.gateway.remote.runtime.*
+import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonValue
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.SocketPolicy
+import okhttp3.mockwebserver.RecordedRequest
+import java.net.InetSocketAddress
+import java.util.concurrent.Executors
+import java.util.concurrent.CopyOnWriteArrayList
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.*
+import org.junit.Test
+
+class RemoteServerApiTest {
+    private class Server : AutoCloseable {
+        val requests = CopyOnWriteArrayList<Triple<String, String, JsonValue>>()
+        private val routes = mutableMapOf<String, (JsonValue) -> MockResponse>()
+        val server = MockWebServer()
+        val origin get() = server.url("/").toString().removeSuffix("/")
+        init {
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    val input = request.body.readUtf8().let { if (it.isEmpty()) JsonValue.JNull else RemoteWireJson.parse(it) }
+                    requests += Triple(request.path!!, request.getHeader("Authorization").orEmpty(), input)
+                    val route = routes[request.requestUrl!!.encodedPath] ?: return MockResponse().setResponseCode(404)
+                    return route(input)
+                }
+            }
+            server.start()
+        }
+        fun route(path: String, status: Int = 200, block: (JsonValue) -> JsonValue) {
+            routes[path] = { input ->
+                MockResponse().setResponseCode(status).setHeader("Content-Type", "application/json")
+                    .apply { if (status != 204) setBody(Json.canonical(block(input))) }
+            }
+        }
+        fun rawRoute(path: String, status: Int, body: String, contentType: String = "text/html") {
+            routes[path] = { MockResponse().setResponseCode(status).setHeader("Content-Type", contentType).setBody(body) }
+        }
+        override fun close() { server.shutdown() }
+    }
+    @Test fun 真实HTTP登录双角色注册刷新目录和撤销使用固定线格式() = runBlocking {
+        Server().use { fixture ->
+            val token = obj("accessToken" to "a".repeat(16), "accessTokenExpiresAt" to System.currentTimeMillis()+60_000,
+                "refreshToken" to "r".repeat(16), "refreshTokenExpiresAt" to System.currentTimeMillis()+600_000)
+            fixture.route("/api/v1/auth/login") { obj("token" to "l".repeat(16), "account" to "owner", "expiresAt" to System.currentTimeMillis()+60_000, "isAdmin" to false) }
+            fixture.route("/api/v1/devices/register") { token }
+            fixture.route("/api/v1/auth/refresh") { token }
+            fixture.route("/api/v1/devices/self", 204) { JsonValue.JNull }
+            fixture.route("/api/v1/devices") { obj("items" to listOf(obj("deviceId" to "host", "name" to "电脑", "platform" to "linux", "membershipId" to "membership", "online" to true))) }
+            fixture.route("/api/v1/devices/host/presence") { obj("online" to true) }
+            val api = RemoteServerApi(fixture.origin); val login = api.login("owner", "password")
+            for (role in RemoteRole.entries) {
+                val identity = RemoteStaticIdentityFactory.generate(RemoteDeviceId(java.util.UUID.randomUUID().toString()))
+                val result = api.registerAccountRole(RemoteIdentityScope(fixture.origin, "owner", role), identity, login.token)
+                assertEquals(identity.deviceId, result.identity.deviceId)
+            }
+            api.refresh(RemoteIdentityScope(fixture.origin, "owner", RemoteRole.CLIENT), java.util.UUID.randomUUID().toString(), "r".repeat(16))
+            assertEquals("host", api.listHosts("a".repeat(16)).single().deviceId)
+            api.revoke("a".repeat(16))
+            val registrations = fixture.requests.filter { it.first == "/api/v1/devices/register" }
+            assertEquals(2, registrations.size); assertTrue(registrations.all { it.second == "Bearer ${"l".repeat(16)}" })
+            assertTrue(registrations.all { it.third.objectValue().value("device").objectValue().requiredText("clientVersion") == com.openandroidintelligence.gateway.client.BuildConfig.OAI_REMOTE_CLIENT_VERSION })
+            assertEquals(setOf("client", "host"), registrations.map { it.third.objectValue().value("device").objectValue().requiredText("role") }.toSet())
+            assertEquals(7, fixture.requests.size)
+        }
+    }
+    @Test fun ownedHost注册使用客户端票据固定请求且先拒绝来源和角色() = runBlocking {
+        Server().use { fixture ->
+            val issuedAt = System.currentTimeMillis() + 60_000
+            fixture.route("/api/v1/devices/register-owned-role") {
+                obj("accessToken" to "a".repeat(16), "accessTokenExpiresAt" to issuedAt,
+                    "refreshToken" to "r".repeat(16), "refreshTokenExpiresAt" to issuedAt)
+            }
+            val clientAccessToken = "c".repeat(32)
+            val identity = RemoteStaticIdentityFactory.generate(RemoteDeviceId("00000000-0000-4000-8000-000000000001"))
+            val api = RemoteServerApi(fixture.origin, deviceNameProvider = { "测试手机" })
+            val hostScope = RemoteIdentityScope(fixture.origin, "owner", RemoteRole.HOST)
+            for (scope in listOf(
+                RemoteIdentityScope("https://other.example", "owner", RemoteRole.HOST),
+                RemoteIdentityScope(fixture.origin, "owner", RemoteRole.CLIENT),
+            )) {
+                val failure = runCatching { api.registerOwnedHost(scope, identity, clientAccessToken) }.exceptionOrNull()
+                assertEquals(IllegalStateException::class.java, failure?.javaClass)
+                assertEquals(if (scope.origin != fixture.origin) "REMOTE_ORIGIN_MISMATCH" else "REMOTE_ROLE_MISMATCH", failure?.message)
+            }
+            assertTrue(fixture.requests.isEmpty())
+
+            val credential = api.registerOwnedHost(hostScope, identity, clientAccessToken)
+
+            assertEquals(identity, credential.identity)
+            assertEquals(RemoteTokenPair("a".repeat(16), issuedAt, "r".repeat(16), issuedAt), credential.tokens)
+            val request = fixture.requests.single()
+            assertEquals("/api/v1/devices/register-owned-role", request.first)
+            assertEquals("Bearer $clientAccessToken", request.second)
+            assertEquals(Json.canonical(obj(
+                "v" to 1,
+                "device" to obj(
+                    "deviceId" to "00000000-0000-4000-8000-000000000001",
+                    "name" to "测试手机",
+                    "role" to "host",
+                    "platform" to "android",
+                    "identityKey" to RemoteBase64Url.encode(identity.publicKey),
+                    "clientVersion" to com.openandroidintelligence.gateway.client.BuildConfig.OAI_REMOTE_CLIENT_VERSION,
+                    "harnessVersion" to com.openandroidintelligence.gateway.remote.protocol.RemoteProtocol.HARNESS_COMPATIBILITY_VERSION,
+                ),
+            )), Json.canonical(request.third))
+            assertFalse(credential.identity.toString().contains(clientAccessToken))
+            assertFalse(credential.toString().contains(clientAccessToken))
+        }
+    }
+    @Test fun 上游目录无online时必须查询presence且以独立在线事实为准() = runBlocking {
+        Server().use { fixture ->
+            val token = "a".repeat(16)
+            // 来自固定 ea1c0925 packages/plugin/tests/server-api.test.ts 的 host(0)，没有 online 字段。
+            fixture.route("/api/v1/devices") { obj("items" to listOf(obj("deviceId" to "host-0", "role" to "host",
+                "name" to "Host 0", "platform" to "linux", "membershipId" to "member-0")), "nextCursor" to null) }
+            var online = true
+            fixture.route("/api/v1/devices/host-0/presence") { obj("online" to online) }
+            fixture.route("/api/v1/me", 500) { obj("error" to obj("code" to "INTERNAL_ERROR")) }
+            val api = RemoteServerApi(fixture.origin)
+            assertTrue(api.listHosts(token).single().online)
+            online = false
+            assertFalse(api.listHosts(token).single().online)
+            assertEquals(2, fixture.requests.count { it.first == "/api/v1/devices/host-0/presence" })
+            assertEquals(0, fixture.requests.count { it.first == "/api/v1/me" })
+            assertTrue(fixture.requests.all { it.second == "Bearer $token" })
+        }
+    }
+    @Test fun presence拒绝账号票时目录返回可续期的错误() = runBlocking {
+        Server().use { fixture ->
+            fixture.route("/api/v1/devices") { obj("items" to listOf(obj("deviceId" to "host-0", "name" to "Host 0",
+                "platform" to "linux", "membershipId" to "member-0"))) }
+            fixture.route("/api/v1/devices/host-0/presence", 401) { obj("error" to obj("code" to "TOKEN_EXPIRED")) }
+            val failure = runCatching { RemoteServerApi(fixture.origin).listHosts("a".repeat(16)) }.exceptionOrNull()
+            assertEquals("TOKEN_EXPIRED", (failure as? RemoteRpcException)?.code)
+        }
+    }
+    @Test fun presence失败不得回退到目录中已经过期的在线值() = runBlocking {
+        Server().use { fixture ->
+            fixture.route("/api/v1/devices") { obj("items" to listOf(obj("deviceId" to "host-0", "name" to "Host 0",
+                "platform" to "linux", "membershipId" to "member-0", "online" to true))) }
+            fixture.route("/api/v1/devices/host-0/presence", 503) { obj("error" to obj("code" to "CONNECTION_FAILED")) }
+            assertFalse(RemoteServerApi(fixture.origin).listHosts("a".repeat(16)).single().online)
+        }
+    }
+    @Test fun 单个目标Host撤销时并发的健康Host仍在线() = runBlocking {
+        Server().use { fixture ->
+            val token = "a".repeat(16)
+            fixture.route("/api/v1/devices") { obj("items" to listOf(
+                obj("deviceId" to "revoked-host", "name" to "已撤销", "platform" to "linux", "membershipId" to "member-0"),
+                obj("deviceId" to "healthy-host-1", "name" to "健康主机 1", "platform" to "linux", "membershipId" to "member-1"),
+                obj("deviceId" to "healthy-host-2", "name" to "健康主机 2", "platform" to "linux", "membershipId" to "member-2"),
+            )) }
+            fixture.route("/api/v1/devices/revoked-host/presence", 403) { obj("error" to obj("code" to "DEVICE_REVOKED")) }
+            fixture.route("/api/v1/devices/healthy-host-1/presence") { obj("online" to true) }
+            fixture.route("/api/v1/devices/healthy-host-2/presence") { obj("online" to true) }
+            fixture.route("/api/v1/me") { obj("status" to "ok") }
+
+            val hosts = RemoteServerApi(fixture.origin).listHosts(token).associateBy { it.deviceId }
+
+            assertEquals(setOf("revoked-host", "healthy-host-1", "healthy-host-2"), hosts.keys)
+            assertFalse(hosts.getValue("revoked-host").online)
+            assertTrue(hosts.getValue("healthy-host-1").online)
+            assertTrue(hosts.getValue("healthy-host-2").online)
+            val presenceRequests = fixture.requests.filter { it.first.endsWith("/presence") }
+            assertEquals(3, presenceRequests.size)
+            assertEquals(1, fixture.requests.count { it.first == "/api/v1/me" })
+            assertTrue(fixture.requests.all { it.second == "Bearer $token" })
+        }
+    }
+    @Test fun 调用者撤销时只执行一次账号级复核并透出错误() = runBlocking {
+        Server().use { fixture ->
+            val token = "a".repeat(16)
+            fixture.route("/api/v1/devices") { obj("items" to listOf(
+                obj("deviceId" to "host-1", "name" to "主机 1", "platform" to "linux", "membershipId" to "member-1"),
+                obj("deviceId" to "host-2", "name" to "主机 2", "platform" to "linux", "membershipId" to "member-2"),
+            )) }
+            fixture.route("/api/v1/me", 403) { obj("error" to obj("code" to "DEVICE_REVOKED")) }
+            for (host in listOf("host-1", "host-2")) {
+                fixture.route("/api/v1/devices/$host/presence", 403) { obj("error" to obj("code" to "DEVICE_REVOKED")) }
+            }
+
+            val failure = runCatching { RemoteServerApi(fixture.origin).listHosts(token) }.exceptionOrNull()
+
+            assertEquals("DEVICE_REVOKED", (failure as? RemoteRpcException)?.code)
+            val callerProbeRequests = fixture.requests.filter { !it.first.endsWith("/presence") }
+            assertEquals(listOf("/api/v1/devices?limit=50", "/api/v1/me"), callerProbeRequests.map { it.first }.sorted())
+            assertTrue(callerProbeRequests.all { it.second == "Bearer $token" })
+            assertTrue(fixture.requests.none { it.first.contains(token) })
+            assertFalse(failure.toString().contains(token))
+        }
+    }
+    @Test fun 调用者复核非2xx不得当作目标Host撤销() = runBlocking {
+        Server().use { fixture ->
+            val token = "a".repeat(16)
+            fixture.route("/api/v1/devices") { obj("items" to listOf(
+                obj("deviceId" to "host-1", "name" to "主机 1", "platform" to "linux", "membershipId" to "member-1"),
+            )) }
+            fixture.route("/api/v1/devices/host-1/presence", 403) { obj("error" to obj("code" to "DEVICE_REVOKED")) }
+            fixture.route("/api/v1/me", 503) { obj("error" to obj("code" to "INTERNAL_ERROR", "message" to "上游秘密")) }
+
+            val failure = runCatching { RemoteServerApi(fixture.origin).listHosts(token) }.exceptionOrNull()
+
+            assertEquals("INTERNAL_ERROR", (failure as? RemoteRpcException)?.code)
+            val callerProbeRequests = fixture.requests.filter { !it.first.endsWith("/presence") }
+            assertEquals(listOf("/api/v1/devices?limit=50", "/api/v1/me"), callerProbeRequests.map { it.first }.sorted())
+            assertTrue(callerProbeRequests.all { it.second == "Bearer $token" })
+            assertTrue(fixture.requests.none { it.first.contains(token) })
+            assertFalse(failure.toString().contains(token))
+            assertFalse(failure.toString().contains("上游秘密"))
+        }
+    }
+    @Test fun 私网HTTP只接受字面地址且规范化IDN与默认端口() {
+        assertEquals("https://xn--fsqu00a.xn--0zwm56d", normalizeRemoteOrigin("https://例子.测试:443/"))
+        assertEquals("http://192.168.1.2", normalizeRemoteOrigin("http://192.168.1.2:80"))
+        assertEquals("http://[::1]", normalizeRemoteOrigin("http://[::1]"))
+        assertThrows(IllegalArgumentException::class.java) { normalizeRemoteOrigin("http://10.attacker.example") }
+        assertThrows(IllegalArgumentException::class.java) { normalizeRemoteOrigin("http://192.168.attacker.example") }
+    }
+    @Test fun 复用已关闭的HTTP连接时只读查询恢复而写入保持单次提交() = runBlocking {
+        for (readOnly in listOf(true, false)) MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody("{}"))
+            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+            server.enqueue(MockResponse().setBody("""{"online":true}"""))
+            val api = RemoteServerApi(server.url("/").toString().removeSuffix("/"))
+            api.loginProviders()
+            if (readOnly) {
+                assertTrue(api.presence("a".repeat(16), "phone"))
+                assertEquals(3, server.requestCount)
+            } else {
+                assertEquals("CONNECTION_FAILED", failureCode { api.login("owner", "password") })
+                assertEquals(2, server.requestCount)
+            }
+        }
+    }
+    @Test fun 错误响应只保留固定代码且不自动重发写入() = runBlocking {
+        Server().use { fixture ->
+            fixture.route("/api/v1/auth/login", 401) { obj("error" to obj("code" to "AUTH_INVALID", "message" to "secret", "retryable" to false)) }
+            val failure = runCatching { RemoteServerApi(fixture.origin).login("owner", "password") }.exceptionOrNull() as RemoteRpcException
+            assertEquals("AUTH_INVALID", failure.code); assertFalse(failure.toString().contains("secret")); assertEquals(1, fixture.requests.size)
+        }
+    }
+    @Test fun 反代HTML和空5xx分类为可重试内部错误() = runBlocking {
+        Server().use { fixture ->
+            val api = RemoteServerApi(fixture.origin)
+            listOf("<html>bad gateway</html>" to "text/html", "" to "application/json").forEach { (body, contentType) ->
+                fixture.rawRoute("/api/v1/auth/oauth/providers", 502, body, contentType)
+                assertEquals("INTERNAL_ERROR", failureCode { api.loginProviders() })
+            }
+            assertEquals(2, fixture.requests.size)
+        }
+    }
+    @Test fun 反代HTML和空429分类为限流错误() = runBlocking {
+        Server().use { fixture ->
+            val api = RemoteServerApi(fixture.origin)
+            listOf("<html>too many requests</html>" to "text/html", "" to "application/json").forEach { (body, contentType) ->
+                fixture.rawRoute("/api/v1/auth/oauth/providers", 429, body, contentType)
+                assertEquals("RATE_LIMITED", failureCode { api.loginProviders() })
+            }
+            assertEquals(2, fixture.requests.size)
+        }
+    }
+    @Test fun 四xx只保留安全JSON错误码() = runBlocking {
+        Server().use { fixture ->
+            val api = RemoteServerApi(fixture.origin)
+            fixture.route("/api/v1/auth/login", 409) { obj("error" to obj("code" to "TOKEN_REUSED", "message" to "上游秘密")) }
+            val reused = runCatching { api.login("owner", "password") }.exceptionOrNull() as RemoteRpcException
+            assertEquals("TOKEN_REUSED", reused.code)
+            assertFalse(reused.toString().contains("上游秘密"))
+
+            fixture.rawRoute("/api/v1/auth/login", 400, "<html>bad request</html>")
+            assertEquals("CONNECTION_FAILED", failureCode { api.login("owner", "password") })
+        }
+    }
+    @Test fun 成功响应仍严格拒绝空正文和非JSON() = runBlocking {
+        Server().use { fixture ->
+            val api = RemoteServerApi(fixture.origin)
+            listOf("" to "application/json", "<html>ok</html>" to "text/html").forEach { (body, contentType) ->
+                fixture.rawRoute("/api/v1/auth/oauth/providers", 200, body, contentType)
+                assertEquals("INVALID_MESSAGE", failureCode { api.loginProviders() })
+            }
+        }
+    }
+    @Test fun 响应200读到一半断开归类为CONNECTION_FAILED且下次请求恢复成功() = runBlocking {
+        val expiresAt = System.currentTimeMillis() + 60_000
+        val tokenBody = Json.canonical(obj(
+            "accessToken" to "a".repeat(32), "accessTokenExpiresAt" to expiresAt,
+            "refreshToken" to "r".repeat(32), "refreshTokenExpiresAt" to expiresAt + 600_000,
+        ))
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
+                .setBody(tokenBody).setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
+            server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
+                .setBody(tokenBody))
+            server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
+                .setBody(tokenBody).setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
+            server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
+                .setBody(tokenBody))
+            server.enqueue(MockResponse().setResponseCode(400).setHeader("Content-Type", "application/json")
+                .setBody(Json.canonical(obj("error" to obj("code" to "AUTH_INVALID", "message" to "x".repeat(128)))))
+                .setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
+            // 显式绑定 127.0.0.1，避免双栈宿主机上 OkHttp 对 localhost 在断连后切到未监听的 ::1 路由。
+            server.start(java.net.InetAddress.getByName("127.0.0.1"), 0)
+            val origin = "http://127.0.0.1:${server.port}"
+            val api = RemoteServerApi(origin)
+            val hostScope = RemoteIdentityScope(origin, "owner", RemoteRole.HOST)
+            val identity = RemoteStaticIdentityFactory.generate(RemoteDeviceId("00000000-0000-4000-8000-000000000099"))
+
+            assertEquals("CONNECTION_FAILED", failureCode {
+                api.registerAccountRole(hostScope, identity, RemoteAccountAuthorizationToken("l".repeat(32)))
+            })
+            assertEquals(1, server.requestCount)
+            val firstRecovered = api.registerAccountRole(hostScope, identity, RemoteAccountAuthorizationToken("l".repeat(32)))
+            assertEquals("a".repeat(32), firstRecovered.tokens.accessToken)
+
+            assertEquals("CONNECTION_FAILED", failureCode {
+                api.registerOwnedHost(hostScope, identity, "c".repeat(32))
+            })
+            assertEquals(3, server.requestCount)
+            val ownedRecovered = api.registerOwnedHost(hostScope, identity, "c".repeat(32))
+            assertEquals("a".repeat(32), ownedRecovered.tokens.accessToken)
+
+            assertEquals("CONNECTION_FAILED", failureCode { api.loginProviders() })
+        }
+    }
+    private suspend fun failureCode(block: suspend () -> Unit): String =
+        (runCatching { block() }.exceptionOrNull() as RemoteRpcException).code
+}

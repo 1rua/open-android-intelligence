@@ -45,6 +45,17 @@ sealed interface ApprovalCardState {
         val outcome: ApprovalOutcome,
         val decidedAt: Long? = null,
     ) : ApprovalCardState
+
+    /**
+     * The approval remains pending, but this phone cannot safely draw or submit
+     * its structured actions. The original command and the typed host commands
+     * remain visible.
+     */
+    data class TextOnly(
+        override val request: ApprovalRequest,
+        val commands: List<String>,
+        val diagnosticCode: String? = null,
+    ) : ApprovalCardState
 }
 
 /** Whether the Gateway has had its say. */

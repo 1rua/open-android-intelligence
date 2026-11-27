@@ -1,0 +1,77 @@
+{
+  "data": "synthetic only",
+  "snapshots": {
+    "baselineOnline": {
+      "rawSha256": "56fa11bbffee7e59ccf4a7bed70437332213b3d72019a35c5c2d06f2c81517cd",
+      "visible": [
+        "实时通道未建立",
+        "1 个会话"
+      ],
+      "searchFiltered": true
+    },
+    "baselineAgentOffline": {
+      "rawSha256": "8eca903722f44d2ce976c8989f593a990f15cc0e16aed3b98967bf35947dfa88",
+      "visible": [
+        "实时通道未建立",
+        "0 个会话"
+      ],
+      "searchFiltered": true
+    },
+    "baselineAgentOfflineCold": {
+      "rawSha256": "8eca903722f44d2ce976c8989f593a990f15cc0e16aed3b98967bf35947dfa88",
+      "visible": [
+        "实时通道未建立",
+        "0 个会话"
+      ],
+      "searchFiltered": true
+    },
+    "baselineRecovered": {
+      "rawSha256": "9e478c3b71623a0042add9ff88cfaa14f7019180422562f0fa427ec72c8fbc05",
+      "visible": [
+        "实时通道未建立",
+        "1 个会话"
+      ],
+      "searchFiltered": true
+    },
+    "candidate1Online": {
+      "rawSha256": "06651919e62337c9660896f3bd39e0321d3d13ee7976ad709f4ba0c42b6aa54a",
+      "visible": [
+        "在线",
+        "1 个会话"
+      ],
+      "searchFiltered": true
+    },
+    "candidate1AgentOffline": {
+      "rawSha256": "fcb78ae16383c2c67fc03981201a9e1de2fa8dbc999aac241cd24eedef4add81",
+      "visible": [
+        "离线",
+        "1 个会话"
+      ],
+      "searchFiltered": true
+    },
+    "candidate1AgentOfflineCold": {
+      "rawSha256": "bdefe1ac33c0ac3865004b4389c57780678de1b8696c1b0281495a17bfd2cd94",
+      "visible": [
+        "离线",
+        "50 个会话"
+      ],
+      "searchFiltered": false
+    },
+    "candidate1Recovered": {
+      "rawSha256": "d589184696edb4e082bfcf0ba99eba3c046ade698828144a5d7fbb608eed797a",
+      "visible": [
+        "实时通道未建立",
+        "50 个会话"
+      ],
+      "searchFiltered": false
+    },
+    "candidate1CoreOfflineCold": {
+      "rawSha256": "5a8639eb034fd49c241deddfb400547a390cc9d52674f05d26fd500ad9a8c827",
+      "visible": [
+        "离线",
+        "50 个会话"
+      ],
+      "searchFiltered": false
+    }
+  }
+}

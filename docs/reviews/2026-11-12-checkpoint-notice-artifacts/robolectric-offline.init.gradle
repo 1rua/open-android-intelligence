@@ -1,0 +1,6 @@
+gradle.afterProject { project, state ->
+    project.tasks.withType(Test).configureEach {
+        systemProperty 'robolectric.offline', 'true'
+        systemProperty 'robolectric.dependency.dir', project.rootProject.file('../../.toolchains/robolectric-jars').canonicalPath
+    }
+}

@@ -1,16 +1,20 @@
 package com.openandroidintelligence.conversation.components
 
+import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -26,6 +30,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -33,9 +39,19 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
+
+private class BooleanLatch(var latched: Boolean = false)
+
+// 同一条目也被会话抽屉、附件库复用，仅在设置分组内启用新样式。
+private val LocalSettingsItemMorphing = staticCompositionLocalOf { false }
+
+private val SettingsSectionCardShape = RoundedCornerShape(AppRadius.Large)
+private val SettingsSectionCardDefaultPadding = PaddingValues(
+    horizontal = Dimensions.SpaceMedium,
+    vertical = Dimensions.SpaceSmall,
+)
 
 /** 设置条目的语义色调，决定前置图标容器与图标取哪个 M3 角色。 */
 enum class SettingsTone {
@@ -60,19 +76,18 @@ enum class SettingsTone {
 fun SettingsSectionCard(
     modifier: Modifier = Modifier,
     containerColor: Color = MaterialTheme.colorScheme.surfaceContainer,
-    contentPadding: PaddingValues = PaddingValues(
-        horizontal = Dimensions.SpaceMedium,
-        vertical = Dimensions.SpaceSmall,
-    ),
+    contentPadding: PaddingValues = SettingsSectionCardDefaultPadding,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Surface(
-        shape = RoundedCornerShape(AppRadius.Large),
+        shape = SettingsSectionCardShape,
         color = containerColor,
         contentColor = MaterialTheme.colorScheme.onSurface,
         modifier = modifier.fillMaxWidth(),
     ) {
-        Column(modifier = Modifier.padding(contentPadding), content = content)
+        CompositionLocalProvider(LocalSettingsItemMorphing provides true) {
+            Column(modifier = Modifier.padding(contentPadding), content = content)
+        }
     }
 }
 
@@ -106,8 +121,8 @@ fun SettingsCardHeader(
  * 标准设置条目，基于官方 M3 [ListItem]：
  * 前置图标容器 → 标题 + 辅助说明两行排版 → 后置控件槽位。
  *
- * 行高不低于 48dp；按下时走 `bouncyClickable` 的 0.97 内收（与抽屉项、附件卡片
- * 同一套按压反馈），ripple 仍由 M3 提供。
+ * 行高不低于 48dp；设置分组内按下或选中时变为胶囊形，波纹随当前形状裁剪。
+ * 分组外保留既有按压反馈，避免改变会话抽屉和附件库。
  * [onClick] 传 null 表示这一行只展示、不可交互。
  */
 @Composable
@@ -122,36 +137,107 @@ fun SettingsListItem(
     onClick: (() -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
 ) {
+    val morphing = LocalSettingsItemMorphing.current
     val interactive = onClick != null && enabled
+    val interactionLatched = remember(morphing) { BooleanLatch() }
+    if (morphing && interactive) {
+        interactionLatched.latched = true
+    }
+    val interactionSource = if (morphing && interactionLatched.latched) {
+        remember { MutableInteractionSource() }
+    } else {
+        null
+    }
+    SettingsListItemContent(
+        headline = headline,
+        modifier = modifier,
+        supporting = supporting,
+        icon = icon,
+        tone = tone,
+        selected = selected,
+        enabled = enabled,
+        interactionSource = interactionSource,
+        scaleOnPress = interactive,
+        interactionModifier = when {
+            morphing && interactionSource != null && onClick != null -> Modifier.clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                enabled = enabled,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            interactive -> Modifier.bouncyClickable(role = Role.Button, onClick = onClick!!)
+            else -> Modifier
+        },
+        trailing = trailing,
+    )
+}
+
+@Composable
+private fun SettingsListItemContent(
+    headline: String,
+    modifier: Modifier,
+    supporting: String?,
+    icon: ImageVector?,
+    tone: SettingsTone,
+    selected: Boolean,
+    enabled: Boolean,
+    interactionSource: MutableInteractionSource?,
+    scaleOnPress: Boolean,
+    interactionModifier: Modifier,
+    trailing: (@Composable () -> Unit)?,
+) {
+    val morphing = LocalSettingsItemMorphing.current
+    val morphLatched = remember(morphing) { BooleanLatch() }
+    if (morphing && (interactionSource != null || selected)) {
+        morphLatched.latched = true
+    }
+    val highlighted: Boolean
+    val feedback: Modifier
+    if (morphing) {
+        if (!morphLatched.latched) {
+            highlighted = false
+            feedback = Modifier
+        } else {
+            val pressFeedback = rememberSettingsItemPressFeedback(
+                clickSource = interactionSource,
+                enabled = enabled,
+            )
+            val pressed = pressFeedback.pressed.value
+            highlighted = selected || pressed
+            feedback = settingsItemMorphModifier(
+                highlighted = highlighted,
+                pressed = pressed,
+                scaleOnPress = scaleOnPress,
+                visualInteractionSource = pressFeedback.visualInteractionSource,
+                clipActive = pressFeedback.clipActive,
+            )
+        }
+    } else {
+        highlighted = false
+        feedback = Modifier
+    }
     ListItem(
         headlineContent = { Text(headline, style = MaterialTheme.typography.bodyLarge) },
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = Dimensions.MinimumTouchTarget)
-            .alpha(if (enabled) 1f else 0.38f)
-            .then(
-                if (interactive) {
-                    Modifier.bouncyClickable(
-                        enabled = true,
-                        role = Role.Button,
-                        onClick = onClick!!,
-                    )
-                } else {
-                    Modifier
-                },
-            ),
+            .then(if (enabled) Modifier else Modifier.alpha(0.38f))
+            .then(feedback)
+            .then(interactionModifier),
         supportingContent = supporting?.let {
             { Text(it, style = MaterialTheme.typography.bodyMedium) }
         },
         leadingContent = icon?.let { { SettingsIconBadge(icon = it, tone = tone, enabled = enabled) } },
         trailingContent = trailing,
         colors = ListItemDefaults.colors(
-            containerColor = if (selected) {
+            containerColor = if (selected && !morphing) {
                 MaterialTheme.colorScheme.surfaceContainerHighest
             } else {
                 Color.Transparent
             },
-            supportingColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            headlineColor = if (highlighted) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface,
+            supportingColor = if (highlighted) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
             leadingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
         ),
     )
@@ -172,14 +258,34 @@ fun SettingsSwitchItem(
     tone: SettingsTone = SettingsTone.NEUTRAL,
     enabled: Boolean = true,
 ) {
-    SettingsListItem(
+    val morphing = LocalSettingsItemMorphing.current
+    val interactionLatched = remember(morphing) { BooleanLatch() }
+    if (morphing && enabled) {
+        interactionLatched.latched = true
+    }
+    val interactionSource = if (morphing && interactionLatched.latched) {
+        remember { MutableInteractionSource() }
+    } else {
+        null
+    }
+    SettingsListItemContent(
         headline = headline,
         modifier = modifier,
         supporting = supporting,
         icon = icon,
         tone = tone,
+        selected = false,
         enabled = enabled,
-        onClick = if (enabled) { { onCheckedChange(!checked) } } else null,
+        interactionSource = interactionSource,
+        scaleOnPress = false,
+        interactionModifier = Modifier.toggleable(
+            value = checked,
+            interactionSource = interactionSource,
+            indication = if (morphing) null else LocalIndication.current,
+            enabled = enabled,
+            role = Role.Switch,
+            onValueChange = onCheckedChange,
+        ),
         trailing = {
             Switch(checked = checked, onCheckedChange = null, enabled = enabled)
         },
@@ -197,23 +303,26 @@ fun SettingsNavigationItem(
     tone: SettingsTone = SettingsTone.NEUTRAL,
     enabled: Boolean = true,
 ) {
-    SettingsListItem(
-        headline = headline,
-        modifier = modifier,
-        supporting = supporting,
-        icon = icon,
-        tone = tone,
-        enabled = enabled,
-        onClick = if (enabled) onClick else null,
-        trailing = {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(Dimensions.SmallIcon),
-            )
-        },
-    )
+    // 设置能力选择弹窗中的导航条目不在分组卡片里，也需要相同的反馈。
+    CompositionLocalProvider(LocalSettingsItemMorphing provides true) {
+        SettingsListItem(
+            headline = headline,
+            modifier = modifier,
+            supporting = supporting,
+            icon = icon,
+            tone = tone,
+            enabled = enabled,
+            onClick = onClick,
+            trailing = {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(Dimensions.SmallIcon),
+                )
+            },
+        )
+    }
 }
 
 /**
@@ -237,23 +346,18 @@ fun SettingsIconBadge(
         SettingsTone.DANGER -> MaterialTheme.colorScheme.errorContainer to
             MaterialTheme.colorScheme.onErrorContainer
     }
-    Surface(
-        shape = CircleShape,
-        color = container,
-        contentColor = content,
+    Box(
         modifier = modifier
             .size(size)
-            .alpha(if (enabled) 1f else 0.38f),
+            .then(if (enabled) Modifier else Modifier.alpha(0.38f))
+            .background(color = container, shape = CircleShape),
+        contentAlignment = Alignment.Center,
     ) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                modifier = Modifier.size(Dimensions.SmallIcon),
-            )
-        }
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = content,
+            modifier = Modifier.size(Dimensions.SmallIcon),
+        )
     }
 }

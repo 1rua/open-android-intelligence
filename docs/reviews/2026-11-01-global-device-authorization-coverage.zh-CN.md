@@ -1,0 +1,44 @@
+# 全局设备授权需求覆盖与证据索引
+
+日期：2026-11-01。状态：本轮收尾；UI-01至10已交付，完整GLOBAL验收未完成，goal保持active。此表是逐项核对入口。
+最终交接见[收尾报告](2026-11-01-global-device-authorization-closeout.zh-CN.md)。
+完整规格见[全局授权](../superpowers/specs/2026-11-01-global-device-authorization.md)，
+执行结果见[主记录](2026-11-01-global-device-authorization.zh-CN.md)，
+运行结果见[Terra 报告](2026-11-01-global-device-authorization-terra.zh-CN.md)。
+
+| 需求 | 生产实现入口 | 自动化证据入口 | 当前运行证据 |
+| --- | --- | --- | --- |
+| GLOBAL-01 全局策略 | `PairingGrantStateHolder`、`SharedPreferencesPairingGrantStore`；策略键不含Core/账号 | `CapabilityAuthorizationTest`、`PairingGrantPersistenceTest` | CoreA→B→A实测设置/权限保持；CoreB请求与取消通过；最终Core快照复测待做 |
+| GLOBAL-02 历史清理 | 同一SharedPreferences事务移除旧`pairing_grant_v1.*`和旧scope标记，提升本地版本；Core保留历史fence | 迁移幂等、提交失败恢复、来源不明默认手动、无关键保留测试 | 隔离测试用户升级保留数据；真实旧策略样本升级待测 |
+| GLOBAL-03 三级模式 | `ProductionPluginHost`、`PluginKernel.authorizeInvocation`、每原语和返回前复核 | `ClientCapabilityAuthorizationTest`、`DeviceGrantFenceTest` | 通话查询CLI→Core→App拒绝结果链路已通过；其他模式和能力待测 |
+| GLOBAL-04 确认与通知 | `DeviceExecutionDriver.confirm`、`ScreenControlConfirmationDialog`、300秒等待期限 | UI选项、确认进度、取消及拒绝测试 | 真实确认超时、手动拒绝及修复包触摸分区通过；最终提交最小复测待做 |
+| GLOBAL-05 临时许可 | `CapabilityAuthorizationController`单调时间内存票据；单次绑连接/请求，限时按范围共享 | 到期/取消/重启、同rawId跨Core单次不共享、timed共享 | 5/30/60真实授予、5到期重新等待、30/60跨Core即时共享PASS；30/60自然到期PASS；有效5min许可28秒后用户撤销重新确认/取消PASS；尚未过期5min许可在受控突然进程死亡/重启后重新确认并取消PASS；不是OOM或整机重启；见[临时许可记录](2026-11-01-global-device-authorization-temporary-lifecycle.zh-CN.md) |
+| GLOBAL-06 独立推送 | `DevicePushRuntime`、`NotificationPushSource`、`SmsPushSource`；独立配置/来源/正文 | push runtime、collector及source测试 | OS通知双端与SMS专用合成样本主动链路通过；新包被动关键词命中/不命中、MCP正文搜索拒绝与主动关键词metadata投递PASS；通知搜索/正反选/取消/同值保存PASS |
+| GLOBAL-07 端点白名单 | `endpoints.py`、`GatewayPushTransport`、`PushSettingsScreen` | ownership、route/代次、旧事件不转新代次、缺席保留配置 | 真实CLI/MCP注册/发现、独立凭据403、未认证401、双端OS通知及逐端ACK通过；新OS短信已选接收/有效未选端点0条PASS；离线剩余待测 |
+| GLOBAL-08 队列与ACK | `EncryptedPushStateStore`、逐端状态、精确撤销账本；Core60秒密文暂存 | runtime/codec/endpoint/revoke顺序/ACK幂等测试 | OS通知双端投递、A/B逐端ACK与手机2/4→2/3→1/2通过；通知后台补发与SMS新包保留/1h自然到期PASS；断网/撤销剩余待测 |
+| GLOBAL-09 生命周期 | `DevicePushComposition`、`DevicePushJobService`、登录门槛、有界任务与有效期维护 | logout取消、缺权限采集拒绝、恢复只补报一次 | 突发进程死亡重启保留PASS；am kill未实际回收不算通过；全退出UI/保留配置权限/匹配样本不入队PASS；当前binding设备密钥恢复PASS；普通password新device单列、息屏/Doze待测 |
+| GLOBAL-10 屏幕独立与FIFO | `RemoteScreenRuntime`按请求注入、`ScreenControlLeaseManager`独占30秒/累计5分钟 | 读控制隔离、48并发互斥、FIFO/撤销/期限/多连接测试 | Accessibility/reader8节点、MediaProjection单App系统UI与512px截图PASS；控制READ_ONLY确认拒绝PASS；手动允许back实际SCREEN_STALE_REFERENCE失败，task-011仍FAIL且补丁已存仅本地c71735b0；Accessibility真实撤销时双能力缺权/reader拒绝、恢复READY，长期策略复核及其余撤销待测；见[系统撤销](2026-11-01-global-device-authorization-system-revoke.zh-CN.md) |
+| GLOBAL-11 统一设备调用 | `client/cli/mcp/device_service`caller声明、签名pending列表/HTTP短租约、具体错误 | Core主套件、CLI/MCP、账号隔离、pending18项 | 两Core合法请求与未知调用者拒绝待测 |
+| GLOBAL-12 Terra验收 | 指定`gpt-6.1-terra`子Agent；user10隔离模拟器、双TLS Core | 测试环境准备与签名包校验 | 无实体手机，物理验收BLOCKED；模拟器已有分项证据，剩余矩阵未完成，本轮已停止新增操作 |
+| GLOBAL-13 文档与PR | spec、CONTEXT、ADR、协议、指南、Skill、Android说明及本索引 | 相对链接/代码围栏/格式检查；ff720cde远端7checks全部SUCCESS，新收尾文档head另行核对 | PR#71已OPEN、目标dev、autoMerge关闭；UI补充task-010已完成，完整GLOBAL矩阵待闭合 |
+
+## 用户追加 UI 保真要求
+
+| 需求 | 文档与实现入口 | 当前证据 |
+| --- | --- | --- |
+| UI-01..06 通知原选择器、SMS全部/关键词/电话号码、保留原功能与文案 | spec、CONTEXT、设置规格、操作指南、AGENTS.md；NotificationAppPicker / PushSettingsScreen / SmsPassiveScopeSettings | 实现1f338778已推PR，UI62/最新60/standalone49与Fast/PR通过；Terra新APK通知全部选择行为与SMS真实关键词命中/不命中/正文边界、主动metadata通过；整体GLOBAL矩阵仍在task-008 |
+
+| 最新UI要求 | 实现与验证 | 当前边界 |
+| --- | --- | --- |
+| UI-07..10 应用数量不限/禁止自行设计/删除插件恢复按钮/统一菜单转场 | c0779957已推PR，1025UI/2049真实加密恢复、58综合/53standalone与Fast/PR通过；Terra单返回/卡片抽查/正常进退录屏由root取帧核验 | ff720cde的CI Run41312482503/41312478792七项全成功；新文档head不沿用该状态；整体GLOBAL与task011仍未完成 |
+
+## 保留边界
+
+- Android系统权限、通知监听、无障碍、MediaProjection和系统强制同意独立生效，自动模式不代替系统批准。
+- 设备访问关系通过可信账号/设备/配对代次与凭据验证；Agent名称和目的不作为身份，Session Adapter不成为授权前置。
+- 设备全局策略不授予其他账号私有会话、历史和附件。附加设备连接只取专用pending ID，不加载会话快照。
+- 审计写失败先保存拒绝屏障；中断恢复只回到手动模式并保留明确off及数据范围，不回滚旧allow。
+- 取消后敏感成功结果在App和Core两端重新核验；Core原子处理避免GET与POST之间的取消竞态。
+- Core撤回tombstone保留最长期限，撤回先于迟到投递时也不重新保存正文；手机撤回记录只含事件/路由元数据。
+- 长期敏感队列只在Android；Core短暂暂存60秒后等待同ID重投，消费ACK与HTTP接受分开。
+- 没有实际运行的项目保持待测；实体手机缺失和系统交互限制不由单测或模拟器代替。

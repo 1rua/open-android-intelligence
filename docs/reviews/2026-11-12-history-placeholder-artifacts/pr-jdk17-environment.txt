@@ -1,0 +1,4 @@
+前次App门禁：710项，25失败。失败对应既有环境缺口：
+- Android SDK 36 requires Java 21 (have Java 17)
+- plugins/target/wasm32-unknown-unknown/release/notifications.wasm 缺失
+随后复用现有JDK21和同源码CI六签名包中的真实WASM，未改测试断言或SDK，完整PR门禁通过。

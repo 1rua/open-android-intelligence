@@ -4,17 +4,20 @@ import com.openandroidintelligence.conversation.ports.ConversationScope
 import com.openandroidintelligence.conversation.ports.OutgoingMessage
 import kotlinx.coroutines.*
 import kotlin.time.Duration
-import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
-enum class DebounceMode { FIXED_WINDOW, EXTEND_WINDOW }
-
+/**
+ * 客户端本地合并连续消息的策略。
+ *
+ * 合并完全由手机端决定：默认 [delay] 为零，等同于不合并、点击即提交；只有用户
+ * 在设置里主动选择大于零的时长，才会先在本地暂存再一次性提交。
+ */
 data class DebouncePolicy(
-    val delay: Duration = 1500.milliseconds,
+    val delay: Duration = Duration.ZERO,
+    /** 从首条消息起的硬上限：窗口不断被新消息延长时，也必须在此刻发出。 */
     val maximumWait: Duration = 30.seconds,
     val maximumMembers: Int = 20,
     val maximumBytes: Int = 64 * 1024,
-    val mode: DebounceMode = DebounceMode.EXTEND_WINDOW,
 )
 
 class DebounceBatcher(
@@ -44,9 +47,15 @@ class DebounceBatcher(
      */
     fun hasPending(conversationId:String)=activeBatches.containsKey(conversationId)
 
+    /** 当前策略是否要求合并：零时长时调用方应直接发送，而不是先落到等待队列。 */
+    val merges: Boolean get() = !policy.delay.isNegative() && policy.delay > Duration.ZERO
+
     fun updatePolicy(next:DebouncePolicy) {
         require(!next.delay.isNegative() && next.maximumWait>=next.delay && next.maximumMembers>0 && next.maximumBytes>0)
         policy=next
+        // 关闭合并后，已经收集的消息不能再等原窗口：后续消息会立即发出，
+        // 若旧批次拖到几秒后才提交，会话里就会出现新消息先于旧消息到达的乱序。
+        if (next.delay == Duration.ZERO) activeBatches.keys.toList().forEach(::flush)
     }
 
     fun offer(targetScope: ConversationScope, conversationId: String, message: OutgoingMessage) {
@@ -55,7 +64,11 @@ class DebounceBatcher(
         val prior = activeBatches[conversationId].orEmpty()
         // newline-v1 contributes one UTF-8 byte between each pair of members.
         val priorBytes = prior.sumOf { it.text.toByteArray(Charsets.UTF_8).size } + prior.size
-        if (priorBytes + bytes > policy.maximumBytes) { flush(conversationId); policy=this.policy; batchPolicies[conversationId]=policy }
+        // 超过字节上限或成员数上限都要先封存已有成员，再让这一条自己开始新批次。
+        if (prior.isNotEmpty() &&
+            (priorBytes + bytes > policy.maximumBytes || prior.size >= policy.maximumMembers)) {
+            flush(conversationId); policy=this.policy; batchPolicies[conversationId]=policy
+        }
         activeScopes[conversationId] = targetScope
         val list = activeBatches.getOrPut(conversationId) { mutableListOf() }
         if (list.isEmpty()) {
@@ -66,12 +79,12 @@ class DebounceBatcher(
         }
         list.add(message)
 
+        // 零时长意味着用户要求立即发送：不进等待队列，本次提交就是唯一一条成员。
         if (policy.delay == Duration.ZERO || list.size >= policy.maximumMembers || bytes >= policy.maximumBytes) {
             flush(conversationId)
             return
         }
 
-        if (policy.mode == DebounceMode.FIXED_WINDOW && activeJobs[conversationId]?.isActive == true) return
         activeJobs[conversationId]?.cancel()
         activeJobs[conversationId] = scope.launch {
             delay(policy.delay)

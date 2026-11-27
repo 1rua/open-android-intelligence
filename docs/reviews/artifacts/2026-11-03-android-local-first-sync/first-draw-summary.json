@@ -1,0 +1,168 @@
+{
+  "metric": "openThread to Compose LazyColumn drawContent completion; not physical display or image visibility",
+  "percentile": "nearest-rank",
+  "lowSampleWarning": "All groups have few samples; P95 is unstable.",
+  "baselineCommit": "733c6a3079cfc33ad3f6f7aa01b7bf242b782ee4",
+  "baselineMeasurementPatchSha256": "26237eab93fb6cb1bf96961b3a85edb40e583694cf34a6c620fce5e5bde8564e",
+  "baselineMeasurementApkSha256": "0cfc2b4654e34c64d0b564fbf3d67a7a93bd7be0f83de2cc5de6776c8bbf9d59",
+  "candidateCommit": "d7036614d30fd4e18c99109e2c2930fdddade3a7",
+  "candidateApkSha256": "6f930c4c18aac17bde3b394afcf0e5b41799d8ebd79f57c6bef2bd452e4fdd02",
+  "coreForPerformance": "733c6a30 synthetic fixture",
+  "baselineMemory": "N/A: no per-conversation memory snapshot path",
+  "baselineRemote": "N/A: Android CLI timeout; no valid sample",
+  "baselineLocal": {
+    "minimumPerSource": 20,
+    "method": "Compose draw completion, nearest-rank P95",
+    "sources": {
+      "memory": {
+        "count": 0,
+        "samplesMs": [],
+        "sufficient": false,
+        "medianMs": null,
+        "p95Ms": null,
+        "lowSampleWarning": true
+      },
+      "local": {
+        "count": 10,
+        "samplesMs": [
+          846.150494,
+          1562.224902,
+          893.735273,
+          833.70034,
+          1536.145495,
+          1599.255548,
+          2055.013806,
+          1550.026537,
+          1417.403936,
+          1432.474048
+        ],
+        "sufficient": false,
+        "medianMs": 1484.3097715,
+        "p95Ms": 2055.013806,
+        "lowSampleWarning": true
+      },
+      "remote": {
+        "count": 0,
+        "samplesMs": [],
+        "sufficient": false,
+        "medianMs": null,
+        "p95Ms": null,
+        "lowSampleWarning": true
+      }
+    },
+    "rejected": {}
+  },
+  "candidate1Local": {
+    "minimumPerSource": 20,
+    "method": "Compose draw completion, nearest-rank P95",
+    "sources": {
+      "memory": {
+        "count": 0,
+        "samplesMs": [],
+        "sufficient": false,
+        "medianMs": null,
+        "p95Ms": null,
+        "lowSampleWarning": true
+      },
+      "local": {
+        "count": 5,
+        "samplesMs": [
+          834.129981,
+          871.873129,
+          496.56027,
+          457.287534,
+          488.070523
+        ],
+        "sufficient": false,
+        "medianMs": 496.56027,
+        "p95Ms": 871.873129,
+        "lowSampleWarning": true
+      },
+      "remote": {
+        "count": 0,
+        "samplesMs": [],
+        "sufficient": false,
+        "medianMs": null,
+        "p95Ms": null,
+        "lowSampleWarning": true
+      }
+    },
+    "rejected": {}
+  },
+  "candidate1Memory": {
+    "minimumPerSource": 20,
+    "method": "Compose draw completion, nearest-rank P95",
+    "sources": {
+      "memory": {
+        "count": 5,
+        "samplesMs": [
+          43.092166,
+          30.651367,
+          44.507216,
+          27.385216,
+          54.486572
+        ],
+        "sufficient": false,
+        "medianMs": 43.092166,
+        "p95Ms": 54.486572,
+        "lowSampleWarning": true
+      },
+      "local": {
+        "count": 1,
+        "samplesMs": [
+          567.919029
+        ],
+        "sufficient": false,
+        "medianMs": 567.919029,
+        "p95Ms": 567.919029,
+        "lowSampleWarning": true
+      },
+      "remote": {
+        "count": 0,
+        "samplesMs": [],
+        "sufficient": false,
+        "medianMs": null,
+        "p95Ms": null,
+        "lowSampleWarning": true
+      }
+    },
+    "rejected": {}
+  },
+  "candidate1Remote": {
+    "minimumPerSource": 20,
+    "method": "Compose draw completion, nearest-rank P95",
+    "sources": {
+      "memory": {
+        "count": 0,
+        "samplesMs": [],
+        "sufficient": false,
+        "medianMs": null,
+        "p95Ms": null,
+        "lowSampleWarning": true
+      },
+      "local": {
+        "count": 0,
+        "samplesMs": [],
+        "sufficient": false,
+        "medianMs": null,
+        "p95Ms": null,
+        "lowSampleWarning": true
+      },
+      "remote": {
+        "count": 5,
+        "samplesMs": [
+          500.434851,
+          789.642265,
+          638.421611,
+          583.968191,
+          690.306673
+        ],
+        "sufficient": false,
+        "medianMs": 638.421611,
+        "p95Ms": 789.642265,
+        "lowSampleWarning": true
+      }
+    },
+    "rejected": {}
+  }
+}

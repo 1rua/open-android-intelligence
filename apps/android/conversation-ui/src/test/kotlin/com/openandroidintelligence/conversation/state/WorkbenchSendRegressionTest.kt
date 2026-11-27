@@ -1,11 +1,13 @@
 package com.openandroidintelligence.conversation.state
 
+import com.openandroidintelligence.conversation.batch.DebouncePolicy
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import java.io.ByteArrayInputStream
@@ -13,6 +15,7 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.test.*
 import org.junit.Assert.*
 import org.junit.Test
+import kotlin.time.Duration.Companion.milliseconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchSendRegressionTest {
@@ -46,6 +49,84 @@ class WorkbenchSendRegressionTest {
         assertEquals(listOf("att_restored"),repository.sent.single().attachmentIds)
         controller.cancel()
     }
+    @Test fun editingTheNextDraftDoesNotWithdrawAFrozenAttachmentSubmission() = runTest {
+        val repository = RecordingRepository()
+        val upload = kotlinx.coroutines.flow.MutableStateFlow(
+            AttachmentDraftState(AttachmentDraftId("draft_1"), AttachmentState.UPLOADING),
+        )
+        val coordinator = object : RecordingAttachmentCoordinator() {
+            override suspend fun prepare(selection: LocalAttachmentSelection) =
+                super.prepare(selection).copy(state = AttachmentState.UPLOADING)
+            override fun observe(draftId: String) = upload
+        }
+        val controller = controllerWithAttachments(repository, coordinator)
+        try {
+            runCurrent()
+            controller.openThread("conv_attachment")
+            runCurrent()
+            controller.addAttachment(LocalAttachmentSelection("report.pdf", "application/pdf",
+                AttachmentContentSource { ByteArrayInputStream(byteArrayOf(1, 2, 3)) }))
+            runCurrent()
+            controller.editDraft("已冻结的附件问题")
+            controller.sendDraft()
+            val before = (controller.state.value.timeline as Loadable.Ready).value.single { it.isUser }
+            assertEquals(ComposerState.WAITING_ATTACHMENTS, controller.state.value.composer)
+            assertTrue(repository.sent.isEmpty())
+
+            controller.editDraft("下一条尚未发送的草稿")
+            runCurrent()
+            val pending = (controller.state.value.timeline as Loadable.Ready).value.single { it.isUser }
+            assertEquals("编辑新草稿不能移除上一条冻结气泡", before.key, pending.key)
+            assertEquals("已冻结的附件问题", pending.text)
+            assertEquals("下一条尚未发送的草稿", controller.state.value.draft)
+            assertTrue(repository.sent.isEmpty())
+
+            upload.value = AttachmentDraftState(AttachmentDraftId("draft_1"), AttachmentState.VERIFIED, progress = 1f)
+            runCurrent()
+            assertEquals(listOf("已冻结的附件问题"), repository.sent.map { it.text })
+            assertEquals(before.clientMessageId, repository.sent.single().clientMessageId)
+            assertEquals(listOf("att_draft_1"), repository.sent.single().attachmentIds)
+            assertEquals("下一条尚未发送的草稿", controller.state.value.draft)
+        } finally {
+            controller.close()
+        }
+    }
+
+    @Test fun anExplicitCancelStillWithdrawsAFrozenAttachmentSubmission() = runTest {
+        val repository = RecordingRepository()
+        val upload = kotlinx.coroutines.flow.MutableStateFlow(
+            AttachmentDraftState(AttachmentDraftId("draft_1"), AttachmentState.UPLOADING),
+        )
+        val coordinator = object : RecordingAttachmentCoordinator() {
+            override suspend fun prepare(selection: LocalAttachmentSelection) =
+                super.prepare(selection).copy(state = AttachmentState.UPLOADING)
+            override fun observe(draftId: String) = upload
+        }
+        val controller = controllerWithAttachments(repository, coordinator)
+        try {
+            runCurrent()
+            controller.openThread("conv_attachment")
+            runCurrent()
+            controller.addAttachment(LocalAttachmentSelection("report.pdf", "application/pdf",
+                AttachmentContentSource { ByteArrayInputStream(byteArrayOf(1, 2, 3)) }))
+            runCurrent()
+            controller.editDraft("已冻结的附件问题")
+            controller.sendDraft()
+            controller.editDraft("下一条尚未发送的草稿")
+            controller.cancelPendingSubmission()
+            runCurrent()
+            assertEquals("显式取消只撤回冻结消息，不能覆盖新草稿", "下一条尚未发送的草稿", controller.state.value.draft)
+            assertEquals(ComposerState.EDITING, controller.state.value.composer)
+            assertTrue((controller.state.value.timeline as? Loadable.Ready)?.value.orEmpty().none { it.isUser })
+
+            upload.value = AttachmentDraftState(AttachmentDraftId("draft_1"), AttachmentState.VERIFIED, progress = 1f)
+            runCurrent()
+            assertTrue("显式取消后上传完成也不能自动发送", repository.sent.isEmpty())
+        } finally {
+            controller.close()
+        }
+    }
+
     @Test fun acceptedHttpMessageRemainsQueuedUntilMonotonicAgentStatusArrives() = runTest {
         val events = MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity = 8)
         val repository = object : RecordingRepository() {
@@ -2060,6 +2141,115 @@ class WorkbenchSendRegressionTest {
         controller.cancel()
     }
 
+    @Test fun `终态快照在发送原子持久化完成前到达时不得在pendingBatch残留已确认用户消息占位`() = runTest {
+        val eventFlow = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        var pausePersistence = false
+        val pausedWrites = ArrayDeque<Runnable>()
+        val gatedPersistenceDispatcher = object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+                if (pausePersistence) pausedWrites.addLast(block) else block.run()
+            }
+        }
+        val snapshot = kotlinx.coroutines.flow.MutableStateFlow(GenerationSnapshot(null, GenerationState.IDLE, "conv_1"))
+        val repository = object : RecordingRepository() {
+            override val generationSnapshot: kotlinx.coroutines.flow.StateFlow<GenerationSnapshot> = snapshot
+            override fun observeEvents(scope: ConversationScope) = eventFlow
+            override suspend fun submitMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance {
+                sent += message
+                return MessageAcceptance("user-a", message.clientMessageId.value, "turn-a", authoritative = false)
+            }
+        }
+        val atomsByThread = linkedMapOf<String, List<LocalSendAtom>>()
+        var checkpoint: WorkbenchCheckpoint? = null
+        val persistence = object : WorkbenchPersistence {
+            override fun load() = checkpoint
+            override fun save(checkpointValue: WorkbenchCheckpoint) { checkpoint = checkpointValue }
+            override fun loadSendAtoms(conversationId: String) = atomsByThread[conversationId].orEmpty()
+            override fun saveSendAtoms(conversationId: String, atoms: List<LocalSendAtom>) {
+                atomsByThread[conversationId] = atoms.toList()
+            }
+        }
+        val controller = WorkbenchController(
+            workbenchTestScope(),
+            repository,
+            object : AgentCommandCatalogRepository {
+                override suspend fun get(gatewayId: String, languageCode: String) = AgentCommandCatalog(CatalogVersion("v1"), emptyList())
+            },
+            { ConversationScope("profile", "gateway", "account", "install") },
+            persistence = persistence,
+            persistenceDispatcher = gatedPersistenceDispatcher,
+            replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
+        )
+        runCurrent()
+        controller.openThread("conv_1")
+        runCurrent()
+
+        controller.editDraft("并发确认消息")
+        controller.sendDraft()
+        runCurrent()
+
+        val clientId = controller.state.value.pendingBatch.single().key.removePrefix("local_")
+        // 模拟原生用户回声先到但尚未携带 clientMessageId。
+        eventFlow.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_user_raw",
+                occurredAt = 1000L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "user-a",
+                    sender = "user",
+                    parts = listOf(MessagePart.Text("并发确认消息")),
+                    timestamp = 1000L,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_1"),
+                    generationId = "turn-a",
+                ),
+            ),
+        )
+        runCurrent()
+
+        // 暂停 acceptSendAtom 初次持久化调度：即使终态快照提前到达，也不得在事件落盘完成前放出半结算状态。
+        pausePersistence = true
+        val acceptedJob = launch {
+            eventFlow.emit(
+                VerifiedConversationEvent.MessageAccepted(
+                    eventId = "user-accepted:$clientId",
+                    occurredAt = 1001L,
+                    messageId = "user-a",
+                    correlationId = clientId,
+                    conversationId = ConversationId("conv_1"),
+                ),
+            )
+        }
+        runCurrent()
+        assertTrue("应已停在 acceptSendAtom 持久化调度挂起点", pausedWrites.isNotEmpty())
+
+        // 持久化写盘尚未完成时，generationJob 收到终态 COMPLETED，应等待在途事件应用完毕再结算。
+        snapshot.value = GenerationSnapshot("turn-a", GenerationState.COMPLETED, "conv_1")
+        runCurrent()
+        assertNotEquals(GenerationState.COMPLETED, controller.state.value.generation)
+
+        pausePersistence = false
+        while (pausedWrites.isNotEmpty()) {
+            while (pausedWrites.isNotEmpty()) pausedWrites.removeFirst().run()
+            runCurrent()
+        }
+        acceptedJob.join()
+
+        assertEquals(GenerationState.COMPLETED, controller.state.value.generation)
+        val entries = (controller.state.value.timeline as Loadable.Ready).value
+        val settledUser = entries.single { it.key == "user-a" && it.isUser }
+        assertEquals(ClientMessageId(clientId), settledUser.clientMessageId)
+        assertEquals(AgentMessageStatus.DELIVERED, settledUser.messageStatus)
+        assertFalse(
+            "确认原生用户身份后对应发送成员不应残留待接收占位",
+            controller.state.value.pendingBatch.any { it.key.removePrefix("local_") == clientId },
+        )
+        assertTrue(controller.state.value.pendingBatch.isEmpty())
+        controller.cancel()
+        coroutineContext.cancelChildren()
+    }
+
     private fun TestScope.controllerWithAttachments(
         repository: RecordingRepository,
         coordinator: AttachmentDraftCoordinator,
@@ -2123,6 +2313,8 @@ class WorkbenchSendRegressionTest {
         },
         { ConversationScope("profile", "gateway", "account", "install") },
         supportsMessageBatches = true,
+        // 客户端默认不合并；这些用例验证窗口内的聚合，因此显式给一个短窗口。
+        debouncePolicy = DebouncePolicy(delay = 1_500.milliseconds),
         replyTimeouts = replyTimeouts,
     )
 
@@ -2149,7 +2341,7 @@ class WorkbenchSendRegressionTest {
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation {
             creates++
             if (failCreate) error("CREATE_FAILED:offline")
-            return Conversation(ConversationId("conv_created"), "新对话", 0)
+            return Conversation(ConversationId("conv_created"), "", 0)
         }
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
         override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance {

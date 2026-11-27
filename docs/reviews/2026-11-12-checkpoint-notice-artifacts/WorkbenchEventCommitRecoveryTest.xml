@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.openandroidintelligence.conversation.state.WorkbenchEventCommitRecoveryTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-11-12T00:06:10" hostname="djbd-cachyos" time="0.021">
+  <properties/>
+  <testcase name="persistentStorageFailureStopsWithAVisibleErrorAndReentryCanApplyTheUnmarkedEvent" classname="com.openandroidintelligence.conversation.state.WorkbenchEventCommitRecoveryTest" time="0.006"/>
+  <testcase name="normalFlushKeepsReceivingTheNextTerminalEvent" classname="com.openandroidintelligence.conversation.state.WorkbenchEventCommitRecoveryTest" time="0.007"/>
+  <testcase name="aLogicFailureStopsImmediatelyAndDoesNotMarkTheEventHandled" classname="com.openandroidintelligence.conversation.state.WorkbenchEventCommitRecoveryTest" time="0.004"/>
+  <testcase name="oneFlushFailureCannotPermanentlyStopReceivingCriticalEvents" classname="com.openandroidintelligence.conversation.state.WorkbenchEventCommitRecoveryTest" time="0.004"/>
+  <system-out><![CDATA[BUG08_WORKBENCH injectFailure=false flushFailures=0 eventSubscribers=1 finalVisible=true
+BUG08_WORKBENCH injectFailure=true flushFailures=1 eventSubscribers=1 finalVisible=true
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

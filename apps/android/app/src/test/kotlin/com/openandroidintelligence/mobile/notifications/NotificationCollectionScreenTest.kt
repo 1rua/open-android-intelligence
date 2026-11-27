@@ -2,6 +2,16 @@ package com.openandroidintelligence.mobile.notifications
 
 import android.app.Application
 import android.content.Context
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.testTag
+import com.openandroidintelligence.mobile.SettingsPresentation
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsOff
@@ -13,10 +23,10 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
-import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onAllNodesWithTag
-import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
@@ -63,6 +73,10 @@ class NotificationCollectionScreenTest {
 
         override fun snapshot(): NotificationPolicySnapshot = state.value
         override fun observe(): Flow<NotificationPolicySnapshot> = state
+
+        fun setDeliveryStatus(outboxAvailable: Boolean, dispatcherWired: Boolean) {
+            state.value = state.value.copy(outboxAvailable = outboxAvailable, deliveryDispatcherWired = dispatcherWired)
+        }
 
         override fun update(request: NotificationPolicyUpdate): NotificationPolicyUpdateOutcome {
             updates += request
@@ -147,12 +161,26 @@ class NotificationCollectionScreenTest {
         compose.waitForIdle()
     }
 
-    private fun waitForApp(packageId: String) {
+    /** 顶部操作和应用行都是懒列表条目，异步加载期间目标还可能尚不存在。 */
+    private fun scrollPickerTo(matcher: androidx.compose.ui.test.SemanticsMatcher) {
         compose.waitUntil(timeoutMillis = 5_000) {
-            compose.onAllNodesWithTag("notification-app-list").fetchSemanticsNodes().isNotEmpty()
+            runCatching {
+                compose.onNodeWithTag("notification-app-list").performScrollToNode(matcher)
+                compose.onNode(matcher).performScrollTo().assertIsDisplayed()
+            }.isSuccess
         }
-        compose.onNodeWithTag("notification-app-list")
-            .performScrollToNode(hasTestTag("notification-app-$packageId"))
+    }
+
+    private fun waitForApp(packageId: String) {
+        scrollPickerTo(hasTestTag("notification-app-$packageId"))
+    }
+
+    /** Lazy rows outside the viewport have no semantics node, so scroll them into view first. */
+    private fun assertAppToggle(packageId: String, enabled: Boolean) {
+        waitForApp(packageId)
+        compose.onNodeWithTag("notification-app-$packageId").let { row ->
+            if (enabled) row.assertIsOn() else row.assertIsOff()
+        }
     }
 
     @Test
@@ -160,7 +188,7 @@ class NotificationCollectionScreenTest {
         NotificationControlRegistry.reset()
         render(NotificationControlRegistry.policyPort(), NotificationControlRegistry.bindingPort())
 
-        compose.onNodeWithText("本机暂不支持读取通知").assertIsDisplayed()
+        compose.onNodeWithText("暂不支持读取通知").assertIsDisplayed()
         compose.onNodeWithText("允许读取通知").assertDoesNotExist()
         compose.onNodeWithText("前往系统设置开启通知使用权").assertDoesNotExist()
         compose.onNodeWithText("读取通知的标题与正文").assertDoesNotExist()
@@ -215,7 +243,7 @@ class NotificationCollectionScreenTest {
         render(policy, binding)
         scrollTo(hasText("前往系统设置开启通知使用权"))
         compose.onNodeWithText("前往系统设置开启通知使用权").performClick()
-        compose.onNodeWithText("无法打开系统通知使用权设置，请到 Android 系统设置里手动开启本应用的通知使用权。").assertExists()
+        compose.onNodeWithText("无法打开系统设置，请前往系统设置手动开启通知使用权。").assertExists()
         assertEquals(0, policy.updates.size)
     }
 
@@ -244,6 +272,74 @@ class NotificationCollectionScreenTest {
     }
 
     @Test
+    fun legacy_delivery_status_tracks_the_port_without_changing_policy() {
+        val policy = FakePolicyPort(installedSnapshot(mode = NotificationDeliveryMode.AUTO_SEND))
+        render(policy, FakeBindingPort())
+        scrollTo(hasTestTag("notification-legacy-delivery-status"))
+        compose.onNodeWithText("加密待发队列不可用，旧通知无法排队投递。").assertExists()
+        compose.runOnIdle { policy.setDeliveryStatus(outboxAvailable = true, dispatcherWired = false) }
+        compose.onNodeWithText("加密待发队列已装配；最近创建的旧通知运行时未装配投递组件，或尚未启动监听。").assertExists()
+        compose.runOnIdle { policy.setDeliveryStatus(outboxAvailable = true, dispatcherWired = true) }
+        compose.onNodeWithText("最近创建的旧通知运行时已装配投递组件；这不表示当前正在投递或投递成功。").assertExists()
+        assertTrue(policy.updates.isEmpty())
+        assertEquals(NotificationDeliveryMode.AUTO_SEND, policy.snapshot().mode)
+    }
+
+    @Test
+    @Config(qualifiers = "w320dp-h600dp")
+    fun embedded_content_uses_parent_scroll_and_sidebar_picker_preserves_selection() {
+        val policy = FakePolicyPort(installedSnapshot(packageIds = listOf("com.example.mail")))
+        val binding = FakeBindingPort()
+        val loader = { localApps }
+        compose.setContent {
+            Box(Modifier.width(320.dp).fillMaxHeight()) {
+                Column(Modifier.verticalScroll(rememberScrollState()).testTag("parent-scroll")) {
+                    NotificationCollectionScreen(policy, binding, {},
+                        loadInstalledApps = loader, presentation = SettingsPresentation.SIDEBAR, embedded = true)
+                }
+            }
+        }
+        compose.onNodeWithTag("notification-collection-screen").assertDoesNotExist()
+        compose.onNodeWithText("通知读取范围").assertDoesNotExist()
+        compose.onNodeWithTag("notification-select-apps").performScrollTo().performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag("notification-picker-sidebar").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("notification-picker-sidebar").assertExists()
+        waitForApp("com.example.chat")
+        compose.onNodeWithTag("notification-app-com.example.chat").performClick()
+        compose.onNodeWithTag("notification-app-save").performClick()
+        compose.waitForIdle()
+        assertEquals(listOf("com.example.chat", "com.example.mail"), policy.snapshot().packageIds)
+    }
+
+    @Test
+    @Config(qualifiers = "w320dp-h320dp")
+    fun sidebar_picker_search_failure_and_retry_keep_draft_and_remain_reachable() {
+        val shouldFail = AtomicBoolean(true)
+        val policy = FakePolicyPort(installedSnapshot(packageIds = listOf("com.example.mail")))
+        val binding = FakeBindingPort()
+        val loader = {
+            if (shouldFail.get()) throw IllegalStateException("测试读取失败")
+            localApps
+        }
+        compose.setContent {
+            NotificationCollectionScreen(policy, binding, {},
+                loadInstalledApps = loader, presentation = SettingsPresentation.SIDEBAR)
+        }
+        openPicker()
+        compose.onNodeWithTag("notification-picker-sidebar").assertExists()
+        scrollPickerTo(hasTestTag("notification-app-search"))
+        compose.onNodeWithTag("notification-app-search").performTextInput("聊天")
+        scrollPickerTo(hasText("重试"))
+        shouldFail.set(false)
+        compose.onNodeWithText("重试").performClick()
+        waitForApp("com.example.chat")
+        compose.onNodeWithTag("notification-app-com.example.chat").performClick()
+        compose.onNodeWithTag("notification-app-save").performClick()
+        compose.waitForIdle()
+        assertEquals(listOf("com.example.chat", "com.example.mail"), policy.snapshot().packageIds)
+    }
+
+    @Test
     fun selecting_installed_apps_saves_packages_and_allows_removal() {
         val policy = FakePolicyPort(installedSnapshot(packageIds = listOf("com.example.mail")))
         render(policy, FakeBindingPort())
@@ -251,7 +347,9 @@ class NotificationCollectionScreenTest {
 
         openPicker()
         waitForApp("com.example.chat")
+        waitForApp("com.example.mail")
         compose.onNodeWithTag("notification-app-com.example.mail").assertIsOn()
+        waitForApp("com.example.chat")
         compose.onNodeWithTag("notification-app-com.example.chat").performClick()
         assertTrue("勾选时不应提前保存策略", policy.updates.isEmpty())
         compose.onNodeWithTag("notification-app-save").performClick()
@@ -283,6 +381,7 @@ class NotificationCollectionScreenTest {
         openPicker()
         waitForApp("com.example.chat")
         compose.onNodeWithTag("notification-app-com.example.chat").assertIsOff()
+        waitForApp("com.example.mail")
         compose.onNodeWithTag("notification-app-com.example.mail").assertIsOn()
     }
 
@@ -292,12 +391,18 @@ class NotificationCollectionScreenTest {
         render(policy, FakeBindingPort())
         openPicker()
         waitForApp("com.example.mail")
+        scrollPickerTo(hasTestTag("notification-app-search"))
         compose.onNodeWithTag("notification-app-search").performTextInput("邮件")
         compose.onNodeWithTag("notification-app-com.example.chat").assertDoesNotExist()
+        waitForApp("com.example.mail")
         compose.onNodeWithTag("notification-app-com.example.mail").performClick()
+        waitForApp("com.example.othermail")
         compose.onNodeWithTag("notification-app-com.example.othermail").performClick()
+        scrollPickerTo(hasTestTag("notification-app-search"))
         compose.onNodeWithTag("notification-app-search").performTextClearance()
+        scrollPickerTo(hasTestTag("notification-app-search"))
         compose.onNodeWithTag("notification-app-search").performTextInput("COM.EXAMPLE.CHAT")
+        waitForApp("com.example.chat")
         compose.onNodeWithTag("notification-app-com.example.chat").assertIsDisplayed()
         compose.onNodeWithTag("notification-app-save").performClick()
         compose.waitForIdle()
@@ -328,8 +433,8 @@ class NotificationCollectionScreenTest {
         compose.waitForIdle()
 
         assertTrue(policy.snapshot().packageIds.isEmpty())
-        scrollTo(hasText("还没有选择任何应用：没有选择就不会读取任何通知。", substring = true))
-        compose.onNodeWithText("还没有选择任何应用：没有选择就不会读取任何通知。", substring = true)
+        scrollTo(hasText("未选择应用时不会读取任何通知。请点击上方按钮添加应用。", substring = true))
+        compose.onNodeWithText("未选择应用时不会读取任何通知。请点击上方按钮添加应用。", substring = true)
             .assertIsDisplayed()
     }
 
@@ -342,13 +447,13 @@ class NotificationCollectionScreenTest {
             localApps
         }
         openPicker()
-        compose.waitUntil(timeoutMillis = 5_000) {
-            compose.onAllNodesWithText("无法读取本机应用列表，请重试。").fetchSemanticsNodes().isNotEmpty()
-        }
+        scrollPickerTo(hasText("无法读取本机应用列表，请重试。"))
+        compose.onNodeWithText("无法读取本机应用列表，请重试。").assertIsDisplayed()
         compose.onNodeWithTag("notification-app-save").assertIsNotEnabled()
         assertTrue(policy.updates.isEmpty())
 
         shouldFail.set(false)
+        scrollPickerTo(hasText("重试"))
         compose.onNodeWithText("重试").performClick()
         waitForApp("com.example.mail")
         compose.onNodeWithTag("notification-app-com.example.mail").assertIsOn()
@@ -358,13 +463,39 @@ class NotificationCollectionScreenTest {
     }
 
     @Test
+    @Config(qualifiers = "w320dp-h320dp")
+    fun short_picker_window_can_reach_search_and_retry_after_loading_failure() {
+        val shouldFail = AtomicBoolean(true)
+        val policy = FakePolicyPort(installedSnapshot(packageIds = emptyList()))
+        render(policy, FakeBindingPort()) {
+            if (shouldFail.get()) throw IllegalStateException("测试读取失败")
+            localApps
+        }
+        openPicker()
+
+        scrollPickerTo(hasText("无法读取本机应用列表，请重试。"))
+        compose.onNodeWithText("无法读取本机应用列表，请重试。").assertIsDisplayed()
+        compose.onNodeWithTag("notification-app-save").assertIsNotEnabled()
+        scrollPickerTo(hasTestTag("notification-app-search"))
+        compose.onNodeWithTag("notification-app-search").assertIsDisplayed().performTextInput("聊天")
+        scrollPickerTo(hasText("重试"))
+        compose.onNodeWithText("重试").assertIsDisplayed()
+        shouldFail.set(false)
+        compose.onNodeWithText("重试").performClick()
+
+        waitForApp("com.example.chat")
+        compose.onNodeWithTag("notification-app-com.example.chat").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("notification-app-save").performClick()
+        compose.waitForIdle()
+        assertEquals(listOf("com.example.chat"), policy.snapshot().packageIds)
+    }
+
+    @Test
     fun empty_application_query_has_an_honest_empty_state() {
         val policy = FakePolicyPort(installedSnapshot(packageIds = emptyList()))
         render(policy, FakeBindingPort(), appLoader = { emptyList() })
         openPicker()
-        compose.waitUntil(timeoutMillis = 5_000) {
-            compose.onAllNodesWithText("未找到可选择的已安装应用。").fetchSemanticsNodes().isNotEmpty()
-        }
+        scrollPickerTo(hasText("未找到可选择的已安装应用。"))
         compose.onNodeWithText("未找到可选择的已安装应用。").assertIsDisplayed()
         compose.onNodeWithContentDescription("取消选择").performClick()
         assertTrue(policy.updates.isEmpty())
@@ -382,6 +513,7 @@ class NotificationCollectionScreenTest {
         openPicker()
         waitForApp("com.example.chat")
         compose.onNodeWithTag("notification-app-com.example.chat").performClick()
+        scrollPickerTo(hasTestTag("notification-app-search"))
         compose.onNodeWithTag("notification-app-search").performTextInput("聊天")
 
         restoration.emulateSavedInstanceStateRestore()
@@ -409,13 +541,18 @@ class NotificationCollectionScreenTest {
         compose.onNodeWithTag("notification-app-save").performClick()
         compose.waitForIdle()
 
+        scrollPickerTo(hasText("设置没有保存成功：REVISION_STALE"))
         compose.onNodeWithText("设置没有保存成功：REVISION_STALE").assertIsDisplayed()
         assertEquals(listOf("com.example.othermail"), policy.snapshot().packageIds)
         assertEquals(5uL, policy.updates.last().expectedRevision)
+        waitForApp("com.example.chat")
         compose.onNodeWithTag("notification-app-com.example.chat").assertIsOn()
+        scrollPickerTo(hasText("重新载入已保存选择"))
         compose.onNodeWithText("重新载入已保存选择").performClick()
+        waitForApp("com.example.chat")
         compose.onNodeWithTag("notification-app-com.example.chat").assertIsOff()
-        compose.onNodeWithTag("notification-app-com.example.othermail").assertIsOn()
+        assertAppToggle("com.example.othermail", enabled = true)
+        waitForApp("com.example.chat")
         compose.onNodeWithTag("notification-app-com.example.chat").performClick()
         compose.onNodeWithTag("notification-app-save").performClick()
         compose.waitForIdle()
@@ -432,5 +569,50 @@ class NotificationCollectionScreenTest {
         compose.waitForIdle()
 
         compose.onNodeWithText("设置没有保存成功：REVISION_STALE").assertIsDisplayed()
+    }
+
+    @Test
+    fun select_all_and_invert_selection_work_correctly() {
+        val policy = FakePolicyPort(installedSnapshot(packageIds = listOf("com.example.mail")))
+        render(policy, FakeBindingPort())
+        openPicker()
+        waitForApp("com.example.chat")
+
+        // 初始已选 mail，未选 chat 与 othermail
+        assertAppToggle("com.example.mail", enabled = true)
+        assertAppToggle("com.example.chat", enabled = false)
+        assertAppToggle("com.example.othermail", enabled = false)
+
+        // 点击全选
+        scrollPickerTo(hasTestTag("notification-app-select-all"))
+        compose.onNodeWithTag("notification-app-select-all").performClick()
+        compose.waitForIdle()
+        assertAppToggle("com.example.mail", enabled = true)
+        assertAppToggle("com.example.chat", enabled = true)
+        assertAppToggle("com.example.othermail", enabled = true)
+
+        // 点击反选（全选状态反选后应全部取消勾选）
+        scrollPickerTo(hasTestTag("notification-app-invert-selection"))
+        compose.onNodeWithTag("notification-app-invert-selection").performClick()
+        compose.waitForIdle()
+        assertAppToggle("com.example.mail", enabled = false)
+        assertAppToggle("com.example.chat", enabled = false)
+        assertAppToggle("com.example.othermail", enabled = false)
+
+        // 勾选 chat，再点击反选，chat 变 off，mail 和 othermail 变 on
+        waitForApp("com.example.chat")
+        compose.onNodeWithTag("notification-app-com.example.chat").performClick()
+        compose.onNodeWithTag("notification-app-com.example.chat").assertIsOn()
+        scrollPickerTo(hasTestTag("notification-app-invert-selection"))
+        compose.onNodeWithTag("notification-app-invert-selection").performClick()
+        compose.waitForIdle()
+        assertAppToggle("com.example.chat", enabled = false)
+        assertAppToggle("com.example.mail", enabled = true)
+        assertAppToggle("com.example.othermail", enabled = true)
+
+        // 保存并验证策略
+        compose.onNodeWithTag("notification-app-save").performClick()
+        compose.waitForIdle()
+        assertEquals(listOf("com.example.mail", "com.example.othermail"), policy.snapshot().packageIds)
     }
 }

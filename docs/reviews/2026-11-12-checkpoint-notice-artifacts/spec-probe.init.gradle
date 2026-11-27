@@ -1,0 +1,4 @@
+gradle.projectsEvaluated {
+    def target = gradle.rootProject.project(':conversation-ui')
+    target.android.sourceSets.getByName('test').java.srcDir(gradle.rootProject.file(System.getProperty('oai.specProbeSource')))
+}

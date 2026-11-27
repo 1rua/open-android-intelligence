@@ -17,6 +17,10 @@ import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.launch
 
 /**
  * 极简 Android 宿主组合根。
@@ -26,7 +30,7 @@ import kotlinx.coroutines.SupervisorJob
  * 2. 零插件状态下仍具备完整的 Gateway v2 连接、多账号与对话附件支持；
  * 3. 平台内核（PluginKernel）独立初始化并管理受保护插件与审计。
  */
-class OpenAndroidIntelligenceApplication : Application() {
+class OpenAndroidIntelligenceApplication : Application(), RemoteStandbyOwner {
 
     /** User controlled shell appearance, kept outside all Gateway secrets. */
     val appearancePreferences: AppearancePreferences by lazy {
@@ -58,6 +62,9 @@ class OpenAndroidIntelligenceApplication : Application() {
     lateinit var pluginHost: com.openandroidintelligence.mobile.plugins.ProductionPluginHost
         private set
 
+    var devicePush: DevicePushComposition? = null
+        private set
+
     private lateinit var auditSink: PersistentAuditSink
 
     /**
@@ -70,32 +77,43 @@ class OpenAndroidIntelligenceApplication : Application() {
      */
     val emergencyStoppedCount = kotlinx.coroutines.flow.MutableStateFlow(0)
 
-    /** 进程级连接运行时：登录、协商、会话建立与工作台装配。 */
-    private val gatewayRuntimeOwner = lazy {
-        GatewayRuntime(
-            context = this,
-            scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-            pairingGrants = pairingGrants,
-            auditStore = auditStore,
-            pluginHost = pluginHost,
-        )
+    /** 进程级 Remote 连接运行时。 */
+    private val remoteScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    internal val backgroundRemoteRuntime: RemoteRuntime by lazy {
+        // 后台待命可先创建此实例；普通冷启动由下面面向 UI 的 getter 显式触发。
+        RemoteRuntime(this, remoteScope, pluginHost, pairingGrants, coldStartOnInit = false)
     }
-    val gatewayRuntime: GatewayRuntime by gatewayRuntimeOwner
+
+    /** 既有 UI 调用保持原样；首次读取时同步准备缓存首帧，之后保持幂等。 */
+    val remoteRuntime: RemoteRuntime
+        get() = backgroundRemoteRuntime.also { it.prepareForUi() }
 
     val pluginRuntimesWired: Boolean get() = ::pluginHost.isInitialized && pluginHost.runtimes.isNotEmpty()
 
     private val gatewayNetworkMonitor by lazy {
-        GatewayNetworkMonitor(this) { gatewayRuntime.onNetworkAvailable() }
+        GatewayNetworkMonitor(
+            context = this,
+            onAvailable = { backgroundRemoteRuntime.onNetworkAvailable() },
+            onLost = { backgroundRemoteRuntime.onNetworkLost() },
+            onRouteChanged = { backgroundRemoteRuntime.onNetworkAvailable(routeChanged = true) },
+        )
+    }
+
+    override suspend fun restoreHostStandby(): kotlinx.coroutines.flow.StateFlow<Boolean> {
+        val account = backgroundRemoteRuntime.accountRuntime
+        account.restoreForStandby()
+        if (account.hostStandby.value) gatewayNetworkMonitor.start()
+        return account.hostStandby
     }
 
     /** Only an eligible, already foregrounded service reaches this recovery path. */
     internal fun onBackgroundSessionRestarted() {
-        gatewayRuntime.onBackgroundSessionRestarted()
+        backgroundRemoteRuntime.onBackgroundSessionRestarted()
         gatewayNetworkMonitor.start()
     }
 
     internal fun onBackgroundSessionStopped() {
-        if (gatewayRuntimeOwner.isInitialized()) gatewayRuntime.onBackgroundSessionStopped()
+        backgroundRemoteRuntime.onBackgroundSessionStopped()
     }
 
     fun platformSettingsEnvironment(): PlatformSettingsEnvironment = PlatformSettingsEnvironment(
@@ -124,7 +142,13 @@ class OpenAndroidIntelligenceApplication : Application() {
         auditSink = PersistentAuditSink(File(filesDir, "platform-kernel/audit-events.log"))
         auditStore = AndroidAuditStore(sink = auditSink)
         pairingGrants = PairingGrantStateHolder(
-            store = SharedPreferencesPairingGrantStore.from(this),
+            store = object : com.openandroidintelligence.kernel.PairingGrantStore {
+                override fun load(binding: com.openandroidintelligence.kernel.PairingGrantBinding) =
+                    SharedPreferencesPairingGrantStore.from(this@OpenAndroidIntelligenceApplication).load(binding)
+                override fun save(binding: com.openandroidintelligence.kernel.PairingGrantBinding,
+                    state: com.openandroidintelligence.kernel.PairingGrantState) =
+                    SharedPreferencesPairingGrantStore.from(this@OpenAndroidIntelligenceApplication).save(binding, state)
+            },
             audit = auditStore,
         )
 
@@ -143,9 +167,51 @@ class OpenAndroidIntelligenceApplication : Application() {
             providerSelector = pluginHost.selector,
             grants = { pairingId -> pairingGrants.currentKernelGrant(pairingId) },
             mediate = pluginHost::mediate,
+            authorizeInvocation = pluginHost::authorizeKernelInvocation,
         )
 
         pluginHost.attach(kernel)
+        kernel.onEmergencyStop { stopped ->
+            if (stopped) {
+                pairingGrants.revokeTemporaryApprovals()
+                com.openandroidintelligence.control.ScreenHostRegistry.current?.disconnectAll()
+            }
+        }
+
+        devicePush = DevicePushComposition(this,installId).also { it.start() }
+        val visibility = ProcessLifecycleOwner.get().lifecycle.currentStateFlow
+        remoteScope.launch {
+            combine(backgroundRemoteRuntime.accountRuntime.hostStandby, visibility) { eligible, state ->
+                eligible && state.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)
+            }.startVisibleHostStandby {
+                RemoteHostStandbyService.requestStart(this@OpenAndroidIntelligenceApplication)
+            }
+        }
+
+        remoteScope.launch(Dispatchers.IO) {
+            runCatching { pluginHost.reconcileNotificationPolicyGrant() }
+        }
+        remoteScope.launch {
+            com.openandroidintelligence.control.ScreenHostRegistry.accessibilityConnected.drop(1).collect {
+                pluginHost.notifyCapabilityStateChanged()
+            }
+        }
+        remoteScope.launch {
+            com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.availabilityRevision.drop(1).collect {
+                pluginHost.notifyCapabilityStateChanged()
+            }
+        }
+        remoteScope.launch(Dispatchers.IO) {
+            com.openandroidintelligence.notification.control.NotificationControlRegistry
+                .bindingPort()
+                .observeListenerConnected()
+                .drop(1)
+                .collect {
+                    val reconciled = runCatching { pluginHost.reconcileNotificationPolicyGrant() }.getOrDefault(false)
+                    if (!reconciled) pluginHost.notifyCapabilityStateChanged()
+                }
+        }
+
 
         // Visibility is a process fact, not an Activity one: a background gap
         // can leave the event stream nominally alive while the Gateway dropped
@@ -156,12 +222,25 @@ class OpenAndroidIntelligenceApplication : Application() {
             object : DefaultLifecycleObserver {
                 override fun onStart(owner: LifecycleOwner) {
                     gatewayNetworkMonitor.start()
-                    gatewayRuntime.onAppForegrounded()
+                    devicePush?.onVisibilityChanged(true)
+                    remoteScope.launch(Dispatchers.IO) {
+                        runCatching { pluginHost.reconcileNotificationPolicyGrant() }
+                    }
+                }
+                override fun onResume(owner: LifecycleOwner) {
+                    // 连接恢复必须在用户真正可见时触发；onStart 只负责注册网络监控和可见性。
+                    backgroundRemoteRuntime.onAppForegrounded()
                 }
                 override fun onStop(owner: LifecycleOwner) {
-                    gatewayRuntime.onAppBackgrounded()
+                    backgroundRemoteRuntime.onAppBackgrounded()
+                    devicePush?.onVisibilityChanged(false)
                 }
             },
         )
     }
+    override fun onTerminate() {
+        devicePush?.close()
+        super.onTerminate()
+    }
+
 }

@@ -1,82 +1,115 @@
+# ==============================================================================
+# 工作区与 Agent 工具
+# ==============================================================================
 .worktrees/
+/.worktree-ci/
 .agents/
-/.toolchains/
-*.tsnet-toolchain.env
-/apps/android/tailnet-core/native/tsnetbridge/.tsnet-aar.lock.candidate.*
 .superpowers/
 /.codex/
 /.codebuddy/
 /.trae/
 .claude/
-/third_party/tailscale
-node_modules
-**/node_modules
-**/__pycache__/
-.env_check.txt
+.kilo/
+.mimosa/
 .marscode/deviceInfo.json
-fronted-preview/
-artifacts/test-runs
-/artifacts/apk/
+harness-state.lock
+harness-tasks.json.bak
+harness-tasks.json.tmp
 
-# Android
+# 本地联调目录、空壳目录与外部插件检出
+/oai-core/
+/tests/
+/oai-core/runtime/
+/oai-core/dist/
+/runtime/
+/core.json
+/start-core.sh
+.hermes-gateway-plugin/
+.openclaw-gateway-plugin/
+
+# ==============================================================================
+# Node / TypeScript
+# ==============================================================================
+node_modules/
+*.tsbuildinfo
+frontend-preview/
+/legacy/bridge-runtime/dist/
+/legacy/bridge-runtime/ingress/open-android-intelligence-tsnet
+
+# ==============================================================================
+# Android / Gradle / AAR
+# ==============================================================================
 apps/android/local.properties
-apps/android/.gradle/
 apps/android/.kotlin/
 apps/android/**/build/
 apps/android/**/*.apk
 apps/android/**/*.aab
-
-# Gradle
 .gradle/
-**/.gradle/
+# 隔离的 Gradle 用户目录（worktree 并行构建时用，含依赖缓存，禁止提交）
+.gradle-home/
+/.toolchains/
+/apps/android/.toolchains/
+/third_party/tailscale
+*.tsnet-toolchain.env
+**/*.aar
+oai-release.keystore
 
-# IDE
-.idea/
-.vscode/
+# ==============================================================================
+# Rust / WASM
+# ==============================================================================
+plugins/target/
+plugins/dist/
 
-# OS
-.DS_Store
-Thumbs.db
+# ==============================================================================
+# Python
+# ==============================================================================
+**/.venv/
+**/__pycache__/
+*.py[cod]
+**/.pytest_cache/
+*.egg-info/
+integrations/hermes/dist/
+integrations/hermes/build/
+**/build/
 
-# Coverage
-*.lcov
-/coverage/
-/test-results/
-
-# Environment
+# ==============================================================================
+# 环境变量与密钥
+# ==============================================================================
 .env
 .env.*
 !.env.example
+.env_check.txt
+/legacy/bridge-runtime/deploy/secrets/
+.open-android-intelligence-hermes/
+.agent-life-hermes/
 
-# Logs
+# ==============================================================================
+# 日志、报告与临时产物
+# ==============================================================================
 *.log
 /logs/
 /tmp/
-/docs/test-evidence
-
-# Temp
 *.tmp
 *.swp
 *.swo
 *~
 *.bak
-/.toolchains
-/apps/android/.toolchains/
-/node_modules
-/legacy/bridge-runtime/dist/
-/legacy/bridge-runtime/ingress/open-android-intelligence-tsnet
-/legacy/bridge-runtime/node_modules
+*.lcov
+/coverage/
+/test-results/
+/artifacts/
+/docs/test-evidence
+/docs/reviews/evidence
+docs/mvp/evidence/
 
-/legacy/bridge-runtime/deploy/secrets/
-docs/mvp/evidence/p0t/2026-08-19T15-10-02Z-p0t-real-device-all
-apps/android/tailnet-core/libs/tsnet-android-1.98.10.aar
-apps/android/tailnet-core/libs/tsnet-android-1.98.10.aar
-docs/mvp/evidence/p0t/2026-08-17T11-35-26Z-p0t-device-redacted/inventory.json
-apps/android/tailnet-core/libs/tsnet-android-1.98.10.sbom.json
-apps/android/tailnet-core/libs/tsnet-android-1.98.10.provenance.json
-apps/android/tailnet-core/libs/tsnet-android-1.98.10.aar.sha256
-apps/android/tailnet-core/libs/tsnet-android-1.98.10.aar
-apps/android/tailnet-core/libs/tsnet-android-1.98.10.sbom.json
+# ==============================================================================
+# IDE 与操作系统
+# ==============================================================================
+.idea/
+.vscode/
+.zcode/
+.DS_Store
+Thumbs.db
 
 # Rust 插件工具链构建产物
 plugins/target/
@@ -103,3 +136,21 @@ apps/android/.toolchains/
 .hermes-gateway-plugin/
 .openclaw-gateway-plugin/
 oai-release.keystore
+
+# OAI Core runtime state, credentials and local virtual environments
+/oai-core/runtime/
+/.venv/
+/runtime/
+/core.json
+/start-core.sh
+/oai-core/dist/
+
+# 一次性本地运维脚本（CI 轮询等），不随仓库分发
+/.worktree-ci/
+
+# 临时测试证据
+docs/reviews/2026-11-10-device-capability-e2e/
+docs/reviews/2026-11-11-pr134-evidence/
+gateway-contract/.artifacts/
+integrations/dsh-session-adapter/.test-cache/
+fronted-preview/

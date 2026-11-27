@@ -1,0 +1,10 @@
+// 仅显式验收构建使用独立安装身份，保留设备上的原应用及其账号数据。
+gradle.beforeProject { project ->
+    if (project.path == ':app' && gradle.startParameter.projectProperties['oai.streamingAcceptance'] == 'true') {
+        project.pluginManager.withPlugin('com.android.application') {
+            project.extensions.getByName('androidComponents').finalizeDsl { android ->
+                android.defaultConfig.applicationId = android.defaultConfig.applicationId + '.streamingacceptance'
+            }
+        }
+    }
+}

@@ -1,0 +1,10 @@
+> Task :app:lintAnalyzeFullDebug
+
+> Task :app:lintReportFullDebug
+Wrote HTML report to file:///mnt/data/projects/open-android-intelligence/.worktrees/fix-backup-lint/apps/android/app/build/reports/lint-results-fullDebug.html
+
+> Task :app:lintFullDebug
+
+BUILD SUCCESSFUL in 5m 16s
+925 actionable tasks: 473 executed, 44 from cache, 408 up-to-date
+Configuration cache entry stored.

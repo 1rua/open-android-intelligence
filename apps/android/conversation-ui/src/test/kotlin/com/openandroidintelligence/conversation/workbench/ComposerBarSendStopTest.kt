@@ -7,8 +7,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.openandroidintelligence.conversation.model.AttachmentDraft
 import com.openandroidintelligence.conversation.model.AttachmentDraftId
@@ -47,6 +51,64 @@ class ComposerBarSendStopTest {
         assertEquals(1, stops)
     }
 
+    @Test fun choosingQueuePreservesTheDraftAndWaitsForTheSendAction() {
+        val original = " /host-command 'a b'\n 保留末尾空白  "
+        var draft by mutableStateOf(original)
+        var queued = 0
+        var steered = 0
+        var ordinary = 0
+        compose.setContent {
+            MaterialTheme {
+                ComposerBar(
+                    draft = draft,
+                    onDraftChange = { draft = it },
+                    generation = GenerationState.RUNNING,
+                    canSend = true,
+                    onSend = { ordinary++ },
+                    onQueue = { queued++; draft = "" },
+                    onSteer = { steered++; draft = "" },
+                    onStop = {}, onPickCamera = {}, onPickGallery = {}, onPickDocument = {}, onVoiceInput = {},
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("排队等待当前任务完成").performClick()
+        assertEquals("选择模式不得提交消息", 0, queued + steered + ordinary)
+        assertEquals(original, draft)
+        compose.onNode(hasSetTextAction()).assertTextEquals(original)
+        compose.onNodeWithContentDescription("排队等待当前任务完成").assertIsSelected()
+        compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
+        assertEquals(1, queued)
+        assertEquals(0, steered + ordinary)
+    }
+
+    @Test fun queuedGenerationCanSelectSteeringWithoutAnAdvertisedCapability() {
+        var queued = 0
+        var steered = 0
+        compose.setContent {
+            MaterialTheme {
+                ComposerBar(
+                    draft = "继续处理当前任务",
+                    onDraftChange = {},
+                    generation = GenerationState.QUEUED,
+                    canSend = true,
+                    onSend = {},
+                    onQueue = { queued++ },
+                    onSteer = { steered++ },
+                    onStop = {}, onPickCamera = {}, onPickGallery = {}, onPickDocument = {}, onVoiceInput = {},
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("引导当前任务").assertIsEnabled().assertIsSelected()
+        compose.onNodeWithContentDescription("排队等待当前任务完成").performClick()
+        compose.onNodeWithContentDescription("引导当前任务").performClick().assertIsSelected()
+        assertEquals(0, queued + steered)
+        compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
+        assertEquals(1, steered)
+        assertEquals(0, queued)
+    }
+
     @Test fun queuedWithoutInputAlsoShowsStop() {
         var stops = 0
         render(
@@ -59,7 +121,7 @@ class ComposerBarSendStopTest {
         assertEquals(1, stops)
     }
 
-    @Test fun runningWithTextShowsSendAndDoesNotCancelCurrentGeneration() {
+    @Test fun runningWithTextCanSelectQueueAndSendWithoutCancellingCurrentGeneration() {
         var sends = 0
         var stops = 0
         render(
@@ -70,13 +132,16 @@ class ComposerBarSendStopTest {
             onStop = { stops++ },
         )
 
-        compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription("发送").assertIsEnabled()
+        compose.onNodeWithContentDescription("排队等待当前任务完成").assertIsEnabled().performClick()
+        assertEquals(0, sends)
+        compose.onNodeWithContentDescription("发送").performClick()
 
         assertEquals(1, sends)
         assertEquals(0, stops)
     }
 
-    @Test fun queuedGenerationWithTextShowsSendAction() {
+    @Test fun queuedGenerationWithTextWaitsForSendAfterChoosingQueue() {
         var sends = 0
         var stops = 0
         render(
@@ -87,13 +152,16 @@ class ComposerBarSendStopTest {
             onStop = { stops++ },
         )
 
-        compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription("发送").assertIsEnabled()
+        compose.onNodeWithContentDescription("排队等待当前任务完成").assertIsEnabled().performClick()
+        assertEquals(0, sends)
+        compose.onNodeWithContentDescription("发送").performClick()
 
         assertEquals(1, sends)
         assertEquals(0, stops)
     }
 
-    @Test fun queuedGenerationWithAttachmentShowsSendAction() {
+    @Test fun queuedGenerationWithAttachmentKeepsBothModesSelectableAndWaitsForSend() {
         var sends = 0
         var stops = 0
         render(
@@ -104,7 +172,11 @@ class ComposerBarSendStopTest {
             onStop = { stops++ },
         )
 
-        compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription("发送").assertIsEnabled()
+        compose.onNodeWithContentDescription("引导当前任务").assertIsEnabled()
+        compose.onNodeWithContentDescription("排队等待当前任务完成").assertIsEnabled().performClick()
+        assertEquals(0, sends)
+        compose.onNodeWithContentDescription("发送").performClick()
 
         assertEquals(1, sends)
         assertEquals(0, stops)
@@ -133,12 +205,11 @@ class ComposerBarSendStopTest {
         assertEquals(0, removals)
     }
 
-    @Test fun cancelUnknownAndSubmittingStatesKeepSendSafetyGates() {
+    @Test fun unknownOutcomeAllowsNewSendButCancelAndSubmittingStillBlockIt() {
         var sends = 0
-        var draft by mutableStateOf("稍后发送")
+        var draft by mutableStateOf("待发送的新消息")
         var generation by mutableStateOf(GenerationState.CANCEL_REQUESTED)
         var canSend by mutableStateOf(true)
-        var hasUnknownOutcome by mutableStateOf(false)
         compose.setContent {
             MaterialTheme {
                 ComposerBar(
@@ -146,7 +217,6 @@ class ComposerBarSendStopTest {
                     onDraftChange = {},
                     generation = generation,
                     canSend = canSend,
-                    hasUnknownSubmissionOutcome = hasUnknownOutcome,
                     onSend = { sends++ },
                     onStop = {},
                     onPickCamera = {},
@@ -161,11 +231,12 @@ class ComposerBarSendStopTest {
         compose.onNodeWithContentDescription("等待取消确认").assertIsNotEnabled()
 
         compose.runOnIdle {
-            draft = "结果未确认"
             generation = GenerationState.OUTCOME_UNKNOWN
         }
         compose.waitForIdle()
-        compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
+        compose.onNodeWithText("结果未确认，请刷新会话，暂勿重复发送").assertDoesNotExist()
+        compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
+        assertEquals(1, sends)
 
         compose.runOnIdle {
             draft = "正在提交"
@@ -174,21 +245,62 @@ class ComposerBarSendStopTest {
         }
         compose.waitForIdle()
         compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
+        assertEquals(1, sends)
+    }
 
-        compose.runOnIdle {
-            draft = "待核实的消息"
-            canSend = true
-            hasUnknownOutcome = true
+    @Test fun aBusyComposerSubmitsTheSelectedModeOnlyFromTheSendAction() {
+        var queued = 0
+        var steered = 0
+        var sends = 0
+        compose.setContent {
+            MaterialTheme {
+                ComposerBar(
+                    draft = "补充约束",
+                    onDraftChange = {},
+                    generation = GenerationState.RUNNING,
+                    canSend = true,
+                    onSend = { sends++ },
+                    onQueue = { queued++ },
+                    onSteer = { steered++ },
+                    onStop = {},
+                    onPickCamera = {},
+                    onPickGallery = {},
+                    onPickDocument = {},
+                    onVoiceInput = {},
+                    voiceInputEnabled = false,
+                )
+            }
         }
-        compose.waitForIdle()
-        compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
+
+        compose.onNodeWithContentDescription("发送").assertIsEnabled()
+        compose.onNodeWithContentDescription("排队等待当前任务完成").assertIsEnabled().performClick()
+        compose.onNodeWithContentDescription("引导当前任务").assertIsEnabled().performClick()
+        assertEquals(0, queued + steered + sends)
+        compose.onNodeWithContentDescription("发送").performClick()
+        assertEquals(0, queued)
+        assertEquals(1, steered)
         assertEquals(0, sends)
 
-        // A reconciled authoritative failure releases the real composer action, preserving the draft.
-        compose.runOnIdle {
-            hasUnknownOutcome = false
-            generation = GenerationState.FAILED
-        }
+        compose.onNodeWithContentDescription("排队等待当前任务完成").performClick().assertIsSelected()
+        assertEquals(0, queued)
+        compose.onNodeWithContentDescription("发送").performClick()
+        assertEquals(1, queued)
+        assertEquals(1, steered)
+        assertEquals(0, sends)
+    }
+
+    @Test fun slashCommandsUseTheSameUserSelectedDeliveryControls() {
+        var sends = 0
+        render(
+            draft = "/approve once",
+            generation = GenerationState.RUNNING,
+            canSend = true,
+            onSend = { sends++ },
+        )
+
+        compose.onNodeWithContentDescription("引导当前任务").assertIsEnabled().assertIsSelected()
+        compose.onNodeWithContentDescription("排队等待当前任务完成").performClick().assertIsSelected()
+        assertEquals(0, sends)
         compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
         assertEquals(1, sends)
     }
@@ -199,7 +311,6 @@ class ComposerBarSendStopTest {
         canSend: Boolean = false,
         attachments: List<AttachmentDraft> = emptyList(),
         inFlightAttachmentIds: Set<String> = emptySet(),
-        hasUnknownSubmissionOutcome: Boolean = false,
         onRemoveAttachment: (String) -> Unit = {},
         onSend: () -> Unit = {},
         onStop: () -> Unit = {},
@@ -219,7 +330,6 @@ class ComposerBarSendStopTest {
                     onVoiceInput = {},
                     attachments = attachments,
                     inFlightAttachmentIds = inFlightAttachmentIds,
-                    hasUnknownSubmissionOutcome = hasUnknownSubmissionOutcome,
                     onRemoveAttachment = onRemoveAttachment,
                     voiceInputEnabled = false,
                 )

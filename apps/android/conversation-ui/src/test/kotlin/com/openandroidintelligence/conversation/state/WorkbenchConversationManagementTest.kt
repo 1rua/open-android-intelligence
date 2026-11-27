@@ -10,6 +10,56 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchConversationManagementTest {
+    @Test fun agentPresenceDisablesRemoteDeletionWithoutRebuildingOrLosingTheDraft() = runTest {
+        val host = Host()
+        val controller = controller(host)
+        runCurrent()
+        controller.editDraft("保留尚未发送的草稿")
+        controller.setRemoteConversationOnline(false)
+        assertFalse(controller.state.value.conversationDeleteSupported)
+        assertFalse(controller.state.value.conversationArchiveSupported)
+        assertEquals("保留尚未发送的草稿", controller.state.value.draft)
+        controller.deleteThread("a")
+        runCurrent()
+        assertEquals(0, host.deletes)
+        assertTrue(rows(controller).any { it.id.value == "a" })
+        assertEquals("CONVERSATION_MANAGEMENT_FAILED:AGENT_OFFLINE", controller.state.value.notice)
+        controller.setRemoteConversationOnline(true)
+        assertTrue(controller.state.value.conversationDeleteSupported)
+        assertEquals("保留尚未发送的草稿", controller.state.value.draft)
+        controller.close()
+    }
+
+    @Test fun archiveOnlyAgentCannotPretendToRestoreAnArchivedConversation() = runTest {
+        val host = Host().apply { threads = listOf(summary("a", 1).copy(archived = true)) }
+        val controller = controller(host, unarchiveSupported = false)
+        runCurrent()
+        controller.archiveThread("a", false)
+        runCurrent()
+        assertEquals(0, host.archives)
+        assertTrue(rows(controller).single().archived)
+        assertFalse(controller.state.value.conversationUnarchiveSupported)
+        assertEquals("CONVERSATION_MANAGEMENT_FAILED:CONVERSATION_ARCHIVE_UNSUPPORTED", controller.state.value.notice)
+        controller.close()
+    }
+
+    @Test fun localOrganizationDoesNotGrantTheAgentDeleteCapability() = runTest {
+        val host = Host()
+        val controller = controller(host, deleteSupported = false)
+        runCurrent()
+        controller.createFolder("工作")
+        runCurrent()
+        assertEquals("工作", controller.state.value.organization.folders.single().name)
+        controller.deleteThread("a")
+        runCurrent()
+        assertEquals(0, host.deletes)
+        assertTrue(rows(controller).any { it.id.value == "a" })
+        assertFalse(controller.state.value.conversationDeleteSupported)
+        assertTrue(controller.state.value.conversationManagementSupported)
+        assertEquals("CONVERSATION_MANAGEMENT_FAILED:CONVERSATION_DELETE_UNSUPPORTED", controller.state.value.notice)
+        controller.close()
+    }
+
     @Test fun folderReadOrWriteFailureKeepsTheConfirmedConversationAndRetriesOnlyItsAssignmentAfterRestart() = runTest {
         for (readFailure in listOf(false,true)) {
             val host=Host().apply { organization=ConversationOrganization(4,folders=listOf(ConversationFolder("work","Work"))) }
@@ -78,6 +128,28 @@ class WorkbenchConversationManagementTest {
         assertEquals(listOf(originalId,originalId),host.creationIds)
         assertEquals(1,host.createdConversations.size)
         assertEquals("created",restarted.state.value.activeThreadId)
+        restarted.close()
+    }
+
+    @Test fun nativeCreationAfterRestartUsesTheSavedIdToQueryWithoutAnotherCreate() = runTest {
+        val host = Host().apply { loseCreationResponse = true }
+        val queries = mutableListOf<String>()
+        val native = object : ConversationRepository by host, ConversationCreationRecovery {
+            override suspend fun recoverConversationCreation(scope: ConversationScope, clientConversationId: String): Conversation {
+                queries += clientConversationId
+                return host.createdConversations.getValue(clientConversationId)
+            }
+        }
+        val saved = MemoryPersistence()
+        val first = controller(native, saved)
+        runCurrent(); first.createThread(); runCurrent(); first.flushPendingPersistence()
+        val originalId = saved.checkpoint!!.pendingConversationCreation!!.clientId
+        first.close()
+        val restarted = controller(native, saved)
+        runCurrent(); restarted.createThread(); runCurrent()
+        assertEquals(listOf(originalId), host.creationIds)
+        assertEquals(listOf(originalId), queries)
+        assertEquals("created", restarted.state.value.activeThreadId)
         restarted.close()
     }
 
@@ -588,13 +660,16 @@ class WorkbenchConversationManagementTest {
         controller.close()
     }
 
-    private fun TestScope.controller(host:Host,persistence:WorkbenchPersistence?=null,supported:Boolean=true,external:() -> Set<String> = {emptySet()},
+    private fun TestScope.controller(host:ConversationRepository,persistence:WorkbenchPersistence?=null,supported:Boolean=true,external:() -> Set<String> = {emptySet()},
+        deleteSupported:Boolean=supported,
+        unarchiveSupported:Boolean=supported,
         scope:() -> ConversationScope = {ConversationScope("profile","gateway","account","install")})=
         WorkbenchController(workbenchTestScope(),host,object:AgentCommandCatalogRepository {
             override suspend fun get(gatewayId:String,languageCode:String)=AgentCommandCatalog(CatalogVersion("v1"),emptyList())
         },scope,persistence=persistence,
             persistenceDispatcher=StandardTestDispatcher(testScheduler),replyTimeouts=WorkbenchController.ReplyTimeouts(enabled=false),
-            supportsConversationManagement=supported,externalBusyThreadIds=external)
+            supportsConversationManagement=supported,supportsConversationDelete=deleteSupported,
+            supportsConversationUnarchive=unarchiveSupported,externalBusyThreadIds=external)
 
     private fun rows(controller:WorkbenchController)=(controller.state.value.threads as Loadable.Ready).value
     private class MemoryPersistence:WorkbenchPersistence {

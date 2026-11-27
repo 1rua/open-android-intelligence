@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<journey name="MOD-06: 会话更多菜单">
+  <description>
+    验证会话右上角更多菜单不再显示浮动助理，重命名、附件库和设置仍正常显示并执行，保留现有菜单样式与动画。
+  </description>
+  <actions>
+    <action>点击会话右上角「更多操作」按钮</action>
+    <action>确认菜单不显示「浮动助理」，显示「重命名对话」「附件库」「设置」</action>
+    <action>无活动会话时确认「重命名对话」不可用；打开会话后通过该菜单重命名并确认标题更新</action>
+    <action>重新打开更多菜单，点击「附件库」，确认附件库显示且可以关闭</action>
+    <action>重新打开更多菜单，点击「设置」，确认进入原有设置界面</action>
+    <action>确认菜单沿用现有样式和动画，没有新增提示、占位项或替代入口</action>
+  </actions>
+</journey>

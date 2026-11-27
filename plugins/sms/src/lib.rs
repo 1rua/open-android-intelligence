@@ -14,6 +14,10 @@ use alloc::vec::Vec;
 pub fn handle_sms_query(request: &[u8]) -> Result<Vec<u8>, PluginError> {
     // Inputs are schema validated and canonicalized by the host before this ABI.
     let has = |field: &[u8]| request.windows(field.len()).any(|w| w == field);
+    // 离散发送仍经过受保护内核，Android SmsManager 是实际执行者。
+    if has(b"\"subscriptionId\"") && has(b"\"recipient\"") && has(b"\"text\"") {
+        return open_android_intelligence_sdk::call_kernel("kernel.sms.send", request);
+    }
     if has(b"\"operation\":\"schedule\"") {
         // The public schedule schema stays SMS-specific; the generic kernel
         // receives the exact verified capability to invoke when the timer fires.
@@ -50,5 +54,13 @@ mod tests {
         request.extend_from_slice(b"\"}");
         assert_eq!(handle_sms_query(&request), Err(PluginError::RequestOutOfBounds));
         assert_eq!(handle_sms_query(b"{\"operation\":\"schedule\",\"query\":{}}"), Err(PluginError::HandlerFailed));
+    }
+
+    #[test]
+    fn send_requires_the_real_host_instead_of_echoing_success() {
+        assert_eq!(
+            handle_sms_query(b"{\"subscriptionId\":1,\"recipient\":\"+15550001\",\"text\":\"secret\"}"),
+            Err(PluginError::HandlerFailed),
+        );
     }
 }

@@ -56,6 +56,7 @@ const REFERENCE_PLUGINS: PluginSpec[] = [
       { id: "org.openandroidintelligence.sms.schedule", version: "1.0.0", schema: "schemas/sms-schedule.json" },
       { id: "org.openandroidintelligence.sms.job-status", version: "1.0.0", schema: "schemas/sms-job-status.json" },
       { id: "org.openandroidintelligence.sms.cancel", version: "1.0.0", schema: "schemas/sms-cancel.json" },
+      { id: "org.openandroidintelligence.sms.send", version: "1.0.0", schema: "schemas/sms-send.json" },
     ],
     kernelPrimitives: [
       {
@@ -67,6 +68,7 @@ const REFERENCE_PLUGINS: PluginSpec[] = [
       { id: "kernel.scheduler.read", version: "1.0.0", purpose: "Read the scheduled query outcome" },
       { id: "kernel.scheduler.cancel", version: "1.0.0", purpose: "Cancel a query before execution" },
       { id: "kernel.background.run", version: "1.0.0", purpose: "Run authorized scheduled queries in the background" },
+      { id: "kernel.sms.send", version: "1.0.0", purpose: "Send SMS after exact local confirmation" },
     ],
   },
   {
@@ -89,6 +91,71 @@ const REFERENCE_PLUGINS: PluginSpec[] = [
         purpose: "Read call logs under local policy",
       },
     ],
+  },
+  {
+    "id": "org.openandroidintelligence.screen-reader",
+    "name": "Screen Reader",
+    "version": "1.0.0",
+    "description": "Locally authorized Android screen reader capability",
+    "wasmName": "screen_reader.wasm",
+    "provides": [
+      {
+        "id": "org.openandroidintelligence.screen-reader.read",
+        "version": "1.0.0",
+        "schema": "schemas/screen-read.json"
+      }
+    ],
+    "kernelPrimitives": [
+      {
+        "id": "kernel.screen.read",
+        "version": "1.0.0",
+        "purpose": "Use Android screen read under an independent local grant"
+      }
+    ]
+  },
+
+  {
+    "id": "org.openandroidintelligence.screen-capture",
+    "name": "Screen Capture",
+    "version": "1.0.0",
+    "description": "Locally authorized Android screen capture capability",
+    "wasmName": "screen_capture.wasm",
+    "provides": [
+      {
+        "id": "org.openandroidintelligence.screen-capture.capture",
+        "version": "1.0.0",
+        "schema": "schemas/screen-capture.json"
+      }
+    ],
+    "kernelPrimitives": [
+      {
+        "id": "kernel.screen.capture",
+        "version": "1.0.0",
+        "purpose": "Use Android screen capture under an independent local grant"
+      }
+    ]
+  },
+
+  {
+    "id": "org.openandroidintelligence.screen-control",
+    "name": "Screen Control",
+    "version": "1.0.0",
+    "description": "Locally authorized Android screen control capability",
+    "wasmName": "screen_control.wasm",
+    "provides": [
+      {
+        "id": "org.openandroidintelligence.screen-control.control",
+        "version": "1.0.0",
+        "schema": "schemas/screen-control.json"
+      }
+    ],
+    "kernelPrimitives": [
+      {
+        "id": "kernel.screen.control",
+        "version": "1.0.0",
+        "purpose": "Use Android screen control under an independent local grant"
+      }
+    ]
   },
 ];
 
@@ -149,7 +216,6 @@ async function main() {
       },
       compatibility: {
         androidHost: ">=2.0.0 <3.0.0",
-        gatewayProtocol: ">=2.0 <3.0",
       },
       capabilities: {
         provides: spec.provides,

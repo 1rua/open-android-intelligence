@@ -1,9 +1,12 @@
 ---
-status: accepted
+status: superseded
+superseded_by: ADR-0063
 date: 2026-09-14
 ---
 
 # 允许使用明文 HTTP 完成 Gateway 配对，并如实标注未加密连接
+
+> **2026-11-13 目标替代**：本决策中旧 Bridge、Gateway 或 Core 的部署、协议与服务端身份规则由 [ADR-0063](0063-adopt-dsh-remote-with-independent-client-and-host-identities.md) 与[新总规格](../specs/2026-11-13-dsh-remote-architecture-refactor.md)取代；正文保留历史背景。本次仅更新文档，现有运行代码尚未切换。
 
 用户显式输入的 `http://` Gateway 地址现在可以完成配对、登录、会话恢复与事件流：传输层按 http/https 两种 scheme 打开连接，配对不再强制要求 HTTPS。默认链路仍是直接 HTTPS + SPKI 指纹核验，且 HTTPS 连接必须在协商返回可用 `tlsSpkiSha256` 时完成指纹固定，缺身份即失败，因此"允许明文"没有放宽 TLS 路径的任何要求。
 

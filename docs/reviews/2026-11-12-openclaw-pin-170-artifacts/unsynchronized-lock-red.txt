@@ -1,0 +1,29 @@
+
+ RUN  v4.1.10 /mnt/data/projects/open-android-intelligence/.worktrees/oai-openclaw-pin-170
+
+ ❯ tools/check-dependency-lock.test.ts (9 tests | 1 failed) 12ms
+     × keeps the checked-in OpenClaw plugin lock row synchronized with the pin 5ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tools/check-dependency-lock.test.ts > MVP dependency lock gate > keeps the checked-in OpenClaw plugin lock row synchronized with the pin
+AssertionError: expected 'openclaw-gateway-plugin@1.1.0; ref c7…' to be 'openclaw-gateway-plugin@1.1.0; ref e7…' // Object.is equality
+
+Expected: "openclaw-gateway-plugin@1.1.0; ref e73ddfe1b333cfe0f69c4ea519db3553b056381a; commit e73ddfe1b333cfe0f69c4ea519db3553b056381a"
+Received: "openclaw-gateway-plugin@1.1.0; ref c7c087b9fe28adcc658a1cbdb71689a377b65214; commit c7c087b9fe28adcc658a1cbdb71689a377b65214"
+
+ ❯ tools/check-dependency-lock.test.ts:168:38
+    166|     if (!locked) throw new Error("OpenClaw plugin row is missing from …
+    167|     expect(locked.official_reference).toBe(generated.official_referenc…
+    168|     expect(locked.immutable_version).toBe(generated.immutable_version);
+       |                                      ^
+    169|     expect(locked.verify_command).toBe(generated.verify_command);
+    170|     expect(locked.integrity).toBe(`sha256:${sha256Evidence(locked)}`);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 8 passed (9)
+   Start at  08:07:49
+   Duration  156ms (transform 36ms, setup 0ms, import 49ms, tests 12ms, environment 0ms)

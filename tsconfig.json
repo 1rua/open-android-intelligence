@@ -7,9 +7,20 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "target": "ES2024",
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "noEmit": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["tools/**/*.ts"]
+  "include": [
+    "tools/**/*.ts"
+  ],
+  "exclude": [
+    "tools/remote/fixtures/dsh-remote/**/*.ts",
+    "tools/remote/fixtures/media-upstream/**/*.ts",
+    "tools/remote-server/fixtures/**/*.ts",
+    "tools/remote-interop/fixtures/**/*.ts",
+    "tools/remote-interop/release-fixtures/**/*.ts"
+  ]
 }

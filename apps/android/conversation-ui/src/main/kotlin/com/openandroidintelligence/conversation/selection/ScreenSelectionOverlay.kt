@@ -3,7 +3,6 @@ package com.openandroidintelligence.conversation.selection
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -76,6 +75,7 @@ import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlin.math.roundToInt
 
 /** 截图铺满画布时压暗的比例：选区内的原始像素保持全亮，便于确认裁剪内容。 */
@@ -92,7 +92,7 @@ private val FreehandSampleStep = Dimensions.SpaceTiny / 2
  *
  * **坐标契约：画布坐标 ≡ 帧坐标。** 画布尺寸只由本层的 `onSizeChanged` 测量并通过
  * [onCanvasSizeChanged] 上报；截图被拉伸铺满整个画布，因此回调的选区坐标可以按
- * `截图像素 / 画布像素` 的比例直接换算回帧像素（见 `cropPngSelection`）。调用方不得
+ * `截图像素 / 画布像素` 的比例直接换算回帧像素。调用方不得
  * 再加自己的 inset 或二次测量，否则两套坐标会出现漂移。
  *
  * 截图是输入而不是产物：没有截图时明确渲染不可用态，绝不以松手冒充提交；拖动只
@@ -142,7 +142,7 @@ private fun EditableSelection(
     onCanvasSizeChanged: ((IntSize) -> Unit)?,
 ) {
     val density = LocalDensity.current
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     val haptics = LocalHapticFeedback.current
     val textMeasurer = rememberTextMeasurer()
 
@@ -177,12 +177,12 @@ private fun EditableSelection(
     // 选区框出现/变化时的描边淡化（reduced 直接到位）。
     val strokeAlpha = animateFloatAsState(
         targetValue = if (hasVisibleSelection) 1f else 0f,
-        animationSpec = if (reduceMotion) snap() else tween(MotionSpecs.Fast, easing = MotionSpecs.LinearOutSlowInEasing),
+        animationSpec = if (reduceMotion) snap() else MotionSpecs.effectsFast(false),
         label = "selection-stroke-alpha",
     )
     val dimAlpha = animateFloatAsState(
         targetValue = if (hasVisibleSelection) DimOverlayAlpha else DimAlphaIdle,
-        animationSpec = if (reduceMotion) snap() else tween(MotionSpecs.Standard, easing = MotionSpecs.StandardEasing),
+        animationSpec = if (reduceMotion) snap() else MotionSpecs.effectsDefault(false),
         label = "selection-dim-alpha",
     )
 
@@ -506,10 +506,10 @@ private fun SelectionModeToggle(
                 .padding(horizontal = Dimensions.SpaceMedium),
             contentAlignment = Alignment.Center,
         ) {
-            val reduced = LocalMotionPolicy.current.reduceMotion
+            val reduced = LocalMotionPolicy.current.isReduced
             Crossfade(
                 targetState = freehand,
-                animationSpec = if (reduced) snap() else tween(MotionSpecs.Fast),
+                animationSpec = MotionSpecs.effectsFast(reduced),
                 label = "selection-mode",
             ) { isFreehand ->
                 Text(
@@ -607,7 +607,7 @@ private fun SelectionControls(
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     Surface(
         modifier = modifier
             .fillMaxWidth()
@@ -640,7 +640,7 @@ private fun SelectionControls(
                 // 模式切换用 Crossfade（reduced 直达），文案本身不重复既有断言字符串。
                 Crossfade(
                     targetState = freehand,
-                    animationSpec = if (reduceMotion) snap() else tween(MotionSpecs.Fast),
+                    animationSpec = MotionSpecs.effectsFast(reduceMotion),
                     label = "selection-controls-title",
                 ) { isFreehand ->
                     Text(

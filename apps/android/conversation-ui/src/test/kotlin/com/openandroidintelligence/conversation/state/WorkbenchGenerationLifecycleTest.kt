@@ -1,5 +1,6 @@
 package com.openandroidintelligence.conversation.state
 
+import com.openandroidintelligence.conversation.batch.DebouncePolicy
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import kotlinx.coroutines.*
@@ -7,9 +8,170 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.test.*
 import org.junit.Assert.*
 import org.junit.Test
+import kotlin.time.Duration.Companion.milliseconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchGenerationLifecycleTest {
+    @Test fun oldCompletionCannotSettleANewHermesSubmissionWithoutAGeneration() = runTest {
+        assertOldTerminalKeepsNewSubmission(cancelled = false)
+    }
+
+    @Test fun oldCancellationCannotSettleANewHermesSubmissionWithoutAGeneration() = runTest {
+        assertOldTerminalKeepsNewSubmission(cancelled = true)
+    }
+
+    private suspend fun TestScope.assertOldTerminalKeepsNewSubmission(cancelled: Boolean) {
+        for (requestInFlight in listOf(false, true)) {
+            val repository = Repository().apply {
+                nativeAcceptance = true
+                if (requestInFlight) sendGate = CompletableDeferred()
+            }
+            val controller = controller(repository)
+            runCurrent()
+            repository.events.emit(question())
+            repository.events.emit(stream("old_progress", "gen_a", "旧轮次的部分回复"))
+            runCurrent()
+            repository.generationState.value = GenerationState.OUTCOME_UNKNOWN
+            runCurrent()
+            // 相同正文也必须使用本次主动发送的 client 身份。
+            controller.editDraft("问题")
+            controller.sendDraft()
+            runCurrent()
+            val newClient = repository.sent.single().clientMessageId
+            assertNotEquals(ClientMessageId("cm_question"), newClient)
+            assertNull(repository.generationId.value)
+            assertEquals(GenerationState.QUEUED, controller.state.value.generation)
+
+            repository.events.emit(if (cancelled) VerifiedConversationEvent.GenerationCancelled(
+                "old_cancelled", 4, "gen_a", ConversationId("conv_a"),
+            ) else terminal("gen_a", AgentMessageStatus.COMPLETED))
+            runCurrent()
+
+            assertEquals("旧终态不能结束等待首个 generation 的新请求",
+                GenerationState.QUEUED, controller.state.value.generation)
+            assertTrue(rows(controller).any { it.key == "old_progress" && !it.isStreaming })
+            if (!cancelled) assertEquals(AgentMessageStatus.COMPLETED,
+                rows(controller).single { it.clientMessageId == ClientMessageId("cm_question") }.messageStatus)
+            assertNotEquals(AgentMessageStatus.COMPLETED,
+                rows(controller).single { it.clientMessageId == newClient }.messageStatus)
+            repository.sendGate?.complete(Unit)
+            runCurrent()
+            controller.close()
+        }
+    }
+
+    @Test fun matchingClientTerminalSettlesANewHermesSubmissionWithoutATrackedGeneration() = runTest {
+        for (status in listOf(AgentMessageStatus.COMPLETED, AgentMessageStatus.FAILED)) {
+            val repository = Repository().apply { nativeAcceptance = true }
+            val controller = controller(repository)
+            runCurrent()
+            controller.editDraft("新问题")
+            controller.sendDraft()
+            runCurrent()
+            val newClient = repository.sent.single().clientMessageId
+            assertNull(repository.generationId.value)
+            repository.events.emit(terminal("gen_new", status).copy(
+                messageId = "new_user", clientMessageId = newClient,
+            ))
+            runCurrent()
+            assertEquals(if (status == AgentMessageStatus.COMPLETED) GenerationState.COMPLETED else GenerationState.FAILED,
+                controller.state.value.generation)
+            assertEquals(status, rows(controller).single { it.clientMessageId == newClient }.messageStatus)
+            controller.close()
+        }
+    }
+
+    @Test fun cancellationForTheMatchingClientGenerationSettlesWithoutATrackedGeneration() = runTest {
+        val repository = Repository().apply { nativeAcceptance = true }
+        val controller = controller(repository)
+        runCurrent()
+        controller.editDraft("新问题")
+        controller.sendDraft()
+        runCurrent()
+        val newClient = repository.sent.single().clientMessageId
+        repository.events.emit(terminal("gen_new", AgentMessageStatus.DELIVERED).copy(
+            eventId = "new_delivered", messageId = "new_user", clientMessageId = newClient,
+        ))
+        runCurrent()
+        assertNull(repository.generationId.value)
+        repository.events.emit(VerifiedConversationEvent.GenerationCancelled(
+            "new_cancelled", 4, "gen_new", ConversationId("conv_a"),
+        ))
+        runCurrent()
+        assertEquals(GenerationState.CANCELLED, controller.state.value.generation)
+        controller.close()
+    }
+
+    @Test fun aMatchingClientCannotSettleWithAnotherClientsSourceMessage() = runTest {
+        val repository = Repository().apply { nativeAcceptance = true }
+        val controller = controller(repository)
+        runCurrent()
+        repository.events.emit(question())
+        runCurrent()
+        controller.editDraft("新问题")
+        controller.sendDraft()
+        runCurrent()
+        val newClient = repository.sent.single().clientMessageId
+        repository.events.emit(terminal("gen_new", AgentMessageStatus.COMPLETED).copy(
+            clientMessageId = newClient,
+        ))
+        runCurrent()
+        assertEquals(GenerationState.QUEUED, controller.state.value.generation)
+        controller.close()
+    }
+
+    @Test fun anOldTerminalWithoutAGenerationCannotSettleTheNewTrackedGeneration() = runTest {
+        val repository = Repository().apply { nativeAcceptance = true }
+        val controller = controller(repository)
+        runCurrent()
+        controller.editDraft("旧消息"); controller.sendDraft(); runCurrent()
+        val oldClient = repository.sent.single().clientMessageId
+        repository.generationState.value = GenerationState.OUTCOME_UNKNOWN
+        runCurrent()
+        controller.editDraft("新消息"); controller.sendDraft(); runCurrent()
+        repository.generationId.value = "gen_new"
+        repository.generationState.value = GenerationState.RUNNING
+        runCurrent()
+
+        repository.events.emit(terminal(null, AgentMessageStatus.COMPLETED).copy(
+            messageId = "old_user", clientMessageId = oldClient,
+        ))
+        runCurrent()
+
+        assertEquals(GenerationState.RUNNING, controller.state.value.generation)
+        assertEquals("gen_new", repository.generationId.value)
+        assertEquals(AgentMessageStatus.COMPLETED, rows(controller).single { it.clientMessageId == oldClient }.messageStatus)
+        controller.close()
+    }
+
+    @Test fun anOldTerminalCannotSettleTheNewDraftBeforeItsSubmissionCoroutineRuns() = runTest {
+        for (keepOldGeneration in listOf(false, true)) {
+            for (cancelled in listOf(false, true)) {
+                val repository = Repository().apply { nativeAcceptance = true }
+                val controller = controller(repository)
+                runCurrent()
+                repository.events.emit(question()); runCurrent()
+                repository.generationId.value = if (keepOldGeneration) "gen_a" else null
+                repository.generationState.value = GenerationState.OUTCOME_UNKNOWN
+                runCurrent()
+                // 旧回执先进入消费队列，点击新发送后才处理；请求尚未调用仓库。
+                repository.events.emit(if (cancelled) VerifiedConversationEvent.GenerationCancelled(
+                    "old_cancelled", 4, "gen_a", ConversationId("conv_a"),
+                ) else terminal("gen_a", AgentMessageStatus.COMPLETED))
+                controller.editDraft("新消息")
+                controller.sendDraft()
+                runCurrent()
+
+                assertEquals("旧编号尚未清除也不能结束新消息", GenerationState.QUEUED,
+                    controller.state.value.generation)
+                assertEquals(1, repository.sent.size)
+                if (!cancelled) assertEquals(AgentMessageStatus.COMPLETED,
+                    rows(controller).single { it.clientMessageId == ClientMessageId("cm_question") }.messageStatus)
+                controller.close()
+            }
+        }
+    }
+
     @Test fun confirmedCancellationAndLegacyAssociationSurviveAControllerRestart() = runTest {
         for (eventConfirmation in listOf(false, true)) {
             val saved = MemoryPersistence()
@@ -246,6 +408,89 @@ class WorkbenchGenerationLifecycleTest {
         assertEquals(GenerationState.RUNNING,controller.state.value.generation)
     }
 
+    @Test fun `旧取消失败反馈不能清除新轮次正在等待的停止操作`() = runTest {
+        val repository = Repository().apply { useSnapshot = true }
+        val first = CompletableDeferred<CancelGenerationResult>()
+        val second = CompletableDeferred<CancelGenerationResult>()
+        repository.cancelResults["gen_a"] = first
+        repository.cancelResults["gen_b"] = second
+        val controller = controller(repository)
+        runCurrent()
+        assertNotNull(repository.generationSnapshot)
+        repository.publishSnapshot("gen_a", GenerationState.RUNNING)
+        runCurrent()
+        controller.stopGeneration(); runCurrent()
+        repository.publishSnapshot("gen_b", GenerationState.RUNNING)
+        runCurrent()
+        assertEquals(GenerationState.RUNNING, controller.state.value.generation)
+        controller.stopGeneration(); runCurrent()
+        assertEquals(GenerationState.CANCEL_REQUESTED, controller.state.value.generation)
+        first.completeExceptionally(IllegalStateException("STALE_GENERATION")); runCurrent()
+        assertEquals(GenerationState.CANCEL_REQUESTED, controller.state.value.generation)
+        assertNull(controller.state.value.notice)
+        controller.stopGeneration(); runCurrent()
+        assertEquals(listOf("conv_a" to "gen_a", "conv_a" to "gen_b"), repository.cancellations)
+        second.complete(CancelGenerationResult(CancelGenerationOutcome.CANCELLED)); runCurrent()
+        assertEquals(GenerationState.CANCELLED, controller.state.value.generation)
+        controller.close()
+    }
+
+    @Test fun `同帧轮次快照不会把旧终态拼接到新轮次`() = runTest {
+        val repository = Repository().apply { useSnapshot = true }
+        val first = CompletableDeferred<CancelGenerationResult>()
+        val second = CompletableDeferred<CancelGenerationResult>()
+        repository.cancelResults["gen_a"] = first
+        repository.cancelResults["gen_b"] = second
+        val controller = controller(repository)
+        runCurrent()
+        repository.publishSnapshot("gen_a", GenerationState.RUNNING)
+        runCurrent()
+        controller.stopGeneration(); runCurrent()
+        // 模拟仓储内部的两个原始流乱序更新：界面只能看到随后发布的同帧快照。
+        repository.generationId.value = "gen_b"
+        repository.generationState.value = GenerationState.COMPLETED
+        runCurrent()
+        repository.publishSnapshot("gen_b", GenerationState.RUNNING)
+        runCurrent()
+        assertEquals(GenerationState.RUNNING, controller.state.value.generation)
+        controller.stopGeneration(); runCurrent()
+        assertEquals(listOf("conv_a" to "gen_a", "conv_a" to "gen_b"), repository.cancellations)
+        first.completeExceptionally(IllegalStateException("STALE_GENERATION")); runCurrent()
+        assertEquals(GenerationState.CANCEL_REQUESTED, controller.state.value.generation)
+        second.complete(CancelGenerationResult(CancelGenerationOutcome.CANCELLED)); runCurrent()
+        assertEquals(GenerationState.CANCELLED, controller.state.value.generation)
+        controller.close()
+    }
+
+    @Test fun `跨会话迟到快照不能改写当前界面或充当停止身份`() = runTest {
+        val repository = Repository().apply { useSnapshot = true }
+        val first = CompletableDeferred<CancelGenerationResult>()
+        val second = CompletableDeferred<CancelGenerationResult>()
+        repository.cancelResults["gen_a"] = first
+        repository.cancelResults["gen_b"] = second
+        val controller = controller(repository)
+        runCurrent()
+        repository.publishSnapshot("gen_a", GenerationState.RUNNING, "conv_a"); runCurrent()
+        controller.stopGeneration(); runCurrent()
+        controller.openThread("conv_b"); runCurrent()
+        repository.publishSnapshot("gen_b", GenerationState.RUNNING, "conv_b"); runCurrent()
+        repository.publishSnapshot("gen_a", GenerationState.COMPLETED, "conv_a"); runCurrent()
+        assertEquals(GenerationState.RUNNING, controller.state.value.generation)
+        controller.stopGeneration(); runCurrent()
+        assertEquals(listOf("conv_a" to "gen_a"), repository.cancellations)
+        repository.publishSnapshot("gen_b", GenerationState.RUNNING, "conv_b"); runCurrent()
+        controller.stopGeneration(); runCurrent()
+        assertEquals(listOf("conv_a" to "gen_a", "conv_b" to "gen_b"), repository.cancellations)
+        first.completeExceptionally(IllegalStateException("STALE_GENERATION")); runCurrent()
+        assertEquals(GenerationState.CANCEL_REQUESTED, controller.state.value.generation)
+        repository.publishSnapshot("gen_a", GenerationState.COMPLETED, "conv_a"); runCurrent()
+        second.complete(CancelGenerationResult(CancelGenerationOutcome.OUTCOME_UNKNOWN)); runCurrent()
+        assertEquals("当前停止结果也不能借用另一会话快照结束本会话", GenerationState.CANCEL_REQUESTED, controller.state.value.generation)
+        repository.publishSnapshot("gen_b", GenerationState.CANCELLED, "conv_b"); runCurrent()
+        assertEquals(GenerationState.CANCELLED, controller.state.value.generation)
+        controller.close()
+    }
+
     @Test fun successfulStopStillSettlesTheSameGenerationWhenALateDeltaArrivesBeforeItsReceipt() = runTest {
         for (outcome in listOf(CancelGenerationOutcome.CANCELLED,CancelGenerationOutcome.ALREADY_COMPLETED)) {
             val repository=Repository()
@@ -456,28 +701,44 @@ class WorkbenchGenerationLifecycleTest {
             override suspend fun get(gatewayId:String,languageCode:String)=AgentCommandCatalog(CatalogVersion("v1"),emptyList())
         },{ ConversationScope("p","g","a","i") },
         supportsMessageBatches=batches, persistence=persistence, persistenceDispatcher=StandardTestDispatcher(testScheduler),
-        onActiveThreadChanged={ repository.generationId.value=null; repository.generationState.value=GenerationState.IDLE },
+        // 客户端默认立即发送；批处理用例需要一个可推进的合并窗口。
+        debouncePolicy=if(batches) DebouncePolicy(delay=1_500.milliseconds) else DebouncePolicy(),
+        onActiveThreadChanged={ id ->
+            repository.generationId.value=null; repository.generationState.value=GenerationState.IDLE
+            if (repository.useSnapshot) repository.publishSnapshot(null, GenerationState.IDLE, id)
+        },
         replyTimeouts=WorkbenchController.ReplyTimeouts(enabled=false))
 
     private class Repository : ConversationRepository,GenerationTracker,MessageOutcomeQuery {
         override suspend fun queryMessage(conversationId:String,clientMessageId:ClientMessageId):TimelineMessage?=null
         override val generationId=MutableStateFlow<String?>(null)
         override val generationState=MutableStateFlow(GenerationState.IDLE)
+        var useSnapshot = false
+        private val snapshot = MutableStateFlow(GenerationSnapshot(null, GenerationState.IDLE))
+        override val generationSnapshot: StateFlow<GenerationSnapshot>? get() = if (useSnapshot) snapshot else null
+        fun publishSnapshot(id: String?, state: GenerationState, conversationId: String? = "conv_a") {
+            snapshot.value = GenerationSnapshot(id, state, conversationId)
+        }
         val events=MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity=16)
         val cancelResult=CompletableDeferred<CancelGenerationResult>()
+        val cancelResults=mutableMapOf<String,CompletableDeferred<CancelGenerationResult>>()
         val cancellations=mutableListOf<Pair<String,String>>()
         var sendGate:CompletableDeferred<Unit>?=null
         var submitFailure:Throwable?=null
         var submissions=0
+        val sent=mutableListOf<OutgoingMessage>()
+        var nativeAcceptance=false
         override suspend fun listConversations(scope:ConversationScope,page:PageRequest)=ConversationPage(
             listOf(ConversationSummary(ConversationId("conv_a"),"A",1)),null)
-        override suspend fun createConversation(scope:ConversationScope,clientConversationId:String)=Conversation(ConversationId("conv_new"),"新对话",1)
+        override suspend fun createConversation(scope:ConversationScope,clientConversationId:String)=Conversation(ConversationId("conv_new"),"",1)
         override suspend fun timeline(conversationId:String,page:PageRequest)=TimelinePage(emptyList(),null)
         override suspend fun submitMessage(message:OutgoingMessage):MessageAcceptance {
             submissions++
+            sent += message
             sendGate?.await()
             submitFailure?.let { throw it }
-            return MessageAcceptance("message",message.clientMessageId.value)
+            return MessageAcceptance(if (nativeAcceptance) message.clientMessageId.value else "message",
+                message.clientMessageId.value, authoritative = !nativeAcceptance)
         }
         override suspend fun submitBatch(batch:MessageBatch):BatchAcceptance {
             sendGate?.await()
@@ -488,7 +749,7 @@ class WorkbenchGenerationLifecycleTest {
         override suspend fun cancelGeneration(generationId:String,requestId:String):CancelGenerationResult=error("unscoped cancellation")
         override suspend fun cancelGeneration(conversationId:String,generationId:String,requestId:String):CancelGenerationResult {
             cancellations+=conversationId to generationId
-            return cancelResult.await()
+            return (cancelResults[generationId] ?: cancelResult).await()
         }
     }
 }

@@ -2,20 +2,10 @@ name: Development Preview Release
 
 # 合并进 dev 的提交本身就是一次 push，因此只由 push 触发即可。
 #
-# 为什么不再用 pull_request_target：
-# pull_request_target 执行的是**默认分支（main）**上的工作流定义，但 checkout 的
-# 却是 dev 的合并提交。只要 main 与 dev 的脚本命名不同步（例如 main 仍引用
-# build:android-notifications，而 dev 已改为 build:android-plugins），这条 run
-# 就必然失败，且失败原因与被合并的代码毫无关系。
-#
-# 原先的结构还带一个 release-event 门禁：push 提交若关联到已合并 PR 就跳过发布，
-# 交给 pull_request_target 去发。两个条件叠加的结果是 push 被跳过、
-# pull_request_target 又因脚本名不匹配而失败 —— 两条 run 都不发布，
-# dev 预览版实际从未产出。
-#
-# 现在由 push 单独负责发布；发布说明改为优先读取关联 PR 正文（见
-# apps/android/tools/prepare_release_notes.py），查不到再回退提交说明，
-# 信息量与原来保持一致。
+# 开发预览版聚焦快速交付最新验证包：彻底解耦 remote-client.yml 轮询门禁，
+# 由 sign-plugin-packages 完成插件签名后，在 build-and-publish 中一次性完成
+# Full Debug APK 构建、内置插件校验、调试签名校验、产物上传与 GitHub
+# Pre-release 覆盖发布；连续推送时取消进行中的旧发布，避免并发覆盖冲突。
 on:
   push:
     branches: [dev]
@@ -29,8 +19,7 @@ permissions:
 
 concurrency:
   group: dev-release
-  cancel-in-progress: false
-  queue: max
+  cancel-in-progress: true
 
 jobs:
   sign-plugin-packages:
@@ -54,11 +43,21 @@ jobs:
           cache: npm
           cache-dependency-path: plugin-tooling/package-lock.json
 
-      # 三个内置插件各自是一个 crate,统一用锁定工具链编译 WASM。
+      # 内置插件各自是一个 crate,统一用锁定工具链编译 WASM。
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.90.0
+          targets: wasm32-unknown-unknown
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: plugins -> plugins/target
+
       - name: Build the bundled plugin WASM
         run: |
-          rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
-          cargo +1.90.0 build --locked --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml -p open-android-intelligence-notifications -p open-android-intelligence-sms -p open-android-intelligence-call-log
+          cargo +1.90.0 build --locked --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml -p open-android-intelligence-notifications -p open-android-intelligence-sms -p open-android-intelligence-call-log -p open-android-intelligence-screen-reader -p open-android-intelligence-screen-capture -p open-android-intelligence-screen-control
           npm ci --prefix plugin-tooling
 
       - name: Sign the bundled plugin packages
@@ -81,7 +80,7 @@ jobs:
         id: artifact-name
         run: echo "name=signed-plugins-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
-      # 整目录上传,artifact 内含 notifications/sms/call-log 三个 .alp。
+      # 整目录上传,artifact 内含 六个独立授权的 .alp。
       - name: Upload the signed plugin packages
         uses: actions/upload-artifact@v7
         with:
@@ -90,14 +89,12 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  build-preview:
+  build-and-publish:
     needs: [sign-plugin-packages]
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-    outputs:
-      package-version: ${{ steps.package-version.outputs.version }}
-      release-artifact-name: ${{ steps.artifact-name.outputs.name }}
+      contents: write
+      pull-requests: read
     steps:
       - name: Checkout release commit
         uses: actions/checkout@v7
@@ -123,6 +120,8 @@ jobs:
         run: echo "version=$(python3 apps/android/tools/extract_package_version.py --platform android)" >> "$GITHUB_OUTPUT"
 
       - name: Prepare release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 apps/android/tools/prepare_release_notes.py --branch dev --output "$RUNNER_TEMP/release-notes.md"
 
       - name: Resolve stable version-code high-water
@@ -175,7 +174,7 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6
         with:
-          cache-provider: basic
+          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev' && github.event_name != 'workflow_dispatch' }}
 
       - name: Download the signed plugin packages
         uses: actions/download-artifact@v8
@@ -186,24 +185,48 @@ jobs:
       - name: Set the bundled plugins directory
         run: echo "OAI_BUNDLED_PLUGINS_DIR=$RUNNER_TEMP/signed-plugins" >> "$GITHUB_ENV"
 
+      - name: Prepare release signing key (optional)
+        working-directory: apps/android
+        env:
+          OAI_RELEASE_KEYSTORE_BASE64: ${{ secrets.OAI_RELEASE_KEYSTORE_BASE64 }}
+          OAI_RELEASE_KEYSTORE: ${{ runner.temp }}/oai-release.keystore
+          OAI_RELEASE_STORE_PASSWORD: ${{ secrets.OAI_RELEASE_STORE_PASSWORD }}
+          OAI_RELEASE_KEY_ALIAS: ${{ secrets.OAI_RELEASE_KEY_ALIAS }}
+          OAI_RELEASE_KEY_PASSWORD: ${{ secrets.OAI_RELEASE_KEY_PASSWORD }}
+        run: |
+          if [ -n "$OAI_RELEASE_KEYSTORE_BASE64" ]; then
+            test -n "$OAI_RELEASE_STORE_PASSWORD"
+            test -n "$OAI_RELEASE_KEY_ALIAS"
+            test -n "$OAI_RELEASE_KEY_PASSWORD"
+            umask 077
+            printf '%s' "$OAI_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$OAI_RELEASE_KEYSTORE"
+            echo "OAI_RELEASE_KEYSTORE=$OAI_RELEASE_KEYSTORE" >> "$GITHUB_ENV"
+            echo "OAI_RELEASE_STORE_PASSWORD=$OAI_RELEASE_STORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "OAI_RELEASE_KEY_ALIAS=$OAI_RELEASE_KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "OAI_RELEASE_KEY_PASSWORD=$OAI_RELEASE_KEY_PASSWORD" >> "$GITHUB_ENV"
+            echo "Using unified GitHub Secrets release key for preview build."
+          fi
+
       - name: Build Full Debug APK
         working-directory: apps/android
         env:
           LC_ALL: C.UTF-8
         run: |
+          trap 'if [ -n "$OAI_RELEASE_KEYSTORE" ] && [ -f "$OAI_RELEASE_KEYSTORE" ]; then mkdir -p "$RUNNER_TEMP/open-android-intelligence-trash"; mv "$OAI_RELEASE_KEYSTORE" "$RUNNER_TEMP/open-android-intelligence-trash/oai-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.keystore"; fi' EXIT
           chmod +x gradlew
           ./gradlew :app:assembleFullDebug -Poai.requireBundledPlugins=true --stacktrace
 
-      # 三个插件资产必须逐一与签出的包逐字节一致;缺一个就说明内置链路断了。
+      # 六个插件资产必须逐一与签出的包逐字节一致;缺一个就说明内置链路断了。
       - name: Verify the bundled plugin packages
         run: |
-          for package in notifications sms call-log; do
+          for package in notifications sms call-log screen-reader screen-capture screen-control; do
             python3 apps/android/tools/verify_bundled_plugins.py \
               --apk apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk \
               --package "$package=$OAI_BUNDLED_PLUGINS_DIR/$package.alp"
           done
 
       - name: Verify Debug Signing Identity
+        if: env.OAI_RELEASE_KEYSTORE == ''
         env:
           LC_ALL: C.UTF-8
         run: bash apps/android/tools/verify-debug-signing.sh apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
@@ -222,41 +245,21 @@ jobs:
           cp "$RUNNER_TEMP/oai-update.json" "$RUNNER_TEMP/release-assets/"
           cp "$RUNNER_TEMP/release-notes.md" "$RUNNER_TEMP/release-assets/"
 
-      - name: Set release artifact name
-        id: artifact-name
-        run: echo "name=preview-release-assets-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
-
-      - name: Upload verified release assets
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ steps.artifact-name.outputs.name }}
-          path: ${{ runner.temp }}/release-assets
+          name: app-full-debug
+          path: |
+            ${{ runner.temp }}/release-assets/app-full-debug.apk
+            ${{ runner.temp }}/release-assets/oai-update.json
           if-no-files-found: error
-          retention-days: 1
-
-  publish-preview:
-    needs: [build-preview]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout release commit
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-
-      - name: Download verified release assets
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ needs.build-preview.outputs.release-artifact-name }}
-          path: ${{ runner.temp }}/release-assets
+          retention-days: 14
 
       - name: Publish development preview release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v${{ needs.build-preview.outputs.package-version }}-dev
-          name: Development Preview v${{ needs.build-preview.outputs.package-version }}-dev
+          tag_name: v${{ steps.package-version.outputs.version }}-dev
+          name: Development Preview v${{ steps.package-version.outputs.version }}-dev
           prerelease: true
           make_latest: "false"
           target_commitish: ${{ github.sha }}
@@ -273,15 +276,11 @@ jobs:
       - name: Move dev tag to published commit
         env:
           GH_TOKEN: ${{ github.token }}
-          PACKAGE_VERSION: ${{ needs.build-preview.outputs.package-version }}
+          PACKAGE_VERSION: ${{ steps.package-version.outputs.version }}
           TARGET_SHA: ${{ github.sha }}
         run: |
           RELEASE_TAG="v${PACKAGE_VERSION}-dev"
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
-            CURRENT_TAG_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')
-            if [ "$CURRENT_TAG_SHA" != "$TARGET_SHA" ]; then
-              gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" -f sha="$TARGET_SHA" -F force=true >/dev/null
-            fi
-          else
-            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$RELEASE_TAG" -f sha="$TARGET_SHA" >/dev/null
-          fi
+          python3 apps/android/tools/sync_release_tag.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --release-tag "$RELEASE_TAG" \
+            --sha "$TARGET_SHA"

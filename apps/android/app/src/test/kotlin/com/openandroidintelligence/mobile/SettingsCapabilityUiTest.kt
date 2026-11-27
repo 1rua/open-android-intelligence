@@ -10,8 +10,21 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.printToString
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.performScrollTo
+import com.openandroidintelligence.kernel.AndroidAuditStore
+import com.openandroidintelligence.kernel.CapabilityProviderSelector
+import com.openandroidintelligence.kernel.DeveloperTrustMode
+import com.openandroidintelligence.kernel.HostEnvelope
+import com.openandroidintelligence.kernel.InMemoryAuditSink
+import com.openandroidintelligence.kernel.InMemoryPairingGrantStore
+import com.openandroidintelligence.kernel.NativePluginLoader
+import com.openandroidintelligence.kernel.PairingGrantStateHolder
+import com.openandroidintelligence.kernel.PhoneLimits
+import com.openandroidintelligence.kernel.PluginKernel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -41,9 +54,24 @@ class SettingsCapabilityUiTest {
     }
 
     @Test
+    fun aRecoveryNoticeOffersRetryWithoutDismissingTheFailure() {
+        var retries = 0
+        var dismissed = false
+        setContent {
+            OperationNoticeBanner("本地会话读取失败", onDismiss = { dismissed = true }, onRetry = { retries++ })
+        }
+        compose.onNodeWithText("重试").performClick()
+        compose.runOnIdle {
+            assertEquals(1, retries)
+            assertFalse(dismissed)
+        }
+        compose.onNodeWithText("本地会话读取失败").assertExists()
+    }
+
+    @Test
     fun bubbleSettingsEntryOpensTheSystemBubbleControlsForThisApp() {
         setContent { ConversationBubbleSettingsItem() }
-        compose.onNodeWithText("原生会话气泡").performClick()
+        compose.onNodeWithText("会话气泡").performClick()
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
         val intent = org.robolectric.Shadows.shadowOf(context).nextStartedActivity
         assertEquals(android.provider.Settings.ACTION_APP_NOTIFICATION_BUBBLE_SETTINGS, intent.action)
@@ -54,7 +82,7 @@ class SettingsCapabilityUiTest {
     @Config(sdk = [36])
     fun liveUpdatesSettingsEntryOpensTheAndroid16PromotionControls() {
         setContent { LiveUpdatesSettingsItem() }
-        compose.onNodeWithText("Android 16 实时活动").performClick()
+        compose.onNodeWithText("实时任务状态").performClick()
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
         val intent = org.robolectric.Shadows.shadowOf(context).nextStartedActivity
         assertEquals(android.provider.Settings.ACTION_APP_NOTIFICATION_PROMOTION_SETTINGS, intent.action)
@@ -64,7 +92,7 @@ class SettingsCapabilityUiTest {
     @Test
     fun liveUpdatesSettingsEntryIsAbsentOnOlderAndroid() {
         setContent { LiveUpdatesSettingsItem() }
-        compose.onNodeWithText("Android 16 实时活动").assertDoesNotExist()
+        compose.onNodeWithText("实时任务状态").assertDoesNotExist()
     }
 
     // ------------------------------------------------------------------
@@ -87,13 +115,15 @@ class SettingsCapabilityUiTest {
         compose.onAllNodesWithText("已启用").assertCountEquals(2)
         compose.onAllNodesWithText("本网关不支持").assertCountEquals(1)
         // 客户端只声明了 3 项，其余能力保持「未声明」。
-        compose.onAllNodesWithText("未声明").assertCountEquals(ConversationUiFeature.CLOSED_SET.size - 3)
+        compose.onAllNodesWithText("未声明").assertCountEquals(ConversationUiFeature.CLOSED_SET.size - 4)
         // 闭集全部渲染，并为会话管理提供人类可读的标签。
         for (label in negotiatedCapabilityLabels.values) {
             compose.onNodeWithText(label).assertExists()
         }
         compose.onNodeWithText("会话与文件夹管理").assertExists()
         compose.onNodeWithText("conversation-management-v1").assertDoesNotExist()
+        compose.onNodeWithText("圈选结果回传").assertDoesNotExist()
+        compose.onNodeWithText("attachment-status-v1").assertDoesNotExist()
     }
 
     @Test
@@ -128,34 +158,6 @@ class SettingsCapabilityUiTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun screenSelectionPresentationCombinesWiringGrantsAndNegotiation() {
-        // 宿主未接入截图来源（显式注入，与全局装配状态解耦）：不可用
-        val unwired = screenSelectionCapabilityPresentation(
-            grantsBound = true,
-            attachmentStatusAgreed = true,
-            screenshotSourceWired = false,
-        )
-        assertFalse(unwired.enabled)
-        assertTrue(unwired.supporting.contains("截图"))
-
-        // 来源已接入（Wave 1 起宿主装配了 MediaProjection 来源）且协商同意：可用
-        val wired = screenSelectionCapabilityPresentation(
-            grantsBound = true,
-            attachmentStatusAgreed = true,
-            screenshotSourceWired = true,
-        )
-        assertTrue(wired.enabled)
-
-        // 没有活动配对：授权本身不可用
-        val unbound = screenSelectionCapabilityPresentation(
-            grantsBound = false,
-            attachmentStatusAgreed = true,
-        )
-        assertFalse(unbound.enabled)
-        assertTrue(unbound.supporting.contains("配对"))
-    }
-
-    @Test
     fun notificationPushPresentationCombinesWiringGrantsAndNegotiation() {
         val unwired = notificationPushCapabilityPresentation(
             grantsBound = true,
@@ -181,40 +183,41 @@ class SettingsCapabilityUiTest {
     }
 
     @Test
-    fun aDisabledScreenSelectionEntryDoesNotToggleWhenPressed() {
-        var toggled: Boolean? = null
-        setContent {
-            ScreenSelectionCapabilityItem(
-                checked = false,
-                presentation = screenSelectionPresentation(
-                    screenshotSourceWired = false,
-                    attachmentStatusAgreed = true,
-                ),
-                onCheckedChange = { toggled = it },
-            )
+    fun pairingSettingsDescribeLocalCapabilitySwitchesAndSeparateSystemPermissions() {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+        val trustMode = DeveloperTrustMode()
+        val audit = AndroidAuditStore(InMemoryAuditSink())
+        val environment = PlatformSettingsEnvironment(
+            trustMode = trustMode,
+            audit = audit,
+            auditSink = InMemoryAuditSink(),
+            allowDeveloperTrustMode = true,
+            kernel = PluginKernel(
+                hostEnvelope = HostEnvelope(primitives = emptySet()),
+                phoneLimits = PhoneLimits(primitives = emptySet()),
+                runtimes = emptyMap(),
+                audit = audit,
+                trustMode = trustMode,
+                nativeLoader = NativePluginLoader(trustMode),
+                providerSelector = CapabilityProviderSelector(phoneDefaults = emptyMap()),
+                grants = { null },
+            ),
+            pairingGrants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit),
+            appearance = AppearancePreferences(context),
+        )
+        setContent { SettingsScreen(environment = environment, onBack = {}) }
+
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
+        // 主页面只保留三组六项与一个插件入口：新能力默认每次手动、系统权限独立检查这类
+        // 技术说明已经移出这一层，改由各能力详情按真实状态呈现。
+        listOf("屏幕内容读取", "屏幕截图", "屏幕控制", "短信", "通知读取", "通话记录", "插件管理").forEach { label ->
+            compose.onNodeWithText(label).performScrollTo().assertExists()
         }
-
-        compose.onNodeWithText("屏幕上下文分析与圈选").performClick()
-        compose.onNodeWithText("已启用").assertDoesNotExist()
-        assertEquals("禁用条目点了不得触发回调", null, toggled)
-    }
-
-    @Test
-    fun anEnabledScreenSelectionEntryTogglesWhenPressed() {
-        var toggled: Boolean? = null
-        setContent {
-            ScreenSelectionCapabilityItem(
-                checked = false,
-                presentation = screenSelectionPresentation(
-                    screenshotSourceWired = true,
-                    attachmentStatusAgreed = true,
-                ),
-                onCheckedChange = { toggled = it },
-            )
-        }
-
-        compose.onNodeWithText("屏幕上下文分析与圈选").performClick()
-        assertEquals(true, toggled)
+        compose.onNodeWithText("新能力默认每次手动", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("系统权限独立检查", substring = true).assertDoesNotExist()
+        assertTrue(
+            "以下两种情况会清空本机授权" !in compose.onRoot().printToString(maxDepth = Int.MAX_VALUE),
+        )
     }
 
     @Test
@@ -231,7 +234,7 @@ class SettingsCapabilityUiTest {
             )
         }
 
-        compose.onNodeWithText("系统通知推送").performClick()
+        compose.onNodeWithText("Agent 任务通知").performClick()
         assertEquals("禁用条目点了不得触发回调", null, toggled)
     }
 
@@ -249,7 +252,29 @@ class SettingsCapabilityUiTest {
             )
         }
 
-        compose.onNodeWithText("系统通知推送").performClick()
+        compose.onNodeWithText("Agent 任务通知").performClick()
         assertEquals(true, toggled)
+    }
+
+    @Test
+    fun unreadableLocalAuthorizationShowsStorageRecoveryInsteadOfLegacyMigrationReview() {
+        for (code in listOf(
+            "LOCAL_AUTHORIZATION_STATE_INCOMPLETE",
+            "INSTALLATION_CAPABILITY_MIGRATION_FAILED",
+            "LOCAL_AUTHORIZATION_MODEL_UNSUPPORTED",
+            "LOCAL_AUTHORIZATION_MIGRATION_REQUIRED",
+        )) {
+            val label = deviceCapabilityReasonLabel(code)
+            assertEquals("无法读取本机授权设置，请检查存储或升级应用后重试（$code）", label)
+            assertFalse(label.contains("复核"))
+        }
+    }
+
+    @Test
+    fun deviceCapabilityFailureReasonsExplainRecoveryAndKeepTheActualCode() {
+        assertEquals("状态已更新，正在重新读取（GRANT_STALE）", deviceCapabilityReasonLabel("GRANT_STALE"))
+        assertEquals("本机设置已变化，正在同步最新设置（LOCAL_AUTHORIZATION_CHANGED）", deviceCapabilityReasonLabel("LOCAL_AUTHORIZATION_CHANGED"))
+        assertEquals("网络暂不可用，连接恢复后自动重试（NETWORK_ERROR）", deviceCapabilityReasonLabel("NETWORK_ERROR"))
+        assertEquals("尚未提供可识别的阻塞原因", deviceCapabilityReasonLabel("invalid private message"))
     }
 }

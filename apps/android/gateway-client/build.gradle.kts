@@ -1,23 +1,50 @@
+import java.util.Properties
+
 plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
 }
 
+val remoteAppVersion = providers.fileContents(rootProject.layout.projectDirectory.file("app/version.properties")).asText.map { text ->
+    Properties().apply { load(text.reader()) }.getProperty("versionName")
+}
+
 android {
+    buildFeatures { buildConfig = true }
+    defaultConfig {
+        buildConfigField("String", "OAI_REMOTE_CLIENT_VERSION", "\"0.6.5\"")
+        buildConfigField("String", "OAI_IMPLEMENTATION_VERSION", "\"${remoteAppVersion.get()}\"")
+    }
     namespace = "com.openandroidintelligence.gateway.client"
     defaultConfig { testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     testOptions.unitTests.all {
+        // Node 原客户端、固定 Server 与其锁文件变化必须使互通测试失效，不能沿用旧的 JVM 通过结果。
+        listOf("tools/remote-interop", "tools/remote-server", "integrations/oai-android-mcp/test/fixtures/dsh-remote").forEach { source ->
+            it.inputs.files(rootProject.fileTree("../../$source") { exclude("node_modules/**") })
+                .withPathSensitivity(org.gradle.api.tasks.PathSensitivity.RELATIVE)
+        }
         val testHome = rootProject.layout.projectDirectory.dir(".gradle/robolectric-home").asFile
         it.systemProperty("user.home", testHome.absolutePath)
+        it.testLogging.exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        it.testLogging.showCauses = true
+        it.testLogging.showStackTraces = true
         it.doFirst { testHome.mkdirs() }
     }
 }
 
 dependencies {
+    implementation(project(":control-ports"))
     implementation("com.bloxbean.cardano:net-i2p-crypto-eddsa:0.3.1")
+    implementation("org.signal.forks:noise-java:0.1.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("io.github.webrtc-sdk:android:150.7871.04")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
 
+    testImplementation(project(":platform-kernel"))
+    testImplementation(project(":encrypted-store"))
     testImplementation("junit:junit:4.13.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
     testImplementation("org.robolectric:robolectric:4.16")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 

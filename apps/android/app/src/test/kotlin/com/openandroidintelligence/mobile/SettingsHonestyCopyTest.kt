@@ -1,12 +1,51 @@
 package com.openandroidintelligence.mobile
 
 import android.app.Application
+import android.view.View
+import androidx.activity.OnBackPressedDispatcher
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.DrawerState
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
+import androidx.core.view.drawToBitmap
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.material3.Surface
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.CapabilityProviderSelector
@@ -18,12 +57,25 @@ import com.openandroidintelligence.kernel.NativePluginLoader
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import com.openandroidintelligence.kernel.PhoneLimits
 import com.openandroidintelligence.kernel.PluginKernel
+import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.encrypted.store.InMemoryOutboxPersistence
+import com.openandroidintelligence.mobile.push.DevicePushRuntime
+import com.openandroidintelligence.mobile.push.EncryptedPushStateStore
+import com.openandroidintelligence.mobile.push.PushSystemAccess
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.MotionPolicy
+import javax.crypto.spec.SecretKeySpec
+import kotlinx.coroutines.launch
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /** SMS access must lead to the real author-scoped plugin grant, never a standalone capability bit. */
 @RunWith(RobolectricTestRunner::class)
@@ -45,9 +97,8 @@ class SettingsHonestyCopyTest {
 
         // 短信读取不提供独立开关：它只存在于授权管理子页，且必须把用户送到真正的
         // 插件安装/授权链路，而不是给一个点了也不生效的授权位。
-        compose.onNodeWithText("读取与发送短信").assertDoesNotExist()
-        compose.onNodeWithText("授权管理").performScrollTo().performClick()
-        compose.onNodeWithText("短信读取").performScrollTo().performClick()
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
+        compose.onNodeWithText("插件管理").performScrollTo().performClick()
         compose.onNodeWithText("未安装任何插件").assertExists()
     }
 
@@ -62,18 +113,19 @@ class SettingsHonestyCopyTest {
             }
         }
 
-        compose.onNodeWithText("授权管理").performScrollTo().performClick()
-        compose.onNodeWithText("短信读取").performScrollTo().performClick()
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
+        compose.onNodeWithText("插件管理").performScrollTo().performClick()
         assertTrue(environment.pairingGrants.state.value!!.granted.isEmpty())
     }
 
     /**
-     * 授权管理子页只做一件事：把手机能力授权给当前 Gateway。
-     * 通知类条目（推送、气泡、实时活动、读取范围）已归入主览的「通知管理」区，
-     * 因此不应在这个子页里重复出现——两处入口意味着改文案时必然漏掉一处。
+     * 授权管理主页面的信息结构由产品需求固定为三组六项加一个插件入口。
+     *
+     * 这里同时验证三件已被移走的东西确实不再出现：独立主动推送入口、临时授权区，
+     * 以及插件 ID / 技术说明这类用户无法据此行动的内容。
      */
     @Test
-    fun theAuthorisationSubScreenKeepsNotificationEntriesOutOfTheGrantList() {
+    fun authorisationShowsOnlyTheThreeGroupsAndOnePluginEntry() {
         compose.setContent {
             MaterialTheme {
                 Surface {
@@ -82,17 +134,19 @@ class SettingsHonestyCopyTest {
             }
         }
 
-        compose.onNodeWithText("授权管理").performScrollTo().performClick()
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
 
-        compose.onNodeWithText("短信读取").performScrollTo().assertExists()
-        compose.onNodeWithText("屏幕上下文分析与圈选").performScrollTo().assertExists()
-        compose.onNodeWithText("通知读取范围").assertDoesNotExist()
-        compose.onNodeWithText("系统通知推送").assertDoesNotExist()
+        listOf("屏幕内容读取", "屏幕截图", "屏幕控制", "短信", "通知读取", "通话记录", "插件管理").forEach { label ->
+            compose.onNodeWithText(label).performScrollTo().assertExists()
+        }
+        // 主动推送已归入各自详情；临时授权只保留在真实的撤销动作里，不再单列一个区域。
+        compose.onNodeWithText("短信与通知主动推送").assertDoesNotExist()
+        compose.onNodeWithTag("capabilities-manual-default-notice").assertDoesNotExist()
     }
 
-    /** 主览不再展示本机自增序号、本机合成标识这类对用户没有意义的技术元数据。 */
+    /** 主页面不展示插件 ID、提供者标识或技术说明：用户在这一层只需要判断能不能用。 */
     @Test
-    fun theAuthorisationSubScreenOmitsLocalBookkeepingMetadata() {
+    fun theAuthorisationPageOmitsInternalIdentifiers() {
         compose.setContent {
             MaterialTheme {
                 Surface {
@@ -101,32 +155,276 @@ class SettingsHonestyCopyTest {
             }
         }
 
-        compose.onNodeWithText("授权管理").performScrollTo().performClick()
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
 
-        compose.onNodeWithText("配对元数据").assertDoesNotExist()
-        compose.onNodeWithText("授权变更序号（本机）").assertDoesNotExist()
-        compose.onNodeWithText("配对身份标识（本机合成）").assertDoesNotExist()
+        compose.onNodeWithText("org.openandroidintelligence", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("kernel.screen", substring = true).assertDoesNotExist()
     }
 
-    /**
-     * 授权按账号分开保存：切到别的账号不会带走授权，切回来时原来的授权仍然有效。
-     * `PairingGrantStateHolder.bind()` 会加载该账号已持久化的授权，因此文案不能把
-     * 「切换账号」与「解除配对」混为一谈——否则用户会误以为切换就作废了授权。
-     */
     @Test
-    fun theAuthorisationNotesDoNotClaimSwitchingAccountsRevokesExistingGrants() {
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun devicePushFullScreenCoversItsBackgroundAndKeepsProductionControls() {
+        assertDevicePushProductionPage(SettingsPresentation.SCREEN)
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun devicePushSidebarUsesItsPresentationBackgroundAndOneBackAction() {
+        assertDevicePushProductionPage(SettingsPresentation.SIDEBAR)
+    }
+
+    @Test
+    fun devicePushFullScreenEntersAndReturnsThroughSettingsNavigation() {
+        assertDevicePushNavigation(SettingsPresentation.SCREEN, reducedMotion = false)
+    }
+
+    @Test
+    fun devicePushSidebarEntersAndReturnsThroughSettingsNavigation() {
+        assertDevicePushNavigation(SettingsPresentation.SIDEBAR, reducedMotion = false)
+    }
+
+    @Test
+    fun devicePushFullScreenRespectsTheSharedReducedMotionPolicy() {
+        assertDevicePushNavigation(SettingsPresentation.SCREEN, reducedMotion = true)
+    }
+
+    @Test
+    fun devicePushSidebarRespectsTheSharedReducedMotionPolicy() {
+        assertDevicePushNavigation(SettingsPresentation.SIDEBAR, reducedMotion = true)
+    }
+
+    @Test
+    fun sidebarSystemBackNavigatesSubpagesBeforeClosingSettings() {
+        var closeCalls = 0
+        lateinit var dispatcher: OnBackPressedDispatcher
+        val environment = settingsEnvironment()
         compose.setContent {
+            dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
             MaterialTheme {
-                Surface {
-                    SettingsScreen(environment = settingsEnvironment(), runtime = null, onBack = {})
+                SettingsScreen(
+                    environment = environment,
+                    onBack = { closeCalls++ },
+                    presentation = SettingsPresentation.SIDEBAR,
+                )
+            }
+        }
+
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
+        compose.onNodeWithText("插件管理").performScrollTo().performClick()
+        compose.onNodeWithText("未安装任何插件").assertExists()
+
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.onNodeWithText("插件管理").performScrollTo().assertIsDisplayed()
+        assertEquals("从插件页返回不得关闭设置", 0, closeCalls)
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.onNodeWithText("设备能力与授权").performScrollTo().assertIsDisplayed()
+        assertEquals("从授权页返回不得关闭设置", 0, closeCalls)
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        assertEquals("设置根页返回才退出面板", 1, closeCalls)
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Test
+    fun modalDrawerSystemBackPopsSettingsBeforeClosingTheDrawer() {
+        val environment = settingsEnvironment()
+        var closeCalls = 0
+        lateinit var dispatcher: OnBackPressedDispatcher
+        lateinit var drawerState: DrawerState
+
+        compose.setContent {
+            dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
+            val drawer = rememberDrawerState(DrawerValue.Closed)
+            drawerState = drawer
+            val scope = rememberCoroutineScope()
+            MaterialTheme {
+                ModalNavigationDrawer(
+                    drawerState = drawer,
+                    drawerContent = {
+                        ModalDrawerSheet(modifier = Modifier.width(Dimensions.DrawerWidth)) {
+                            SettingsScreen(
+                                environment = environment,
+                                onBack = {
+                                    closeCalls++
+                                    scope.launch { drawer.close() }
+                                },
+                                presentation = SettingsPresentation.SIDEBAR,
+                            )
+                        }
+                    },
+                ) {
+                    TextButton(onClick = { scope.launch { drawer.open() } }) {
+                        Text("打开设置")
+                    }
                 }
             }
         }
 
-        compose.onNodeWithText("授权管理").performScrollTo().performClick()
+        compose.onNodeWithText("打开设置").performClick()
+        compose.runOnIdle { assertEquals("设置抽屉应已打开", DrawerValue.Open, drawerState.currentValue) }
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
+        compose.onNodeWithText("插件管理").performScrollTo().performClick()
+        compose.onNodeWithText("未安装任何插件").assertExists()
 
-        compose.onNodeWithText("授权按账号分开保存", substring = true).performScrollTo().assertExists()
-        compose.onNodeWithText("切换账号或解除配对后，需要重新授权").assertDoesNotExist()
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.onNodeWithText("插件管理").performScrollTo().assertIsDisplayed()
+        compose.runOnIdle {
+            assertEquals("从插件页返回不得关闭设置", 0, closeCalls)
+            assertEquals("从插件页返回时抽屉必须保持打开", DrawerValue.Open, drawerState.currentValue)
+            assertEquals("从插件页返回时抽屉不能开始关闭", DrawerValue.Open, drawerState.targetValue)
+        }
+
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.onNodeWithText("设备能力与授权").performScrollTo().assertIsDisplayed()
+        compose.runOnIdle {
+            assertEquals("从授权页返回不得关闭设置", 0, closeCalls)
+            assertEquals("从授权页返回时抽屉必须保持打开", DrawerValue.Open, drawerState.currentValue)
+            assertEquals("从授权页返回时抽屉不能开始关闭", DrawerValue.Open, drawerState.targetValue)
+        }
+
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.runOnIdle {
+            assertEquals("设置根页返回应调用关闭回调", 1, closeCalls)
+            assertEquals("设置根页返回后抽屉应关闭", DrawerValue.Closed, drawerState.currentValue)
+        }
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "w411dp-h891dp-420dpi")
+    fun sidebarSettingsFitWithin320dpWithLargerText() {
+        val environment = settingsEnvironment()
+        compose.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, 1.5f)) {
+                MaterialTheme {
+                    Box(Modifier.size(320.dp, 700.dp).testTag("settings-sidebar")) {
+                        SettingsScreen(
+                            environment = environment,
+                            onBack = {},
+                            presentation = SettingsPresentation.SIDEBAR,
+                        )
+                    }
+                }
+            }
+        }
+
+        fun assertTextFits(label: String) {
+            val node = compose.onNodeWithText(label).performScrollTo()
+            val textBounds = node.fetchSemanticsNode().boundsInRoot
+            val panelBounds = compose.onNodeWithTag("settings-sidebar").fetchSemanticsNode().boundsInRoot
+            assertTrue("$label 不应超出侧栏左边界", textBounds.left >= panelBounds.left)
+            assertTrue("$label 不应超出侧栏右边界", textBounds.right <= panelBounds.right)
+            val layouts = mutableListOf<TextLayoutResult>()
+            compose.onNodeWithText(label, useUnmergedTree = true)
+                .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            assertTrue("$label 必须具有可检查的文本布局", layouts.isNotEmpty())
+            layouts.forEach { layout ->
+                val lineCount = layout.lineCount
+                assertTrue("$label 必须包含至少一行", lineCount > 0)
+                for (line in 0 until lineCount) {
+                    assertFalse("$label 第 $line 行不应被省略", layout.isLineEllipsized(line))
+                }
+            }
+        }
+
+        assertTextFits("外观与交互")
+        compose.onNodeWithText("外观与交互").performClick()
+        assertTextFits("减少动画")
+    }
+
+    private fun assertDevicePushProductionPage(presentation: SettingsPresentation) {
+        val runtime = DevicePushRuntime(
+            EncryptedPushStateStore(
+                "settings-page-test",
+                InMemoryOutboxPersistence(),
+                SecretKeySpec(ByteArray(32) { 1 }, "AES"),
+            ),
+            PushSystemAccess { true },
+        )
+        val screenColor = Color(0xFFF4F1EB)
+        val sheetColor = Color(0xFFE4E1DB)
+        var backCalls = 0
+        var refreshCalls = 0
+        lateinit var contentView: View
+        compose.setContent {
+            contentView = LocalView.current
+            MaterialTheme(colorScheme = lightColorScheme(surface = screenColor, surfaceContainerLow = sheetColor)) {
+                Box(Modifier.fillMaxSize().background(Color.Magenta)) {
+                    DevicePushSubScreen(
+                        runtime = runtime,
+                        endpoints = emptyList(),
+                        onRefreshEndpoints = { refreshCalls++ },
+                        onBack = { backCalls++ },
+                        presentation = presentation,
+                    )
+                }
+            }
+        }
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithTag("push-notification-enabled").fetchSemanticsNodes().isNotEmpty()
+        }
+        // 主动推送不再是独立页面：两段内容分别挂在「通知读取」与「短信」详情里。
+        compose.onAllNodesWithText("主动推送").assertCountEquals(3)
+        compose.onAllNodesWithContentDescription("返回").assertCountEquals(1)
+        // Robolectric 不驱动 WindowCapture 等待的窗口重绘回调；直接绘制已布局的真实 View。
+        val pixels = compose.runOnIdle { contentView.drawToBitmap() }
+        val expectedColor = if (presentation == SettingsPresentation.SCREEN) screenColor else sheetColor
+        assertEquals(expectedColor, Color(pixels.getPixel(pixels.width - 2, pixels.height - 2)))
+
+        compose.onNodeWithTag("push-notification-enabled").performClick()
+        compose.waitUntil(5_000) { runtime.snapshot().configuration.notifications.enabled }
+        compose.onNodeWithTag("push-notification-enabled").assertIsOn()
+        compose.onNodeWithTag("push-refresh-endpoints").performScrollTo().performClick()
+        assertEquals(1, refreshCalls)
+        compose.onNodeWithContentDescription("返回").assertIsDisplayed().performClick()
+        assertEquals(1, backCalls)
+        assertTrue(runtime.snapshot().configuration.notifications.enabled)
+    }
+
+    private fun assertDevicePushNavigation(presentation: SettingsPresentation, reducedMotion: Boolean) {
+        var closeCalls = 0
+        compose.setContent {
+            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = reducedMotion)) {
+                MaterialTheme {
+                    Surface {
+                        SettingsScreen(
+                            environment = settingsEnvironment(),
+                            onBack = { closeCalls++ },
+                            presentation = presentation,
+                        )
+                    }
+                }
+            }
+        }
+        // 主动推送不再是独立页面：主页面没有这个入口，配置在各自的能力详情里。
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
+        compose.onNodeWithText("短信与通知主动推送").assertDoesNotExist()
+        val notificationEntry = compose.onNodeWithTag("capability-entry:org.openandroidintelligence.notifications:org.openandroidintelligence.notifications.query")
+        notificationEntry.performScrollTo()
+        compose.mainClock.autoAdvance = false
+        notificationEntry.performClick()
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(MotionSpecs.ReducedMotionCrossfadeDuration.toLong() / 4)
+        // 测试应用未装配插件宿主，因此详情页如实显示这一事实；它是详情页里唯一的稳定标记。
+        val detail = compose.onNodeWithText("插件运行环境未连接，暂时无法读取或修改本机设置。")
+        val entering = detail.fetchSemanticsNode().boundsInRoot.left
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        val settled = detail.fetchSemanticsNode().boundsInRoot.left
+        if (reducedMotion) {
+            assertEquals("减少动态时进入不应产生水平位移", settled, entering, 1f)
+        } else {
+            assertTrue("普通进入沿用设置导航的水平转场", entering > settled)
+        }
+        compose.onAllNodesWithContentDescription("返回").assertCountEquals(1)
+        compose.onNodeWithContentDescription("返回").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("插件管理").performScrollTo().assertIsDisplayed()
+        assertEquals(0, closeCalls)
+        compose.onNodeWithContentDescription("返回").performClick()
+        val closeDescription = if (presentation == SettingsPresentation.SIDEBAR) "关闭设置" else "返回"
+        compose.onNodeWithContentDescription(closeDescription).performClick()
+        assertEquals(1, closeCalls)
     }
 
     private fun settingsEnvironment(): PlatformSettingsEnvironment {

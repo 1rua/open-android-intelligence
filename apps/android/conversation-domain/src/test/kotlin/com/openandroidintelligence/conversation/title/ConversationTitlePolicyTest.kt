@@ -17,9 +17,9 @@ class ConversationTitlePolicyTest {
 
     @Test
     fun newCommandReturnsDefaultTitle() {
-        assertEquals("新对话", ConversationTitlePolicy.generateTitle(msg("/new")))
-        assertEquals("新对话", ConversationTitlePolicy.generateTitle(msg("/new topic")))
-        assertEquals("新对话", ConversationTitlePolicy.generateTitle(msg("   /new   ")))
+        assertEquals("", ConversationTitlePolicy.generateTitle(msg("/new")))
+        assertEquals("", ConversationTitlePolicy.generateTitle(msg("/new topic")))
+        assertEquals("", ConversationTitlePolicy.generateTitle(msg("   /new   ")))
     }
 
     @Test
@@ -148,9 +148,9 @@ class ConversationTitlePolicyTest {
 
     @Test
     fun blankTextWithoutAttachmentsReturnsDefaultTitle() {
-        assertEquals("新对话", ConversationTitlePolicy.generateTitle(msg("")))
-        assertEquals("新对话", ConversationTitlePolicy.generateTitle(msg("   ")))
-        assertEquals("新对话", ConversationTitlePolicy.generateTitle(msg(""), emptyList()))
+        assertEquals("", ConversationTitlePolicy.generateTitle(msg("")))
+        assertEquals("", ConversationTitlePolicy.generateTitle(msg("   ")))
+        assertEquals("", ConversationTitlePolicy.generateTitle(msg(""), emptyList()))
     }
 
     @Test

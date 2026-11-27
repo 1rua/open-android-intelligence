@@ -1,0 +1,12 @@
+Debug: tests=5, failures=0, errors=0, time=11.934s
+  reopenedNativeHistoryPreservesOriginalMessageToolsAndRetrievableImage
+  streamedReplyIsObservableBeforeCompletionOverSse
+  streamedReplyIsObservableBeforeCompletionOverTheDefaultWebSocket
+  passwordLoginCreateUploadVerifyAndSendAgainstShippedHermes
+  batchAcceptanceDispatchReplyAndReplayUseTheRealHttpAndSseBoundary
+Release: tests=5, failures=0, errors=0, time=8.294s
+  reopenedNativeHistoryPreservesOriginalMessageToolsAndRetrievableImage
+  streamedReplyIsObservableBeforeCompletionOverSse
+  streamedReplyIsObservableBeforeCompletionOverTheDefaultWebSocket
+  passwordLoginCreateUploadVerifyAndSendAgainstShippedHermes
+  batchAcceptanceDispatchReplyAndReplayUseTheRealHttpAndSseBoundary

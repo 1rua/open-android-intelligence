@@ -1,0 +1,10 @@
+HistoryIdentityProbeTest > historyCanUpgradeAnExplicitClientPlaceholderToItsNativeUserId FAILED
+    java.lang.IllegalStateException at EncryptedConversationMirror.kt:460
+        Caused by: java.lang.IllegalStateException at EncryptedConversationMirror.kt:460
+
+1 test completed, 1 failed
+BUILD FAILED in 1m 2s
+443 actionable tasks: 26 executed, 417 up-to-date
+Configuration cache entry stored.
+BUILD FAILED in 1m 2s
+443 actionable tasks: 26 executed, 417 up-to-date

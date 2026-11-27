@@ -30,6 +30,8 @@ internal class SqliteConversationRecords(
 ) {
     private val directory = File(context.noBackupFilesDir, "conversation-mirror/$scopeHash")
     private val databaseFile = File(directory, "mirror-v1.db")
+    // 工作台与仓储各有句柄；实例锁不能协调同一文件的 SQLite 写事务。
+    private val databaseLock = lockForDatabase(databaseFile.canonicalPath)
     private val helper = object : SQLiteOpenHelper(context, databaseFile.path, null, 1) {
         override fun onConfigure(db: SQLiteDatabase) {
             db.rawQuery("PRAGMA synchronous=FULL",null).use { it.moveToFirst() }
@@ -61,26 +63,28 @@ internal class SqliteConversationRecords(
     private val encryptionKey by lazy { keyProvider.getOrCreate() }
 
     init {
-        check(directory.isDirectory || directory.mkdirs()) { "MIRROR_STORAGE_UNAVAILABLE" }
-        val db = helper.writableDatabase
-        try {
-            dataVersion = databaseVersion(db)
-            val migrated = db.rawQuery("SELECT version FROM migrations WHERE version=1", null).use { it.moveToFirst() }
-            if (!migrated) {
-                // 单次事务逐个认证旧文档，失败全部回滚且不触碰源文件；不同时保留所有旧正文。
-                transaction {
-                    legacy.keys().forEach { key ->
-                        val value=legacy.read(key) ?: error("MIRROR_CORRUPTED")
-                        try { write(key,value) } finally { value.fill(0) }
+        synchronized(databaseLock) {
+            check(directory.isDirectory || directory.mkdirs()) { "MIRROR_STORAGE_UNAVAILABLE" }
+            val db = helper.writableDatabase
+            try {
+                dataVersion = databaseVersion(db)
+                val migrated = db.rawQuery("SELECT version FROM migrations WHERE version=1", null).use { it.moveToFirst() }
+                if (!migrated) {
+                    // 单次事务逐个认证旧文档，失败全部回滚且不触碰源文件；不同时保留所有旧正文。
+                    transaction {
+                        legacy.keys().forEach { key ->
+                            val value=legacy.read(key) ?: error("MIRROR_CORRUPTED")
+                            try { write(key,value) } finally { value.fill(0) }
+                        }
+                        db.execSQL("INSERT INTO migrations(version) VALUES(1)")
                     }
-                    db.execSQL("INSERT INTO migrations(version) VALUES(1)")
                 }
+            } catch (failure: Throwable) {
+                closed=true
+                plaintext.evictAll()
+                try { helper.close() } catch (closing: Throwable) { failure.addSuppressed(closing) }
+                throw failure
             }
-        } catch (failure: Throwable) {
-            closed=true
-            plaintext.evictAll()
-            try { helper.close() } catch (closing: Throwable) { failure.addSuppressed(closing) }
-            throw failure
         }
     }
 
@@ -96,35 +100,37 @@ internal class SqliteConversationRecords(
     }
     private fun databaseVersion(db: SQLiteDatabase) = db.rawQuery("PRAGMA data_version",null).use { check(it.moveToFirst()); it.getLong(0) }
 
-    @Synchronized fun <T> transaction(block: () -> T): T {
-        check(!closed) { "MIRROR_CLOSED" }
-        if (depth > 0) return block()
-        val db = database()
-        var began=false
-        try {
-            db.beginTransaction()
-            began=true
-            depth++
-            val version = databaseVersion(db)
-            if (version != dataVersion) { plaintext.evictAll(); dataVersion=version }
-            val result = block()
-            db.setTransactionSuccessful()
-            return result
-        } catch (failure: Throwable) {
-            // 不复制和回滚明文缓存；失败后只认 SQLite 事务的已提交数据。
-            plaintext.evictAll()
-            if (failure is android.database.SQLException) throw IOException("MIRROR_COMMIT_FAILED",failure)
-            throw failure
-        } finally {
-            if (began) {
-                depth--
-                try { db.endTransaction() }
-                catch (failure: android.database.SQLException) { plaintext.evictAll(); throw IOException("MIRROR_COMMIT_FAILED",failure) }
+    fun <T> transaction(block: () -> T): T {
+        return synchronized(databaseLock) {
+            check(!closed) { "MIRROR_CLOSED" }
+            if (depth > 0) return@synchronized block()
+            val db = database()
+            var began=false
+            try {
+                db.beginTransaction()
+                began=true
+                depth++
+                val version = databaseVersion(db)
+                if (version != dataVersion) { plaintext.evictAll(); dataVersion=version }
+                val result = block()
+                db.setTransactionSuccessful()
+                result
+            } catch (failure: Throwable) {
+                // 不复制和回滚明文缓存；失败后只认 SQLite 事务的已提交数据。
+                plaintext.evictAll()
+                if (failure is android.database.SQLException) throw IOException("MIRROR_COMMIT_FAILED",failure)
+                throw failure
+            } finally {
+                if (began) {
+                    depth--
+                    try { db.endTransaction() }
+                    catch (failure: android.database.SQLException) { plaintext.evictAll(); throw IOException("MIRROR_COMMIT_FAILED",failure) }
+                }
             }
         }
     }
 
-    @Synchronized fun read(key: String): ByteArray? = transaction {
+    fun read(key: String): ByteArray? = transaction {
         val stored=readRecord(key) ?: return@transaction null
         try {
             val shape=aggregateShape(key) ?: return@transaction stored.copyOf()
@@ -213,25 +219,30 @@ internal class SqliteConversationRecords(
         (record.value.size.toLong()+2L*(lookup.length.toLong()+record.key.length+record.rowId.length)+CACHE_ENTRY_OVERHEAD_BYTES)
             .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
 
-    @Synchronized fun write(key: String, value: ByteArray) = transaction {
+    fun write(key: String, value: ByteArray) = transaction {
         val shape = aggregateShape(key)
         if (shape == null) writeRecord(key, value)
         else {
             val doc = JsonFields.obj(Json.parse(value.decodeToString())) ?: error("MIRROR_CORRUPTED")
             val bodies = JsonFields.objects(doc, shape.field)
             val index = bodies.map { body -> JsonFields.string(body, shape.idField) ?: error("MIRROR_CORRUPTED") }
-            check(index.distinct().size == index.size) { "MESSAGE_ID_CONFLICT" }
+            // 服务端下发的重复 id 只保留最后一次出现：在这里抛异常会把可恢复的镜像
+            // 变成无法启动的存储；去重后写入仍能保证记录集合自洽。
+            val deduplicated = LinkedHashMap<String, JsonValue>()
+            bodies.zip(index).forEach { (body, id) -> deduplicated[id] = body }
+            val uniqueBodies = deduplicated.values.toList()
+            val uniqueIndex = deduplicated.keys.toList()
             val previous=readRecord(key)?.let { bytes ->
                 try { JsonFields.obj(Json.parse(bytes.decodeToString())) } finally { bytes.fill(0) }
             }
-            val obsolete = JsonFields.strings(previous, "recordIndex").toSet() - index.toSet()
-            bodies.zip(index).forEach { (body, id) ->
+            val obsolete = JsonFields.strings(previous, "recordIndex").toSet() - uniqueIndex.toSet()
+            uniqueBodies.zip(uniqueIndex).forEach { (body, id) ->
                 val bytes=Json.canonical(body).toByteArray()
                 try { writeRecord(shape.prefix+id,bytes) } finally { bytes.fill(0) }
             }
             obsolete.forEach { deleteRecord(shape.prefix + it) }
             val bytes=Json.canonical(doc.copy(fields=doc.fields.filterNot { it.first==shape.field }+
-                ("recordIndex" to Json.of(index)))).toByteArray()
+                ("recordIndex" to Json.of(uniqueIndex)))).toByteArray()
             try { writeRecord(key,bytes) } finally { bytes.fill(0) }
         }
     }
@@ -256,7 +267,7 @@ internal class SqliteConversationRecords(
         cache(lookup,Record(key,rowId,revision,value))
     }
 
-    @Synchronized fun delete(key: String) = transaction {
+    fun delete(key: String) = transaction {
         aggregateShape(key)?.let { shape ->
             readRecord(key)?.let { bytes ->
                 try { JsonFields.obj(Json.parse(bytes.decodeToString())) } finally { bytes.fill(0) }
@@ -274,7 +285,7 @@ internal class SqliteConversationRecords(
         plaintext.remove(lookup)
     }
 
-    @Synchronized fun keys(resourceType: String? = null): Set<String> = transaction {
+    fun keys(resourceType: String? = null): Set<String> = transaction {
         val keys=linkedSetOf<String>()
         // 默认排除内部正文；指定类型时先由数据库索引筛选，只认证该类记录。
         val selection=if(resourceType==null) "resource_type NOT IN (?,?,?,?)" else "resource_type=?"
@@ -290,7 +301,7 @@ internal class SqliteConversationRecords(
     }
 
     /** 所有写入都是同步事务；核验数据库仍可读后才允许调用者确认发送或事件游标。 */
-    @Synchronized fun flush() {
+    fun flush() = synchronized(databaseLock) {
         check(depth == 0 && !closed) { "MIRROR_COMMIT_INCOMPLETE" }
         transaction {
             helper.readableDatabase.rawQuery("SELECT version FROM migrations WHERE version=1", null).use {
@@ -299,7 +310,7 @@ internal class SqliteConversationRecords(
         }
     }
 
-    @Synchronized fun close() {
+    fun close() = synchronized(databaseLock) {
         if (!closed) {
             check(depth==0) { "MIRROR_COMMIT_INCOMPLETE" }
             closed = true
@@ -307,7 +318,7 @@ internal class SqliteConversationRecords(
         }
     }
 
-    @Synchronized fun wipe() {
+    fun wipe() = synchronized(databaseLock) {
         close()
         val destination = File(directory.parentFile, "$scopeHash-trash-${UUID.randomUUID()}")
         check(!directory.exists() || directory.renameTo(destination)) { "MIRROR_ERASE_FAILED" }
@@ -355,6 +366,15 @@ internal class SqliteConversationRecords(
     } catch (failure: Exception) { throw IllegalStateException("MIRROR_CORRUPTED", failure) }
 
     companion object {
+        private val databaseLocks = mutableMapOf<String, java.lang.ref.WeakReference<Any>>()
+        /** 实例强持有锁；注册表不延长已关闭分区的生命周期，异数据库互不等待。 */
+        @Synchronized private fun lockForDatabase(path: String): Any {
+            databaseLocks.entries.removeAll { it.value.get() == null }
+            return databaseLocks[path]?.get() ?: Any().also {
+                databaseLocks[path] = java.lang.ref.WeakReference(it)
+            }
+        }
+
         // 缓存最多使用运行时堆预算的 1/64（约 1.56%）；它不限制或淘汰磁盘历史。
         private const val PLAINTEXT_HEAP_DIVISOR=64L
         // 按数组/字符串字节计费，并为记录对象和 LRU 节点保守预留固定开销。

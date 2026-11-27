@@ -1,7 +1,8 @@
 package com.openandroidintelligence.conversation.workbench
 
+import com.openandroidintelligence.conversation.model.NativeExecutionStatus
+
 import android.widget.Toast
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -30,7 +31,6 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -53,20 +53,20 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.openandroidintelligence.conversation.components.ExpandableRegion
+import com.openandroidintelligence.conversation.components.M3ExpandableExpressiveCard
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -91,14 +91,19 @@ fun MarkdownToolCallView(
     isStreaming: Boolean = false,
     timingKey: String? = null,
 ) {
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     val stateColors = LocalAppStateColors.current
 
     // 只有消息仍在流式时，未闭合的 tool_call 才代表「真的在执行」；
     // 流已经结束却仍未闭合，就是中断，结果未知。
-    val running = block.isRunning && isStreaming
-    val interrupted = block.isRunning && !isStreaming
-    val failed = !block.isSuccess && !running
+    val nativeStatus = block.executionStatus
+    val running = nativeStatus == NativeExecutionStatus.RUNNING ||
+        nativeStatus == null && block.isRunning && isStreaming
+    val interrupted = nativeStatus == null && block.isRunning && !isStreaming
+    val failed = nativeStatus == NativeExecutionStatus.FAILED ||
+        nativeStatus == null && !block.isSuccess && !running
+    val unknown = nativeStatus == NativeExecutionStatus.UNKNOWN
+    val completed = nativeStatus == NativeExecutionStatus.COMPLETED
     // Hermes 的纯文本「调用工具：xxx」只有调用事实，没有参数/返回值：显示「已调用」，
     // 不把未知结果伪装成「执行成功」。
     val invocationOnly = block.invocationOnly &&
@@ -122,6 +127,7 @@ fun MarkdownToolCallView(
     val statusColor: Color = when {
         running -> MaterialTheme.colorScheme.primary
         interrupted -> stateColors.warning
+        unknown -> stateColors.warning
         failed -> MaterialTheme.colorScheme.error
         invocationOnly -> MaterialTheme.colorScheme.onSurfaceVariant
         else -> stateColors.success
@@ -129,13 +135,16 @@ fun MarkdownToolCallView(
     val statusDescription = when {
         running -> "执行中"
         interrupted -> "执行已中断"
+        unknown -> "结果未知"
         failed -> "执行失败"
         invocationOnly -> "已调用"
+        completed -> "已完成"
         else -> "执行成功"
     }
     val statusIcon: ImageVector = when {
         running -> Icons.Default.PlayArrow
         interrupted -> Icons.Default.Warning
+        unknown -> Icons.Default.Warning
         failed -> Icons.Default.Cancel
         invocationOnly -> Icons.Default.Check
         else -> Icons.Default.CheckCircle
@@ -148,8 +157,10 @@ fun MarkdownToolCallView(
     val statusText = when {
         running -> "执行中"
         interrupted -> "执行已中断 · 结果未知"
+        unknown -> "结果未知"
         failed -> summaryText ?: "执行失败"
         invocationOnly -> "已调用"
+        completed -> "已完成"
         else -> summaryText ?: "执行成功"
     }
     // 只展示真实观察到的耗时：中断/完成的步骤才可能有结算值。
@@ -161,38 +172,28 @@ fun MarkdownToolCallView(
 
     val badgeText = toolBadgeText(block.toolName)
 
-    val chevronRotation = if (reduceMotion) {
-        if (expanded) 180f else 0f
-    } else {
-        animateFloatAsState(
-            targetValue = if (expanded) 180f else 0f,
-            animationSpec = MotionSpecs.spatial(reduceMotion),
-            label = "tool-call-chevron",
-        ).value
-    }
+    val chevronRotation = com.openandroidintelligence.conversation.components.rememberExpandChevronRotation(
+        expanded = expanded,
+        reduced = reduceMotion,
+        label = "tool-call-chevron",
+    )
 
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(vertical = Dimensions.SpaceTiny),
-        shape = RoundedCornerShape(AppRadius.Compact),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    M3ExpandableExpressiveCard(
+        expanded = expanded,
+        onExpandedChange = { userExpanded = it },
+        modifier = modifier.fillMaxWidth(),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(Dimensions.StrokeHairline, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
+        collapsedCornerRadius = AppRadius.Compact,
+        expandedCornerRadius = AppRadius.Medium,
+        pressedCornerRadius = AppRadius.Medium,
+        toggleClickLabel = if (expanded) "收起工具详情" else "展开工具详情",
+        toggleStateDescription = if (expanded) "已展开" else "已收起",
+        header = {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = Dimensions.MinimumTouchTarget)
-                    .clip(RoundedCornerShape(AppRadius.Small))
-                    .clickable(
-                        role = Role.Button,
-                        onClickLabel = if (expanded) "收起工具详情" else "展开工具详情",
-                    ) {
-                        userExpanded = !expanded
-                    }
-                    .semantics { stateDescription = if (expanded) "已展开" else "已收起" }
                     .padding(horizontal = Dimensions.SpaceCompact, vertical = Dimensions.SpaceSmall),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
@@ -240,12 +241,11 @@ fun MarkdownToolCallView(
                         .rotate(chevronRotation),
                 )
             }
-
-            ExpandableRegion(expanded = expanded) {
-                ToolCallDetails(block = block, running = running)
-            }
-        }
-    }
+        },
+        expandedContent = {
+            ToolCallDetails(block = block, running = running)
+        },
+    )
 }
 
 /** 工具名称徽标：空名/占位名归一为 `[执行命令]`，其余统一加方括号。 */
@@ -292,42 +292,39 @@ private fun ToolCallDetails(
                 ),
             verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-            ) {
-                Text(
-                    text = "命令",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
+            if (block.command.isNotBlank()) {
+                val isShellCommand = block.toolName.lowercase() in listOf(
+                    "bash", "sh", "shell", "adb", "adb_shell", "terminal", "cmd",
                 )
-                if (block.command.isNotBlank()) {
+                val parameterLabel = if (isShellCommand) "命令" else "参数" // i18n-ignore: UI 展示标签
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                ) {
+                    Text(
+                        text = parameterLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
                     CopyCommandAction(command = block.command)
                 }
-            }
 
-            if (block.command.isNotBlank()) {
                 CodeSurface(
                     text = block.command,
                     fontSizeSp = 12.5f,
                     lineHeightSp = null,
                     maxHeight = false,
                 )
-            } else {
-                Text(
-                    text = "Hermes 在消息中未提供命令参数",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (block.command.endsWith("...")) {
-                Text(
-                    text = "参数来自 Hermes 预览，可能已被截断",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+
+                if (block.command.endsWith("...")) {
+                    Text(
+                        text = "参数可能已被截断", // i18n-ignore: 截断提示文案
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
 
             if (summaryText != null) {
@@ -353,7 +350,11 @@ private fun ToolCallDetails(
                 )
             } else if (!running) {
                 Text(
-                    text = if (block.invocationOnly) "此调用未附带返回值" else "无输出",
+                    text = when {
+                        block.executionStatus == NativeExecutionStatus.UNKNOWN -> "未收到工具结果"
+                        block.invocationOnly -> "此调用未附带返回值"
+                        else -> "无输出"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

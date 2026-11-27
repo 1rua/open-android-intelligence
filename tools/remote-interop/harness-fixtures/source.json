@@ -1,0 +1,35 @@
+{
+  "repository": "deepseek-ai/deepseek-harness",
+  "licenseCommit": "39163dd30f703a79079e2d2446545cff3c453738",
+  "licenseSha256": "ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be",
+  "files": [
+    {
+      "package": "@deepseek-ai/dsh-client-connection",
+      "version": "0.2.2-rc.1",
+      "tarballIntegrity": "sha512-GuUgWVWP3+ngXcZhU9ctzVxD78owjP1JVIbXNIGJm2RW9avhBg3590x95EJNPD4YIFuOISg72q8pbXT4Nd1UMw==",
+      "path": "dsh-client-connection/lib/client.node.js",
+      "sha256": "62c25782fbdf395d17107933fc4ff18338b0896513740c5fd8305ed5c90bb039"
+    },
+    {
+      "package": "@deepseek-ai/dsh-api-gateway",
+      "version": "0.2.2-rc.1",
+      "tarballIntegrity": "sha512-pVBKLnxB9D3VrN3OfmpTLZir3UI2sTydbOjsHe6Ae6o0Zi3TBBAyMmz1BsLygUn11jDWYKwKywftOgskWm8zxg==",
+      "path": "dsh-api-gateway/lib/types/client/remote-events.js",
+      "sha256": "fa1635bb9b73932b8808bb6e9e5f10f05b076a830b97a04b0f017661e1ac1a96"
+    },
+    {
+      "package": "@deepseek-ai/dsh-api-gateway",
+      "version": "0.2.2-rc.1",
+      "tarballIntegrity": "sha512-pVBKLnxB9D3VrN3OfmpTLZir3UI2sTydbOjsHe6Ae6o0Zi3TBBAyMmz1BsLygUn11jDWYKwKywftOgskWm8zxg==",
+      "path": "dsh-api-gateway/lib/types/stream-protocol.js",
+      "sha256": "ab4d8d638062a3f0e2330229550342eafe517ae0bbc47d433df4f7618b5bf5ac"
+    },
+    {
+      "package": "@deepseek-ai/dsh-api-session-controller",
+      "version": "0.2.2-rc.1",
+      "tarballIntegrity": "sha512-BtAWPuxMzaEKTQWR2D4vNbZf+3eJ9Zi9Y2XFx843SJF/nECakC+QVXeT3WB+YguU0i+9RqEf4Fy/R7nXNfJOyw==",
+      "path": "dsh-api-session-controller/lib/typert.remote-client.js",
+      "sha256": "ab88a2d3522b4f0d86af040c1673402efa0d66569bc6b296bac4e3281339bbcd"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "label": "TerraSmsReceiver",
+  "requestedTtlSeconds": 7200,
+  "route": {
+    "coreInstanceId": "core_...a4ea1e54",
+    "accountScope": "acct_...acb77745",
+    "endpointId": "endpoint_...b16ddda6",
+    "generation": 1
+  },
+  "leaseExpiresAt": "2026-11-01T10:53:08.905Z",
+  "discoveryFullRouteMatched": true,
+  "differentFrom5554AccountAndDevice": true
+}

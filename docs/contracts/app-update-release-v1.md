@@ -9,7 +9,7 @@ App 自身的版本检测使用 GitHub Release；它与设备插件的作者签�
 - 历史 `nightly` Release 仍可由旧版 App 更新检测读取；新的开发预览工作流不再创建或移动固定 `nightly` Tag。
 - 正式发布说明直接取合并 PR 正文。手动正式发布会查找当前提交关联的已合并 main PR；找不到时停止发布。开发预览由 PR 触发时使用 PR 正文，push 触发时使用最新提交说明。发布说明前附加统一构建信息（包含提交序号、提交 SHA 与提交时间），便于在不新增标签的情况下核对发布历史。
 
-正式版使用不可调试的 `FullRelease` 和私有发行签名；开发预览版使用 `FullDebug` 和仓库固定的公开调试签名。签名不一致时 Android 无法原地覆盖安装，更新界面必须明确呈现这个限制。发布流程不卸载现有 App、不修改现有账号和设备数据。
+正式版使用不可调试的 `FullRelease`，开发预览版使用 `FullDebug`。为了使设备端安装与更新无需卸载重装，两类发布工作流统一复用 GitHub Secrets 中的发行密钥环境变量（`OAI_RELEASE_*`）进行签名，使预览版与正式版产物拥有完全一致的证书身份。本地未配置发行密钥的环境则继续回退至仓库固定的公共调试签名。更新界面按实际签名证书哈希核对，签名一致时确认支持无缝直接升级。发布流程不卸载现有 App、不修改现有账号和设备数据。
 
 ## 构建版本与更新顺序
 
@@ -57,7 +57,7 @@ App 自身的版本检测使用 GitHub Release；它与设备插件的作者签�
 
 ## 工作流与发布顺序
 
-`.github/workflows/dev-release.yml` 只处理 `dev` 分支，使用 `dev-release` 并发组且不取消进行中的构建；允许多个发布运行排队，避免等待中的运行被新 push 替换。稳定版工作流共享该并发组，避免正式版本码确定期间出现更高版本码的预览发布。GitHub Actions 对每个并发组最多保留 100 个等待运行，超过上限时平台会取消新的等待运行。PR 合并本身会产生 push 事件，该 push 就是唯一的发布入口。工作流不再叠加 `pull_request_target` 触发器：它执行的是默认分支 `main` 上的工作流定义，而检出的是 `dev` 的合并提交，两边的脚本命名一旦不同步（例如 `build:android-notifications` 与 `build:android-plugins`）就会稳定失败。发布说明优先取该提交关联的已合并 `dev` PR 正文，查不到时回退到提交说明；直接 push 同样发布。通知包签名在独立 job 中完成，APK 构建只下载签好的 `.alp`，不会接触原始插件签名密钥。`.github/workflows/release.yml` 仅支持在 `main` 分支上手动触发（`workflow_dispatch`）；手动触发若关联到已合并 PR 则使用 PR 正文，否则使用当前 main 提交说明。若正式 Tag/Release 已存在，工作流将 Tag 移到当前发布提交、替换同名资产并将 Release 转为正式 latest。`.github/workflows/android-apk.yml` 仅手动生成供下载的 Actions 构建产物，不发布 GitHub Release。
+`.github/workflows/dev-release.yml` 只处理 `dev` 分支（及手动 `workflow_dispatch`），使用 `dev-release` 并发组并开启 `cancel-in-progress: true`，连续推送时取消旧的开发预览构建与发布，避免并发覆盖冲突；同时彻底解耦单测门禁 `release-gate.yml` 轮询，在插件签名完成后由 `build-and-publish` 直接构建、校验、上传 `app-full-debug` Artifact 并覆盖更新预发布 Release。稳定版工作流 `.github/workflows/release.yml` 使用独立的 `release-${{ github.workflow }}-${{ github.ref }}` 并发组并保留 `cancel-in-progress: false` 与 `release-gate.yml`（`ci.yml`）完整门禁，确保正式版严格排队且不跳过回归门禁。PR 合并本身会产生 push 事件，该 push 就是 dev 预览版的主要发布入口。工作流不再叠加 `pull_request_target` 触发器：它执行的是默认分支 `main` 上的工作流定义，而检出的是 `dev` 的合并提交，两边的脚本命名一旦不同步（例如 `build:android-notifications` 与 `build:android-plugins`）就会稳定失败。发布说明优先取该提交关联的已合并 `dev` PR 正文，查不到时回退到提交说明；直接 push 与手动触发同样发布。通知包签名在独立 job 中完成，APK 构建只下载签好的 `.alp`，不会接触原始插件签名密钥。`.github/workflows/release.yml` 仅支持在 `main` 分支上手动触发（`workflow_dispatch`）；手动触发若关联到已合并 PR 则使用 PR 正文，否则使用当前 main 提交说明。若正式 Tag/Release 已存在，工作流将 Tag 移到当前发布提交、替换同名资产并将 Release 转为正式 latest。`.github/workflows/android-apk.yml` 仅在 `main` 推送与手动触发时生成供下载的 Actions 构建产物，不再监听 `dev` 或 PR 分支，也不发布 GitHub Release。
 
 开发 Tag 固定为 `vX.Y.Z-dev`，同一版本的多次推送直接更新对应 Release 的资源与介绍并移动 Tag 指向最新提交，不产生冗余的新标签。正式发布前会核对远端 main 仍指向本次构建提交，避免旧的排队构建覆盖较新的正式包。更新检测用 GitHub 的 latest-release 接口读取正式版，并且预览检查最多读取 Release 列表前五页；不扫描不断增长的全部历史 Release。它分别保留最新开发预览、最近带版本号测试版和历史 nightly 候选，再读取这些候选的 APK 元数据。若第五页仍满，客户端显示“列表不完整”的检查失败，不会把未完整扫描误报为“暂无可升级版本”。候选是否高于本机安装仍只由清单中的 `versionCode` 决定。
 

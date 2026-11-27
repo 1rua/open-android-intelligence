@@ -104,6 +104,70 @@ class AndroidSmsInboxReaderTest {
         assertTrue(cursor.closed)
     }
 
+    @Test fun localKeywordsUseLiteralOrIgnoreCaseAndMetadataDoesNotDiscloseBody() {
+        for ((keyword, body) in listOf("%" to "10% off", "_" to "A_B", "'" to "O'Neal", "café" to "CAFÉ")) {
+            var actual: RecordedQuery? = null
+            val cursor = CursorDouble(listOf("_id", "thread_id", "address", "body", "date", "read", "sub_id"),
+                listOf(listOf(1L, null, "sender", "ordinary message", 100L, 0, null),
+                    listOf(2L, null, "sender", body, 101L, 0, null)))
+            val reader = AndroidSmsInboxReader { target, projection, selection, args, sort ->
+                actual = RecordedQuery(target, projection, selection, args, sort); cursor.value
+            }
+            val rows = reader.query(SmsInboxQuery(SmsHistoryPolicy(null, 1), includeBody = false,
+                allSenders = false, keywords = setOf("not present", keyword)))
+            assertEquals(listOf(2L), rows.map { it.providerId })
+            assertNull(rows.single().body)
+            assertEquals(setOf(keyword), rows.single().matchedKeywords)
+            assertTrue(actual!!.selection == null || !actual!!.selection!!.contains("LIKE"))
+            assertTrue(cursor.closed)
+        }
+    }
+
+    @Test fun remoteSendersAndQueryOnlyNarrowLocalKeywordAndPhoneConditions() {
+        fun reader() = AndroidSmsInboxReader { _, _, _, _, _ ->
+            CursorDouble(listOf("_id", "thread_id", "address", "body", "date", "read", "sub_id"), listOf(
+                listOf(1L, null, "BANK", "code apple", 100L, 0, null),
+                listOf(2L, null, "other", "code apple", 101L, 0, null),
+                listOf(3L, null, "BANK", "apple", 102L, 0, null),
+                listOf(4L, null, "BANK", "code pear", 103L, 0, null),
+            )).value
+        }
+        val query = SmsInboxQuery(SmsHistoryPolicy(null, 10), senders = setOf("BANK"), textQuery = "apple",
+            allSenders = false, keywords = setOf("CODE"))
+        assertEquals(listOf(1L), reader().query(query).map { it.providerId })
+        assertEquals(listOf(1L, 3L), reader().query(query.copy(keywords = emptySet(), phoneNumbers = setOf("BANK"))).map { it.providerId })
+    }
+
+    @Test fun emptyRestrictedConditionsAndMetadataTextQueryNeverOpenTheProvider() {
+        var calls = 0
+        val reader = AndroidSmsInboxReader { _, _, _, _, _ -> calls++; null }
+        assertTrue(reader.query(SmsInboxQuery(SmsHistoryPolicy(null, 1), allSenders = false)).isEmpty())
+        assertTrue(reader.query(SmsInboxQuery(SmsHistoryPolicy(null, 1), includeBody = false, textQuery = "secret")).isEmpty())
+        assertEquals(0, calls)
+    }
+
+    @Test fun nonMatchingPassiveHistoryHasAnExplicitScanBoundAndClosesTheCursor() {
+        val cursor = CursorDouble(listOf("_id", "thread_id", "address", "body", "date", "read", "sub_id"),
+            (1L..AndroidSmsInboxReader.MAX_SCAN_ROWS + 1L).map { listOf(it, null, "sender", "no match", it, 0, null) })
+        val reader = AndroidSmsInboxReader { _, _, _, _, _ -> cursor.value }
+        assertThrows(SmsQueryScanLimitExceeded::class.java) {
+            reader.query(SmsInboxQuery(SmsHistoryPolicy(null, 1), allSenders = false, keywords = setOf("absent")))
+        }
+        assertTrue(cursor.closed)
+    }
+
+    @Test fun pushPagesIncludeRedactedRejectedRowsAndStopAtTheRequestedPageSize() {
+        val cursor = CursorDouble(listOf("_id", "thread_id", "address", "body", "date", "read", "sub_id"),
+            (1L..10L).map { listOf(it, null, "sender", if (it == 3L) "CODE" else "no match", it, 0, null) })
+        val reader = AndroidSmsInboxReader { _, _, _, _, _ -> cursor.value }
+        val rows = reader.query(SmsInboxQuery(SmsHistoryPolicy(null, 3), includeBody = false,
+            allSenders = false, keywords = setOf("code"), includeRejected = true))
+        assertEquals(listOf(1L, 2L, 3L), rows.map { it.providerId })
+        assertEquals(listOf(false, false, true), rows.map { it.scopeMatched })
+        assertTrue(rows.all { it.body == null })
+        assertEquals(setOf("code"), rows.last().matchedKeywords)
+    }
+
     private data class RecordedQuery(
         val target: SmsProviderTarget,
         val projection: Array<String>,

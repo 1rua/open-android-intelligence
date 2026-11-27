@@ -1,0 +1,13 @@
+[package]
+name = "open-android-intelligence-screen-control"
+version = "0.1.0"
+edition = "2021"
+description = "Open Android Intelligence Screen Control 参考插件"
+publish = false
+
+[lib]
+name = "screen_control"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+open-android-intelligence-sdk = { path = "../sdk-rust" }

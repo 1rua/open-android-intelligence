@@ -1,0 +1,238 @@
+name: Android test lane
+description: >-
+  Runs one Android test lane: checkout, JDK, SDK, Gradle, fixture restore,
+  a single Gradle invocation, and failure-evidence upload.
+
+# 为什么是一个 composite action 而不是复制 8 份 YAML：
+# 每个 lane 的差异只有「跑哪些任务」和「是否需要签名插件」，其余全部相同。
+# 复制粘贴会让「某个 lane 忘了下载 fixture」这类错误只在 CI 上暴露。
+
+inputs:
+  lane:
+    description: Lane passed to tools/ci/android_tasks.py --group/--shard.
+    required: true
+  wasm-artifact:
+    description: >-
+      Artifact name holding the compiled reference WASM plugins. Only the app and
+      play lanes read those payloads; module lanes pass an empty value and skip
+      the download, which keeps them off the fixture build's critical path.
+    required: false
+    default: ''
+  app-sections:
+    description: >-
+      Comma-separated app-test sections to run for the `app-pr` lane, taken from
+      the impact analysis. Empty means every section; "core" is always included.
+    required: false
+    default: ''
+  test-parallel-forks:
+    description: Test JVM forks. Only meaningful for the app test lanes.
+    required: false
+    default: '1'
+  app-jvm-mode:
+    description: App 测试逐类隔离，或仅对审计清单使用 JUnit Suite 复用
+    required: false
+    default: isolated
+  app-test-seed:
+    description: App 安全复用测试的乱序种子
+    required: false
+    default: '135'
+  app-jit:
+    description: App 测试使用默认 JIT 或仅一级编译的启动对照
+    required: false
+    default: default
+  app-gc:
+    description: 测试 JVM 的默认或串行垃圾回收器对照
+    required: false
+    default: default
+  app-performance:
+    description: 采集 App 测试进程、Gradle Profile 与 Robolectric 公开指标
+    required: false
+    default: 'false'
+  gradle-cache-read-only:
+    description: >-
+      Whether the Gradle build cache is read-only. PR runs from this repository
+      write the cache so a re-push or re-run of the same tree reuses compile
+      outputs; fork PRs stay read-only because their cache entries are not
+      trusted.
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    # No checkout here: a composite action can only be used *after* the caller
+    # has checked out the repository, because the action's own files come from
+    # that checkout.
+
+    - name: 安装固定Remote服务端测试的Node
+      if: inputs.lane == 'android-gateway'
+      uses: actions/setup-node@v7
+      with:
+        node-version: '24.18.0'
+        cache: npm
+        cache-dependency-path: tools/remote-server/package-lock.json
+
+    - name: 安装固定Remote服务端隔离依赖
+      if: inputs.lane == 'android-gateway'
+      shell: bash
+      run: npm ci --prefix tools/remote-server --prefer-offline --no-audit --fund=false
+
+    - name: 安装官方客户端与手机Host互通隔离依赖
+      if: inputs.lane == 'android-gateway'
+      shell: bash
+      run: npm ci --prefix tools/remote-interop --prefer-offline --no-audit --fund=false
+
+    - name: Set up JDK 21
+      uses: actions/setup-java@v6
+      with:
+        distribution: temurin
+        java-version: '21'
+
+    - uses: android-actions/setup-android@v3
+      with:
+        packages: platform-tools
+        log-accepted-android-sdk-licenses: false
+
+    - name: Install Android platforms
+      shell: bash
+      run: sdkmanager 'platforms;android-35' 'platforms;android-36' 'build-tools;35.0.0'
+
+    - name: Set up Gradle
+      uses: gradle/actions/setup-gradle@v6
+      with:
+        # The configuration cache is now usable: the forbidden-surface gate no
+        # longer captures the script instance, so repeated invocations skip
+        # configuration entirely.
+        # 手动实验的所有通道均只读，避免同时运行的模块通道改变 App 对照快照。
+        cache-read-only: ${{ inputs.gradle-cache-read-only == 'true' || github.event_name == 'workflow_dispatch' }}
+        # 同源码实验只恢复本通道的缓存，禁止回退到运行中其它模块刚发布的快照。
+        gradle-home-cache-strict-match: ${{ github.event_name == 'workflow_dispatch' }}
+
+    # Robolectric 默认把 android-all 运行时下载到 user.home/.m2；本仓库各模块把
+    # user.home 重定向到 apps/android/.gradle/robolectric-home，两处路径一并缓存，
+    # 并按 lane 隔离键名避免轻量通道先命中后锁死完整 SDK 缓存。
+    - name: Cache Robolectric runtime jars
+      if: inputs.lane != 'phone-mcp-interop' && inputs.lane != 'app-compile'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.m2/repository/org/robolectric
+          apps/android/.gradle/robolectric-home/.m2/repository/org/robolectric
+        key: robolectric-${{ runner.os }}-${{ inputs.lane }}-${{ hashFiles('apps/android/**/build.gradle.kts', 'apps/android/gradle.properties', 'apps/android/gradle/**') }}
+        restore-keys: |
+          robolectric-${{ runner.os }}-${{ inputs.lane }}-
+          robolectric-${{ runner.os }}-app-pr-
+          robolectric-${{ runner.os }}-
+        # 即使单条测试失败也保留已下载的 Robolectric 运行时依赖，避免下次重跑反复冲击 Maven Central 触发 429。
+        save-always: true
+
+    - name: Restore the WASM fixtures
+      if: inputs.wasm-artifact != ''
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.wasm-artifact }}
+        path: plugins/target/wasm32-unknown-unknown/release
+
+    - name: Install the Gradle wrapper
+      shell: bash
+      working-directory: apps/android
+      run: chmod +x gradlew
+
+    - name: Run the lane
+      shell: bash
+      working-directory: apps/android
+      env:
+        LC_ALL: C.UTF-8
+        OAI_TEST_PARALLEL_FORKS: ${{ inputs.test-parallel-forks }}
+        OAI_APP_SECTIONS: ${{ inputs.app-sections }}
+        OAI_APP_JVM_MODE: ${{ inputs.app-jvm-mode }}
+        OAI_APP_TEST_SEED: ${{ inputs.app-test-seed }}
+        OAI_APP_JIT: ${{ inputs.app-jit }}
+        OAI_APP_GC: ${{ inputs.app-gc }}
+        OAI_APP_PERFORMANCE: ${{ inputs.app-performance }}
+      run: |
+        set -euo pipefail
+        case "${{ inputs.lane }}" in
+          phone-mcp-interop)
+            # 使用同一 checkout、JDK/SDK/Gradle 缓存，先编译当前源码再运行原工具。
+            node ../../tools/remote/phone-mcp-interop.ts
+            exit 0
+            ;;
+          android-device|android-platform|android-notifications|android-conversation|android-gateway|android-plugins)
+            planner=(python3 ../../tools/ci/android_tasks.py --group modules --lane "${{ inputs.lane }}")
+            ;;
+          app-pr)
+            if [ -n "${OAI_APP_SECTIONS:-}" ]; then
+              planner=(python3 ../../tools/ci/android_tasks.py --group app-pr --sections "$OAI_APP_SECTIONS")
+            else
+              planner=(python3 ../../tools/ci/android_tasks.py --group app-pr)
+            fi
+            case "$OAI_APP_JVM_MODE" in
+              isolated) ;;
+              reuse) planner+=(--jvm-reuse --seed "$OAI_APP_TEST_SEED") ;;
+              *) echo "::error::无效的 App 测试进程模式"; exit 2 ;;
+            esac
+            ;;
+          app-compile)
+            planner=(python3 ../../tools/ci/android_tasks.py --group app-compile)
+            ;;
+          play)
+            planner=(python3 ../../tools/ci/android_tasks.py --group play)
+            ;;
+          *)
+            echo "::error::Unknown lane: ${{ inputs.lane }}"
+            exit 2
+            ;;
+        esac
+
+        # `mapfile` returns success even when its producer fails, so a planner
+        # rejection would yield an empty array and Gradle would run its default
+        # `help` task — reporting a green lane that tested nothing. Capture the
+        # output first and check both the exit status and the result.
+        if ! planned="$("${planner[@]}")"; then
+          echo "::error::Task planner failed for lane '${{ inputs.lane }}'"
+          exit 1
+        fi
+        mapfile -t args <<< "$planned"
+        # `mapfile` on a single empty line yields one empty element.
+        if [ "${#args[@]}" -eq 0 ] || [ -z "${args[0]:-}" ]; then
+          echo "::error::Task planner produced no tasks for lane '${{ inputs.lane }}'"
+          exit 1
+        fi
+
+        printf 'gradle %s\n' "${args[*]}"
+        command=(./gradlew "${args[@]}" -Poai.testParallelForks="$OAI_TEST_PARALLEL_FORKS" --stacktrace)
+        if [ "${{ inputs.lane }}" = "app-pr" ]; then
+          command+=(-Poai.testJit="$OAI_APP_JIT" -Poai.testGc="$OAI_APP_GC")
+        fi
+        if [ "$OAI_APP_PERFORMANCE" = "true" ]; then
+          command+=(-Poai.testPerformance=true --profile --info --console=plain)
+          python3 ../../tools/ci/android_app_performance.py run \
+            --output app/build/reports/app-performance -- "${command[@]}"
+        else
+          "${command[@]}"
+        fi
+
+    - name: 汇总 App 性能与用例清单
+      if: always() && inputs.app-performance == 'true'
+      shell: bash
+      working-directory: apps/android
+      run: |
+        python3 ../../tools/ci/android_app_performance.py summary \
+          --results app/build/test-results/testFullDebugUnitTest \
+          --profile build/reports/profile \
+          --metrics app/build/reports/app-performance \
+          --output app/build/reports/app-performance/summary.json
+
+    - name: Preserve test evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: test-reports-${{ inputs.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
+        if-no-files-found: ignore
+        retention-days: 7
+        path: |
+          apps/android/**/build/test-results/**/*.xml
+          apps/android/**/build/reports/tests/**
+          apps/android/app/build/reports/app-performance/**
+          apps/android/build/reports/profile/**

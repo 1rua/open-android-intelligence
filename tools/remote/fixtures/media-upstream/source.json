@@ -1,0 +1,71 @@
+{
+  "repository": "liguobao/ds-harness-remote",
+  "commit": "ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7",
+  "files": [
+    {
+      "path": "packages/plugin/src/workspace-bridge.ts",
+      "sha256": "7be6169d204000aa43a1494dc2494711e9e07a17f9856f1799bdd2d04bec9bea",
+      "gitBlob": "5a9d93d0c714bff222225a3172c4d3179e5a3be9"
+    },
+    {
+      "path": "packages/plugin/src/codex-workspace-bridge.ts",
+      "sha256": "79e3440c4f9bf140a1d1433ce621904e976e332a9e26b30ae1487015bc565015",
+      "gitBlob": "16aed21e9c92c0d62d8871e909b780421501e5a4"
+    },
+    {
+      "path": "packages/plugin/src/acp/workspace-tools.ts",
+      "sha256": "5a75bb2d315c94b8e0be7446bb4bf8b6fe6be375eba73ff6e5e8480d19c67819",
+      "gitBlob": "21616bd4d4925bc6e8d2e524ac07fd1027493521"
+    },
+    {
+      "path": "packages/plugin/src/acp/method-policy.ts",
+      "sha256": "ca357899422fb46faab29861525f120af90d4bcbb46d23621e73f8db0bd999bc",
+      "gitBlob": "3806baeac2ad5e8af447929c468160f7dab2f22e"
+    },
+    {
+      "path": "packages/plugin/src/codex/codex-image-codec.ts",
+      "sha256": "c854714ac9ea706e7005332231053705f8f4d8e79e407c6026476c0550a61c41",
+      "gitBlob": "d5e9e1828bb6475493bfa069f084c95372571888"
+    },
+    {
+      "path": "packages/plugin/src/codex/method-policy.ts",
+      "sha256": "9fa077189104d283562c40e86fbf1c56b2c7ae0103b4f9cbccf6023ab482dd6f",
+      "gitBlob": "5782e02dab84a14a67f6697ea949b3ea7274d528"
+    },
+    {
+      "path": "packages/client-core/src/acp-client.ts",
+      "sha256": "a1a8c53a6f5d0a82c32377d273740e1b5edb7743112c6ecd2891174f91fd241d",
+      "gitBlob": "138c9c8461c6d631d4865537a8729f84bfa47eda"
+    },
+    {
+      "path": "packages/client-core/src/harness-alpha-client.ts",
+      "sha256": "73962ba2fd09701fb3fac704be591e8dca095d3ac8835fb796840a719ab4d142",
+      "gitBlob": "088cfddc569d0b83520119c7ab410167694f73f4"
+    },
+    {
+      "path": "apps/android/src/services/session-tools.ts",
+      "sha256": "4e0788fa49c82ed8a511d626e8bdf58af2b2c5e3417f79e2f80b0eaa1fc2d5fe",
+      "gitBlob": "4d69eea5911223e993769f96bfb6f20e38fed9d3"
+    },
+    {
+      "path": "packages/plugin/src/codex/domain.ts",
+      "sha256": "5bd753f4a51320b703e0fa48a81da1d55d1946132e0e614b801be2943b654fb5",
+      "gitBlob": "295796b385268258e448305fa6a7ad0fb1a427a6"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "6e41a78bbbe0c3ed54d085b661eb5af5a7836f4d40460d54f1469f43b386285d",
+      "gitBlob": "d2c3468f3a4e2ffac2a66d07e85fe0f4f6369122"
+    },
+    {
+      "path": "packages/plugin/src/codex/session-id.ts",
+      "sha256": "3d8d433fc6770878fd809f967f689f82da7ccf286bf1d44d01fa2e253a00a514",
+      "gitBlob": "d26a0d9db8366a422206101e562727d39bc6e205"
+    },
+    {
+      "path": "packages/plugin/src/safe-error.ts",
+      "sha256": "6c48870a91e15810e8ebd1fcb3d440570141b28af9fb94491fd081d6ee73de8c",
+      "gitBlob": "9f0d43d81feb46a78d1ca31da57b99250f11cbd4"
+    }
+  ]
+}

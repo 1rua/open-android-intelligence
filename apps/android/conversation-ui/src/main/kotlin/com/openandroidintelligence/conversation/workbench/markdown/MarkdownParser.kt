@@ -20,34 +20,6 @@ object MarkdownParser {
         "<tool_call(?:\\s+name=[\"']([^\"']*)[\"'])?\\s*>([\\s\\S]*)$",
         RegexOption.IGNORE_CASE
     )
-    /**
-     * Hermes / 宿主以纯文本发送的工具调用行，例如「调用工具：execute_code」。
-     * 只在独立成行时识别，避免把正文里的同义句子误判成工具卡。
-     */
-    private val hermesToolLineRegex = Regex(
-        "^\\s*[^\\p{L}\\p{N}]*\\s*(?:调用工具|工具调用|Tool call|Calling tool)\\s*[：:]\\s*(.+?)\\s*$",
-        RegexOption.IGNORE_CASE,
-    )
-
-    /**
-     * Hermes 实时进度行（agent/display.py 的友好工具标签），例如
-     * 「Running code ...」「Searching files for ...」「Reading ...」。
-     * 实时会话里这些是普通文本；不识别就会既没有工具卡、也不会聚合。
-     */
-    private val hermesActivityLineRegex = Regex(
-        "^\\s*[^\\p{L}\\p{N}]*\\s*(" +
-            "Running code|Running|Searching files(?: for)?|Searching the web(?: for)?|" +
-            "Searching past sessions|Searching|Reading skill|Reading|Writing|Editing|" +
-            "Browsing|Clicking|Typing|Generating image|Generating video|Generating speech|" +
-            "Looking at the image|Listing skills|Updating skill|Delegating|Scheduling|Asking|" +
-            "Updating memory|Updating tasks" +
-            ")\\b\\s*(.*)$",
-        RegexOption.IGNORE_CASE,
-    )
-
-    /** host_history.py 用「、」连接同一条进度消息里的多个工具名。 */
-    private val hermesToolNameSeparator = Regex("[、，]")
-    private val hermesToolNameAndArgs = Regex("^([A-Za-z0-9._~-]{1,128})(?:\\s+|\\s*[(（]\\s*)(.*)$")
     private val thinkStartRegex = Regex("<think(?:\\s+[^>]*)?>", RegexOption.IGNORE_CASE)
     private val thinkEndRegex = Regex("</think>", RegexOption.IGNORE_CASE)
     private val headingRegex = Regex("^(#{1,6})\\s+(.*)$")
@@ -99,9 +71,33 @@ private const val MaxBlockquoteDepth = 8
         }
     }
 
-    private fun parseThoughtBlocks(text: String): List<TimelineBlock> {
+    internal fun parseTraced(
+        text: String,
+        trace: MarkdownParseTrace,
+        offset: Int = 0,
+        narrative: Boolean = false,
+        allowEmpty: Boolean = false,
+    ): List<TimelineBlock> {
+        val source = MarkdownSourceText.original(text, offset)
+        if (text.isEmpty()) return listOf(trace.record(TimelineBlock.Paragraph(""), source))
+        return if (narrative) {
+            parseContentWithCodeBlocks(text, recognizeToolCalls = false, trace = trace, source = source)
+                .ifEmpty { if (allowEmpty) emptyList() else listOf(trace.record(TimelineBlock.Paragraph(text), source)) }
+        } else {
+            parseThoughtBlocks(text, trace, source, allowEmpty)
+        }
+    }
+
+    private fun parseThoughtBlocks(
+        text: String,
+        trace: MarkdownParseTrace? = null,
+        source: MarkdownSourceText? = null,
+        allowEmpty: Boolean = false,
+    ): List<TimelineBlock> {
         if (!text.contains("<think", ignoreCase = true)) {
-            return parseContentWithXmlToolCalls(text).ifEmpty { listOf(TimelineBlock.Paragraph(text)) }
+            return parseContentWithXmlToolCalls(text, trace, source).ifEmpty {
+                if (allowEmpty) emptyList() else listOf(record(trace, TimelineBlock.Paragraph(text), source))
+            }
         }
 
         val blocks = mutableListOf<TimelineBlock>()
@@ -112,7 +108,7 @@ private const val MaxBlockquoteDepth = 8
             if (startMatch == null) {
                 val remaining = text.substring(currentIndex).trim()
                 if (remaining.isNotEmpty()) {
-                    blocks.addAll(parseContentWithXmlToolCalls(remaining))
+                    blocks.addAll(parseContentWithXmlToolCalls(remaining, trace, source?.slice(currentIndex)?.trim()))
                 }
                 break
             }
@@ -120,28 +116,36 @@ private const val MaxBlockquoteDepth = 8
             if (startMatch.range.first > currentIndex) {
                 val before = text.substring(currentIndex, startMatch.range.first).trim()
                 if (before.isNotEmpty()) {
-                    blocks.addAll(parseContentWithXmlToolCalls(before))
+                    blocks.addAll(parseContentWithXmlToolCalls(before, trace, source?.slice(currentIndex, startMatch.range.first)?.trim()))
                 }
             }
 
             val endMatch = thinkEndRegex.find(text, startIndex = startMatch.range.last + 1)
             if (endMatch != null) {
                 val thought = text.substring(startMatch.range.last + 1, endMatch.range.first).trim()
-                blocks.add(TimelineBlock.ThoughtBlock(thought = thought, isComplete = true))
+                blocks.add(record(trace, TimelineBlock.ThoughtBlock(thought = thought, isComplete = true),
+                    source?.slice(startMatch.range.first, endMatch.range.last + 1),
+                    source?.slice(startMatch.range.last + 1, endMatch.range.first)?.trim()?.let(::listOf).orEmpty()))
                 currentIndex = endMatch.range.last + 1
             } else {
                 val thought = text.substring(startMatch.range.last + 1).trim()
-                blocks.add(TimelineBlock.ThoughtBlock(thought = thought, isComplete = false))
+                blocks.add(record(trace, TimelineBlock.ThoughtBlock(thought = thought, isComplete = false),
+                    source?.slice(startMatch.range.first),
+                    source?.slice(startMatch.range.last + 1)?.trim()?.let(::listOf).orEmpty(), closed = false))
                 currentIndex = text.length
             }
         }
 
-        return blocks.ifEmpty { listOf(TimelineBlock.Paragraph(text)) }
+        return blocks.ifEmpty { if (allowEmpty) emptyList() else listOf(record(trace, TimelineBlock.Paragraph(text), source)) }
     }
 
-    private fun parseContentWithXmlToolCalls(text: String): List<TimelineBlock> {
+    private fun parseContentWithXmlToolCalls(
+        text: String,
+        trace: MarkdownParseTrace? = null,
+        source: MarkdownSourceText? = null,
+    ): List<TimelineBlock> {
         if (!text.contains("<tool_call", ignoreCase = true)) {
-            return parseContentWithCodeBlocks(text)
+            return parseContentWithCodeBlocks(text, trace = trace, source = source)
         }
 
         val blocks = mutableListOf<TimelineBlock>()
@@ -152,18 +156,18 @@ private const val MaxBlockquoteDepth = 8
             for (match in matches) {
                 val before = text.substring(lastIndex, match.range.first).trim()
                 if (before.isNotEmpty()) {
-                    blocks.addAll(parseContentWithCodeBlocks(before))
+                    blocks.addAll(parseContentWithCodeBlocks(before, trace = trace, source = source?.slice(lastIndex, match.range.first)?.trim()))
                 }
                 val toolNameAttr = match.groups[1]?.value?.trim()?.ifBlank { null } ?: "执行命令"
                 val content = match.groupValues[2]
-                blocks.add(parseXmlToolCallContent(toolNameAttr, content))
+                blocks.add(record(trace, parseXmlToolCallContent(toolNameAttr, content), source?.slice(match.range.first, match.range.last + 1), emptyList()))
                 lastIndex = match.range.last + 1
             }
             val remaining = text.substring(lastIndex).trim()
             if (remaining.isNotEmpty()) {
                 // 剩余文本里可能还有尚未闭合的 <tool_call>（流式下一段工具调用）。
                 // 继续走同一入口，才能把它标成 isRunning，而不是当成普通段落。
-                blocks.addAll(parseContentWithXmlToolCalls(remaining))
+                blocks.addAll(parseContentWithXmlToolCalls(remaining, trace, source?.slice(lastIndex)?.trim()))
             }
             return blocks
         }
@@ -173,15 +177,15 @@ private const val MaxBlockquoteDepth = 8
         if (unclosedMatch != null) {
             val before = text.substring(0, unclosedMatch.range.first).trim()
             if (before.isNotEmpty()) {
-                blocks.addAll(parseContentWithCodeBlocks(before))
+                blocks.addAll(parseContentWithCodeBlocks(before, trace = trace, source = source?.slice(0, unclosedMatch.range.first)?.trim()))
             }
             val toolNameAttr = unclosedMatch.groups[1]?.value?.trim()?.ifBlank { null } ?: "执行命令"
             val content = unclosedMatch.groupValues[2]
-            blocks.add(parseXmlToolCallContent(toolNameAttr, content).copy(isRunning = true))
+            blocks.add(record(trace, parseXmlToolCallContent(toolNameAttr, content).copy(isRunning = true), source?.slice(unclosedMatch.range.first), emptyList(), closed = false))
             return blocks
         }
 
-        return parseContentWithCodeBlocks(text)
+        return parseContentWithCodeBlocks(text, trace = trace, source = source)
     }
 
     /**
@@ -195,9 +199,11 @@ private const val MaxBlockquoteDepth = 8
         text: String,
         quoteDepth: Int = 0,
         recognizeToolCalls: Boolean = true,
+        trace: MarkdownParseTrace? = null,
+        source: MarkdownSourceText? = null,
     ): List<TimelineBlock> {
         if (!text.contains("```")) {
-            return parseNonCodeText(text, quoteDepth, recognizeToolCalls)
+            return parseNonCodeText(text, quoteDepth, recognizeToolCalls, trace, source)
         }
 
         val matches = codeBlockRegex.findAll(text).toList()
@@ -207,16 +213,18 @@ private const val MaxBlockquoteDepth = 8
             for (match in matches) {
                 val before = text.substring(lastIndex, match.range.first).trim()
                 if (before.isNotEmpty()) {
-                    blocks.addAll(parseNonCodeText(before, quoteDepth, recognizeToolCalls))
+                    blocks.addAll(parseNonCodeText(before, quoteDepth, recognizeToolCalls, trace, source?.slice(lastIndex, match.range.first)?.trim()))
                 }
                 val language = match.groupValues[1].trim()
                 val code = match.groupValues[2].trimEnd()
 
                 val toolCall = if (recognizeToolCalls) tryParseCodeBlockAsToolCall(language, code) else null
                 if (toolCall != null) {
-                    blocks.add(toolCall)
+                    blocks.add(record(trace, toolCall, source?.slice(match.range.first, match.range.last + 1), emptyList()))
                 } else {
-                    blocks.add(TimelineBlock.CodeBlock(language.ifBlank { "代码" }, code))
+                    blocks.add(record(trace, TimelineBlock.CodeBlock(language.ifBlank { "代码" }, code),
+                        source?.slice(match.range.first, match.range.last + 1),
+                        source?.slice(match.groups[2]!!.range.first, match.groups[2]!!.range.last + 1)?.trimEnd()?.let(::listOf).orEmpty()))
                 }
                 lastIndex = match.range.last + 1
             }
@@ -230,6 +238,8 @@ private const val MaxBlockquoteDepth = 8
                         remaining,
                         quoteDepth = quoteDepth,
                         recognizeToolCalls = recognizeToolCalls,
+                        trace = trace,
+                        source = source?.slice(lastIndex)?.trim(),
                     ),
                 )
             }
@@ -242,20 +252,22 @@ private const val MaxBlockquoteDepth = 8
             val blocks = mutableListOf<TimelineBlock>()
             val before = text.substring(0, unclosedCodeMatch.range.first).trim()
             if (before.isNotEmpty()) {
-                blocks.addAll(parseNonCodeText(before, quoteDepth, recognizeToolCalls))
+                blocks.addAll(parseNonCodeText(before, quoteDepth, recognizeToolCalls, trace, source?.slice(0, unclosedCodeMatch.range.first)?.trim()))
             }
             val language = unclosedCodeMatch.groupValues[1].trim()
             val code = unclosedCodeMatch.groupValues[2].trimEnd()
             val toolCall = if (recognizeToolCalls) tryParseCodeBlockAsToolCall(language, code) else null
             if (toolCall != null) {
-                blocks.add(toolCall.copy(isRunning = true))
+                blocks.add(record(trace, toolCall.copy(isRunning = true), source?.slice(unclosedCodeMatch.range.first), emptyList(), closed = false))
             } else {
-                blocks.add(TimelineBlock.CodeBlock(language.ifBlank { "代码" }, code))
+                blocks.add(record(trace, TimelineBlock.CodeBlock(language.ifBlank { "代码" }, code),
+                    source?.slice(unclosedCodeMatch.range.first),
+                    source?.slice(unclosedCodeMatch.groups[2]!!.range.first)?.trimEnd()?.let(::listOf).orEmpty(), closed = false))
             }
             return blocks
         }
 
-        return parseNonCodeText(text, quoteDepth, recognizeToolCalls)
+        return parseNonCodeText(text, quoteDepth, recognizeToolCalls, trace, source)
     }
 
     private fun tryParseCodeBlockAsToolCall(language: String, code: String): TimelineBlock.ToolCallBlock? {
@@ -429,154 +441,22 @@ private const val MaxBlockquoteDepth = 8
         )
     }
 
-    /**
-     * 解析 Hermes 的纯文本工具调用行：工具名后的剩余文本作为命令/参数，
-     * 没有参数时标记 [TimelineBlock.ToolCallBlock.invocationOnly]。
-     */
-    private fun parseHermesToolLines(
-        text: String,
-        quoteDepth: Int,
-        includeActivities: Boolean,
-    ): List<TimelineBlock> {
-        val blocks = mutableListOf<TimelineBlock>()
-        val pending = mutableListOf<String>()
-
-        fun flushPending() {
-            if (pending.isEmpty()) return
-            val chunk = pending.joinToString("\n").trim()
-            pending.clear()
-            if (chunk.isNotEmpty()) {
-                // 已拆掉全部工具行，递归不会再命中 Hermes 分支。
-                blocks.addAll(parseNonCodeText(chunk, quoteDepth, recognizeToolCalls = true))
-            }
-        }
-
-        text.lines().forEach { line ->
-            val match = hermesToolLineRegex.find(line.trim())
-            if (match == null) {
-                val activity = if (includeActivities) hermesActivityLineRegex.find(line.trim()) else null
-                if (activity == null) {
-                    pending += line
-                } else {
-                    flushPending()
-                    val verb = activity.groupValues[1]
-                    val command = activity.groupValues[2].trim()
-                    blocks += TimelineBlock.ToolCallBlock(
-                        toolName = hermesToolNameForVerb(verb),
-                        command = command,
-                        isSuccess = true,
-                        summary = null,
-                        invocationOnly = true,
-                    )
-                }
-            } else {
-                flushPending()
-                val namesText = match.groupValues[1]
-                    .trim()
-                    .trim('*', '`', ' ')
-                // 一条消息可能写成「调用工具：execute_code、search_files」：每个名称一张卡。
-                namesText.split(hermesToolNameSeparator)
-                    .map { it.trim().trim('*', '`', ' ') }
-                    .filter { it.isNotEmpty() }
-                    .forEach { segment ->
-                        val withArgs = hermesToolNameAndArgs.find(segment)
-                        val toolName: String
-                        val command: String
-                        if (withArgs != null) {
-                            toolName = withArgs.groupValues[1]
-                            command = withArgs.groupValues[2].trim()
-                        } else {
-                            toolName = segment
-                            command = ""
-                        }
-                        blocks += TimelineBlock.ToolCallBlock(
-                            toolName = toolName.ifBlank { "执行命令" },
-                            command = command,
-                            isSuccess = true,
-                            summary = null,
-                            invocationOnly = true,
-                        )
-                    }
-            }
-        }
-        flushPending()
-        return blocks.ifEmpty { listOf(TimelineBlock.Paragraph(text)) }
-    }
-
-/**
- * 是否为 Hermes 工具占位行，或整条消息都是实时工具进度行。
- *
- * 活动行只在“整条消息没有别的内容”时识别：最终回答里出现一句
- * "Reading the error message..." 不能被误判成 read_file 工具卡。
- */
-internal fun mayContainHermesToolText(text: String): Boolean {
-    if (text.lineSequence().any { hermesToolLineRegex.matches(it.trim()) }) return true
-    return isHermesActivityOnlyText(text)
-}
-
-internal fun isHermesActivityOnlyText(text: String): Boolean {
-    val lines = text.lines().filter { it.isNotBlank() }
-    // 至少两行，且行尾没有句读：单行或带句号的 "Reading your question..." 更像正文，
-    // 而不是 Hermes 的工具进度预览。
-    return lines.size >= 2 && lines.all { line ->
-        val trimmed = line.trim()
-        // Hermes 的预览会用 "..." 截断长命令，这仍是进度行；单个句号/问号/感叹号
-        // 才更像正文句尾。
-        val truncatedPreview = trimmed.endsWith("...")
-        val sentenceEnd = !truncatedPreview &&
-            (trimmed.endsWith(".") || trimmed.endsWith("!") || trimmed.endsWith("?"))
-        hermesActivityLineRegex.matches(trimmed) && !sentenceEnd
-    }
-}
-
-    /** 把 Hermes 的友好动词映射回工具名；未知动词保留原文作为工具名。 */
-    private fun hermesToolNameForVerb(verb: String): String = when (verb.trim().lowercase()) {
-        "running code" -> "execute_code"
-        "running" -> "terminal"
-        "searching files", "searching files for" -> "search_files"
-        "searching the web", "searching the web for" -> "web_search"
-        "searching past sessions" -> "session_search"
-        "reading", "reading skill" -> "read_file"
-        "writing" -> "write_file"
-        "editing" -> "patch"
-        "browsing" -> "browser_navigate"
-        "clicking" -> "browser_click"
-        "typing" -> "browser_type"
-        "generating image" -> "image_generate"
-        "generating video" -> "video_generate"
-        "generating speech" -> "text_to_speech"
-        "looking at the image" -> "vision_analyze"
-        "listing skills" -> "skills_list"
-        "updating skill" -> "skill_manage"
-        "delegating" -> "delegate_task"
-        "scheduling" -> "cronjob_manage"
-        "asking" -> "clarify"
-        "updating memory" -> "memory"
-        "updating tasks" -> "todo_list"
-        else -> verb.trim()
-    }
-
     private fun parseNonCodeText(
         text: String,
         quoteDepth: Int = 0,
         recognizeToolCalls: Boolean = true,
+        trace: MarkdownParseTrace? = null,
+        source: MarkdownSourceText? = null,
     ): List<TimelineBlock> {
-        // Hermes 的工具调用是纯文本行（不是 XML/围栏），必须先拆成 ToolCallBlock，
-        // 否则它会被当成普通段落：既没有工具卡，也不会参与执行过程聚合。
-        if (recognizeToolCalls && mayContainHermesToolText(text)) {
-            val hasExplicitToolLine = text.lineSequence().any { hermesToolLineRegex.matches(it.trim()) }
-            return parseHermesToolLines(
-                text = text,
-                quoteDepth = quoteDepth,
-                includeActivities = !hasExplicitToolLine && isHermesActivityOnlyText(text),
-            )
-        }
         val lines = text.lines()
+        val sourceLines = source?.lines()
+        fun sourceRange(start: Int, end: Int) = sourceLines?.subList(start, end)?.let(MarkdownSourceText::join)
         val blocks = mutableListOf<TimelineBlock>()
         var lineIndex = 0
 
         while (lineIndex < lines.size) {
             val line = lines[lineIndex]
+            val blockStart = lineIndex
 
             // 跳过空行
             if (line.isBlank()) {
@@ -586,7 +466,7 @@ internal fun isHermesActivityOnlyText(text: String): Boolean {
 
             // 1. 分割线
             if (thematicBreakRegex.matches(line)) {
-                blocks.add(TimelineBlock.ThematicBreak)
+                blocks.add(record(trace, TimelineBlock.ThematicBreak, sourceLines?.get(lineIndex), emptyList()))
                 lineIndex++
                 continue
             }
@@ -596,7 +476,8 @@ internal fun isHermesActivityOnlyText(text: String): Boolean {
             if (headingMatch != null) {
                 val level = headingMatch.groupValues[1].length
                 val title = headingMatch.groupValues[2].trim()
-                blocks.add(TimelineBlock.Heading(level, title))
+                blocks.add(record(trace, TimelineBlock.Heading(level, title), sourceLines?.get(lineIndex),
+                    sourceLines?.get(lineIndex)?.slice(headingMatch.groups[2]!!.range.first, headingMatch.groups[2]!!.range.last + 1)?.trim()?.let(::listOf).orEmpty()))
                 lineIndex++
                 continue
             }
@@ -604,7 +485,11 @@ internal fun isHermesActivityOnlyText(text: String): Boolean {
             // 3. 块级数学公式 $$ ... $$
             val mathBlock = parseMathBlock(lines, lineIndex)
             if (mathBlock != null) {
-                blocks.add(mathBlock.block)
+                val mathSource = sourceRange(lineIndex, mathBlock.nextLine)
+                val raw = mathSource?.trim()
+                val content = raw?.slice(2, if (raw.text.endsWith("$$")) raw.text.length - 2 else raw.text.length)?.trim()
+                blocks.add(record(trace, mathBlock.block, mathSource, content?.let(::listOf).orEmpty(),
+                    closed = raw?.text?.endsWith("$$") ?: true))
                 lineIndex = mathBlock.nextLine
                 continue
             }
@@ -620,13 +505,14 @@ internal fun isHermesActivityOnlyText(text: String): Boolean {
                     paragraphLines.add(lines[lineIndex])
                     lineIndex++
                 }
-                blocks.add(TimelineBlock.Paragraph(paragraphLines.joinToString("\n")))
+                blocks.add(record(trace, TimelineBlock.Paragraph(paragraphLines.joinToString("\n")), sourceRange(blockStart, lineIndex)))
                 continue
             }
 
             // 4. 表格检测
             if (line.contains("|") && lineIndex + 1 < lines.size && isTableSeparatorRow(lines[lineIndex + 1])) {
                 val headers = parseTableCells(line)
+                val cellSources = sourceLines?.get(lineIndex)?.let(::tableCellSources)?.toMutableList()
                 val separatorCells = parseTableCells(lines[lineIndex + 1])
                 val alignments = separatorCells.map { cell ->
                     val trimmed = cell.trim()
@@ -640,15 +526,17 @@ internal fun isHermesActivityOnlyText(text: String): Boolean {
                 val rows = mutableListOf<List<String>>()
                 while (lineIndex < lines.size && lines[lineIndex].isNotBlank() && lines[lineIndex].contains("|")) {
                     rows.add(parseTableCells(lines[lineIndex]))
+                    sourceLines?.get(lineIndex)?.let(::tableCellSources)?.let { cellSources?.addAll(it) }
                     lineIndex++
                 }
-                blocks.add(TimelineBlock.Table(headers, alignments, rows))
+                blocks.add(record(trace, TimelineBlock.Table(headers, alignments, rows), sourceRange(blockStart, lineIndex), cellSources.orEmpty()))
                 continue
             }
 
             // 5. 引用块：剥掉一层 `>` 后递归解析，嵌套引用自然形成 Blockquote(Blockquote(...))
             if (isBlockquoteLine(line)) {
                 val quoteLines = mutableListOf<String>()
+                val quoteSources = mutableListOf<MarkdownSourceText>()
                 val atDepthLimit = quoteDepth >= MaxBlockquoteDepth
                 while (lineIndex < lines.size && isBlockquoteLine(lines[lineIndex])) {
                     val stripped = if (atDepthLimit) {
@@ -657,21 +545,25 @@ internal fun isHermesActivityOnlyText(text: String): Boolean {
                         stripBlockquoteMarker(lines[lineIndex])
                     }
                     quoteLines.add(stripped)
+                    sourceLines?.get(lineIndex)?.let { raw -> quoteSources.add(raw.slice(raw.text.length - stripped.length)) }
                     lineIndex++
                 }
                 val innerText = quoteLines.joinToString("\n")
+                val innerSource = quoteSources.takeIf { source != null }?.let(MarkdownSourceText::join)
                 if (innerText.isNotBlank()) {
                     if (atDepthLimit) {
                         // 超出深度预算：保留内容但停止递归，避免无限嵌套与栈溢出
-                        blocks.add(TimelineBlock.Paragraph(innerText.trim()))
+                        blocks.add(record(trace, TimelineBlock.Paragraph(innerText.trim()), innerSource?.trim()))
                     } else {
                         val innerBlocks = parseContentWithCodeBlocks(
                             innerText,
                             quoteDepth + 1,
                             recognizeToolCalls = recognizeToolCalls,
+                            trace = trace,
+                            source = innerSource,
                         )
                         if (innerBlocks.isNotEmpty()) {
-                            blocks.add(TimelineBlock.Blockquote(innerBlocks))
+                            blocks.add(record(trace, TimelineBlock.Blockquote(innerBlocks), sourceRange(blockStart, lineIndex), emptyList()))
                         }
                     }
                 }
@@ -679,9 +571,9 @@ internal fun isHermesActivityOnlyText(text: String): Boolean {
             }
 
             // 6. 列表：一次收集整个列表（含嵌套项），层级与任务标记在解析阶段定好
-            val listBlock = parseListBlock(lines, lineIndex)
+            val listBlock = parseListBlock(lines, lineIndex, sourceLines)
             if (listBlock != null) {
-                blocks.add(listBlock.block)
+                blocks.add(record(trace, listBlock.block, sourceRange(blockStart, listBlock.nextLine), listBlock.sources))
                 lineIndex = listBlock.nextLine
                 continue
             }
@@ -699,7 +591,7 @@ internal fun isHermesActivityOnlyText(text: String): Boolean {
                 lineIndex++
             }
             if (paragraphLines.isNotEmpty()) {
-                blocks.add(TimelineBlock.Paragraph(paragraphLines.joinToString("\n")))
+                blocks.add(record(trace, TimelineBlock.Paragraph(paragraphLines.joinToString("\n")), sourceRange(blockStart, lineIndex)))
             }
         }
 
@@ -794,12 +686,14 @@ internal fun isHermesActivityOnlyText(text: String): Boolean {
     private data class ParsedListBlock(
         val block: TimelineBlock.ListBlock,
         val nextLine: Int,
+        val sources: List<MarkdownSourceText> = emptyList(),
     )
 
     private data class RawListItem(
         val indent: Int,
         val ordinal: Int?,
         val text: String,
+        val source: MarkdownSourceText? = null,
     )
 
     /**
@@ -807,7 +701,7 @@ internal fun isHermesActivityOnlyText(text: String): Boolean {
      * 判定顺序：先按行收集原始缩进，再用「最小正缩进差」推断每级步长，
      * 因此 2 空格与 4 空格两种主流写法都能得到正确的父子关系。
      */
-    private fun parseListBlock(lines: List<String>, start: Int): ParsedListBlock? {
+    private fun parseListBlock(lines: List<String>, start: Int, sourceLines: List<MarkdownSourceText>? = null): ParsedListBlock? {
         val firstMatch = listItemRegex.matchEntire(lines[start]) ?: return null
         val firstIndent = indentColumns(firstMatch.groupValues[1])
 
@@ -825,7 +719,8 @@ internal fun isHermesActivityOnlyText(text: String): Boolean {
                 val marker = match.groupValues[2]
                 // `-` 等无序标记没有序号；`1.` / `1)` 取数字部分
                 val ordinal = marker.dropLast(1).toIntOrNull()
-                raws.add(RawListItem(indent = indent, ordinal = ordinal, text = match.groupValues[3]))
+                raws.add(RawListItem(indent = indent, ordinal = ordinal, text = match.groupValues[3],
+                    source = sourceLines?.get(index)?.slice(match.groups[3]!!.range.first, match.groups[3]!!.range.last + 1)))
                 lastItemIndent = indent
                 index++
                 continue
@@ -835,7 +730,9 @@ internal fun isHermesActivityOnlyText(text: String): Boolean {
             val indent = indentColumns(line)
             if (raws.isNotEmpty() && indent > lastItemIndent && !startsStructuralBlock(lines, index)) {
                 val last = raws.removeAt(raws.lastIndex)
-                raws.add(last.copy(text = last.text + " " + line.trim()))
+                raws.add(last.copy(text = last.text + " " + line.trim(), source = last.source?.let { previous ->
+                    sourceLines?.get(index)?.trim()?.let { MarkdownSourceText.join(listOf(previous, it), " ") }
+                }))
                 index++
                 continue
             }
@@ -886,7 +783,11 @@ internal fun isHermesActivityOnlyText(text: String): Boolean {
             )
         }
 
-        return ParsedListBlock(TimelineBlock.ListBlock(items), index)
+        val itemSources = raws.mapNotNull { raw ->
+            val match = taskItemRegex.matchEntire(raw.text)
+            if (match == null) raw.source else raw.source?.slice(match.groups[2]!!.range.first, match.groups[2]!!.range.last + 1)?.trim()
+        }
+        return ParsedListBlock(TimelineBlock.ListBlock(items), index, itemSources)
     }
 
     private fun parseTaskState(text: String): Pair<String, TaskState> {
@@ -927,4 +828,25 @@ internal fun isHermesActivityOnlyText(text: String): Boolean {
         if (trimmed.endsWith("|")) trimmed = trimmed.substring(0, trimmed.length - 1)
         return trimmed.split("|").map { it.trim() }
     }
+    private fun record(
+        trace: MarkdownParseTrace?,
+        block: TimelineBlock,
+        source: MarkdownSourceText?,
+        leaves: List<MarkdownSourceText> = source?.let(::listOf).orEmpty(),
+        closed: Boolean = true,
+    ): TimelineBlock = trace?.record(block, source, leaves, closed) ?: block
+
+    private fun tableCellSources(line: MarkdownSourceText): List<MarkdownSourceText> {
+        var trimmed = line.trim()
+        if (trimmed.text.startsWith("|")) trimmed = trimmed.slice(1)
+        if (trimmed.text.endsWith("|")) trimmed = trimmed.slice(0, trimmed.text.length - 1)
+        val cells = ArrayList<MarkdownSourceText>()
+        var start = 0
+        trimmed.text.forEachIndexed { index, character ->
+            if (character == '|') { cells.add(trimmed.slice(start, index).trim()); start = index + 1 }
+        }
+        cells.add(trimmed.slice(start).trim())
+        return cells
+    }
+
 }

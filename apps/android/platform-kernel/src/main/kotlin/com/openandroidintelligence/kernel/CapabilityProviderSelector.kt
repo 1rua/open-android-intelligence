@@ -23,7 +23,7 @@ data class ProviderSelection(
 /**
  * Chooses which plugin serves a capability.
  *
- * There is a phone-level default and an optional per-Gateway override. An
+ * There is a phone-level default and an installation-wide provider choice. An
  * override is a fresh authorisation decision: the new provider must not inherit
  * the previous provider's permissions, so switching always moves the grant
  * revision forward.
@@ -31,12 +31,12 @@ data class ProviderSelection(
 class CapabilityProviderSelector(
     private val phoneDefaults: Map<String, PluginIdentity>,
 ) {
-    private val overrides = HashMap<Pair<String, String>, ProviderSelection>()
+    private val overrides = HashMap<String, ProviderSelection>()
     private var revisionCounter = 0L
 
     @Synchronized fun select(capability: String, pairingId: String): ProviderSelection {
-        val key = capability to pairingId
-        overrides[key]?.let { return it }
+        val key = capability
+        overrides[key]?.let { return it.copy(pairingId = pairingId) }
         val identity = phoneDefaults[capability]
             ?: throw ProviderRejected("NO_PROVIDER:$capability")
         return ProviderSelection(
@@ -49,7 +49,7 @@ class CapabilityProviderSelector(
     }
 
     /**
-     * Points a capability at a different plugin for one pairing.
+     * Points an installation capability at a different plugin; the pairing is only a transport projection.
      *
      * Selecting the plugin that already serves the capability is a no-op:
      * nothing changed, so no re-authorisation is due. Selecting a different
@@ -62,9 +62,9 @@ class CapabilityProviderSelector(
         pairingId: String,
         identity: PluginIdentity,
     ): ProviderSelection {
-        val key = capability to pairingId
+        val key = capability
         val current = overrides[key]
-        if (current != null && current.identity == identity) return current
+        if (current != null && current.identity == identity) return current.copy(pairingId = pairingId)
 
         val revision = ++revisionCounter
         val selection = ProviderSelection(
@@ -91,9 +91,9 @@ class CapabilityProviderSelector(
     }
 
     @Synchronized fun clearOverride(capability: String, pairingId: String) {
-        overrides.remove(capability to pairingId)
+        overrides.remove(capability)
     }
 
     @Synchronized fun revisionFor(capability: String, pairingId: String): Long =
-        overrides[capability to pairingId]?.grantRevision ?: 0L
+        overrides[capability]?.grantRevision ?: 0L
 }

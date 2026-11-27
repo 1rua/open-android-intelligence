@@ -1,4 +1,5 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { retainTestDirectory } from "./safe-test-files.js";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
@@ -20,14 +21,13 @@ describe("buildPackage determinism", () => {
   let privateKey: Uint8Array;
 
   beforeEach(async () => {
-    dir = join(tmpdir(), "alp-test-" + Date.now());
-    await mkdir(dir, { recursive: true });
+    dir = await mkdtemp(join(tmpdir(), "alp-test-"));
     // Deterministic seed so the golden hash is stable across runs.
     privateKey = new Uint8Array(32).fill(0xab);
   });
 
   afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
+    await retainTestDirectory(dir);
   });
 
   async function writeFixture(): Promise<void> {
@@ -78,6 +78,14 @@ describe("buildPackage determinism", () => {
     const second = await buildPackage({ manifest, baseDirectory: dir, privateKey });
 
     expect(second.sha256).not.toBe(first.sha256);
+  });
+
+  it("rejects retired or invented transport compatibility fields before signing", async () => {
+    await writeFixture();
+    for (const extra of [{ gatewayProtocol: ">=2.0 <3.0" }, { remoteProtocol: "1.0" }]) {
+      const manifest = { ...MINIMAL_MANIFEST, compatibility: { ...MINIMAL_MANIFEST.compatibility, ...extra } };
+      await expect(buildPackage({ manifest, baseDirectory: dir, privateKey })).rejects.toThrow("MANIFEST_COMPATIBILITY_INVALID");
+    }
   });
 
   it("rejects path traversal in base directory", async () => {
@@ -156,7 +164,7 @@ describe("buildPackage determinism", () => {
  * 历史锚点 0272109b… 生成于品牌更名提交 22fc40d 之前：该提交把签名输入前缀从
  * "AGENT-LIFE-PLUGIN-PACKAGE-V1" 改为 "OPEN-ANDROID-INTELLIGENCE-PLUGIN-PACKAGE-V1"
  * （契约 §4:79 规定的新前缀），ZIP 字节随之变化但锚点未同步重锚。
- * 当前值锚定在现有确定性实现上。
+ * 当前值由仅含 androidHost 的中性兼容声明重新生成；签名域与作者种子保持不变。
  */
 const FIXTURE_ALP_SHA256 =
-  "73e0b453af929457acd44656544465b9f3e24628daa32bab14ceda95644b1b26";
+  "556e4bb92990ccb7943919cac2bd6a1133880fff26747afe77d85cf4588773d7";

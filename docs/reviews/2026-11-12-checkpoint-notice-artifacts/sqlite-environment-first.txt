@@ -1,0 +1,726 @@
+Starting a Gradle Daemon, 1 incompatible and 5 stopped Daemons could not be reused, use --status for details
+Calculating task graph as no cached configuration is available for tasks: :app:testFullDebugUnitTest --tests com.openandroidintelligence.mobile.conversations.NativeConversationMirrorTest.checkpointFailureRecoversAndReopensTheRealSqliteDraft
+
+> Configure project :app
+Unable to initialize metrics, ensure /home/djbd/.android is writable, details: /home/djbd/.android/analytics.settings (Read-only file system)
+Warning: SDK processing. This version only understands SDK XML versions up to 3 but an SDK XML file of version 4 was encountered. This can happen if you use versions of Android Studio and the command-line tools that were released at different times.
+
+> Task :app:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :capability-ports:verifyLocaleConfigPrerequisites
+> Task :assistant-holder:verifyLocaleConfigPrerequisites
+> Task :device-primitives:verifyLocaleConfigPrerequisites
+> Task :call-log-collector:verifyLocaleConfigPrerequisites
+> Task :conversation-data:verifyLocaleConfigPrerequisites
+> Task :conversation-domain:verifyLocaleConfigPrerequisites
+> Task :capability-sync-runtime:verifyLocaleConfigPrerequisites
+> Task :core-model:verifyLocaleConfigPrerequisites
+> Task :app:verifyLocaleConfigPrerequisites
+> Task :encrypted-store:verifyLocaleConfigPrerequisites
+> Task :conversation-ui:verifyLocaleConfigPrerequisites
+> Task :control-ports:verifyLocaleConfigPrerequisites
+> Task :app:preBuild
+> Task :capability-ports:preBuild
+> Task :device-primitives:preBuild
+> Task :conversation-ui:preBuild
+> Task :call-log-collector:preBuild
+> Task :control-ports:preBuild
+> Task :capability-sync-runtime:preBuild
+> Task :core-model:preBuild
+> Task :control-ports:preDebugBuild
+> Task :capability-sync-runtime:preDebugBuild
+> Task :assistant-holder:preBuild
+> Task :app:preFullDebugBuild
+> Task :capability-ports:preDebugBuild
+> Task :conversation-domain:preBuild
+> Task :conversation-data:preBuild
+> Task :encrypted-store:preBuild
+> Task :call-log-collector:preDebugBuild
+> Task :device-primitives:preDebugBuild
+> Task :assistant-holder:preDebugBuild
+> Task :core-model:preDebugBuild
+> Task :conversation-data:preDebugBuild
+> Task :conversation-domain:preDebugBuild
+> Task :encrypted-store:preDebugBuild
+> Task :conversation-ui:preDebugBuild
+> Task :conversation-domain:writeDebugAarMetadata UP-TO-DATE
+> Task :conversation-ui:writeDebugAarMetadata UP-TO-DATE
+> Task :core-model:writeDebugAarMetadata UP-TO-DATE
+> Task :capability-ports:writeDebugAarMetadata UP-TO-DATE
+> Task :notification-host:verifyLocaleConfigPrerequisites
+> Task :gateway-client:verifyLocaleConfigPrerequisites
+> Task :notification-collector:verifyLocaleConfigPrerequisites
+> Task :notification-control:verifyLocaleConfigPrerequisites
+> Task :notification-collector:preBuild
+> Task :notification-control:preBuild
+> Task :notification-host:preBuild
+> Task :notification-collector:preDebugBuild
+> Task :notification-control:preDebugBuild
+> Task :gateway-client:preBuild
+> Task :notification-host:preDebugBuild
+> Task :gateway-client:preDebugBuild
+> Task :gateway-client:writeDebugAarMetadata UP-TO-DATE
+> Task :platform-kernel:verifyLocaleConfigPrerequisites
+> Task :platform-kernel:preBuild
+> Task :platform-kernel:preDebugBuild
+> Task :app:generateFullDebugBuildConfig
+> Task :plugin-package:verifyLocaleConfigPrerequisites
+> Task :plugin-package:preBuild
+> Task :plugin-package:preDebugBuild
+> Task :assistant-holder:writeDebugAarMetadata
+> Task :call-log-collector:writeDebugAarMetadata
+> Task :control-ports:writeDebugAarMetadata
+> Task :encrypted-store:writeDebugAarMetadata
+> Task :capability-sync-runtime:writeDebugAarMetadata
+> Task :policy-engine:verifyLocaleConfigPrerequisites
+> Task :notification-host:writeDebugAarMetadata
+> Task :plugin-ui:verifyLocaleConfigPrerequisites
+> Task :policy-engine:preBuild
+> Task :plugin-runtime-wasm:verifyLocaleConfigPrerequisites
+> Task :screen-control:verifyLocaleConfigPrerequisites
+> Task :policy-engine:preDebugBuild
+> Task :ui-resources:verifyLocaleConfigPrerequisites
+> Task :plugin-ui:preBuild
+> Task :plugin-runtime-wasm:preBuild
+> Task :ui-resources:preBuild
+> Task :sms-collector:verifyLocaleConfigPrerequisites
+> Task :plugin-runtime-wasm:preDebugBuild
+> Task :ui-resources:preDebugBuild
+> Task :notification-collector:writeDebugAarMetadata
+> Task :platform-kernel:writeDebugAarMetadata
+> Task :device-primitives:writeDebugAarMetadata
+> Task :notification-control:writeDebugAarMetadata
+> Task :conversation-data:writeDebugAarMetadata
+> Task :plugin-ui:preDebugBuild
+> Task :screen-control:preBuild
+> Task :sms-collector:preBuild
+> Task :sms-collector:preDebugBuild
+> Task :ui-resources:writeDebugAarMetadata UP-TO-DATE
+> Task :capability-ports:generateDebugResValues UP-TO-DATE
+> Task :screen-control:preDebugBuild
+> Task :policy-engine:writeDebugAarMetadata
+> Task :plugin-runtime-wasm:writeDebugAarMetadata
+> Task :plugin-ui:writeDebugAarMetadata
+> Task :plugin-package:writeDebugAarMetadata
+> Task :conversation-ui:generateDebugResValues UP-TO-DATE
+> Task :core-model:generateDebugResValues UP-TO-DATE
+> Task :conversation-domain:generateDebugResValues UP-TO-DATE
+> Task :screen-control:writeDebugAarMetadata
+> Task :sms-collector:writeDebugAarMetadata
+> Task :capability-ports:generateDebugResources UP-TO-DATE
+> Task :core-model:generateDebugResources UP-TO-DATE
+> Task :conversation-domain:generateDebugResources UP-TO-DATE
+> Task :conversation-ui:generateDebugResources UP-TO-DATE
+> Task :app:generateFullDebugResValues FROM-CACHE
+> Task :conversation-data:generateDebugResValues FROM-CACHE
+> Task :call-log-collector:generateDebugResValues FROM-CACHE
+> Task :assistant-holder:generateDebugResValues FROM-CACHE
+> Task :control-ports:generateDebugResValues FROM-CACHE
+> Task :capability-sync-runtime:generateDebugResValues FROM-CACHE
+> Task :device-primitives:generateDebugResValues FROM-CACHE
+> Task :capability-sync-runtime:generateDebugResources FROM-CACHE
+> Task :conversation-data:generateDebugResources FROM-CACHE
+> Task :assistant-holder:generateDebugResources FROM-CACHE
+> Task :control-ports:generateDebugResources FROM-CACHE
+> Task :call-log-collector:generateDebugResources FROM-CACHE
+> Task :encrypted-store:generateDebugResValues FROM-CACHE
+> Task :gateway-client:generateDebugResValues UP-TO-DATE
+> Task :device-primitives:generateDebugResources FROM-CACHE
+> Task :encrypted-store:generateDebugResources FROM-CACHE
+> Task :gateway-client:generateDebugResources UP-TO-DATE
+> Task :conversation-ui:packageDebugResources UP-TO-DATE
+> Task :capability-ports:packageDebugResources UP-TO-DATE
+> Task :core-model:packageDebugResources UP-TO-DATE
+> Task :conversation-domain:packageDebugResources UP-TO-DATE
+> Task :notification-collector:generateDebugResValues FROM-CACHE
+> Task :notification-control:generateDebugResValues FROM-CACHE
+> Task :notification-host:generateDebugResValues FROM-CACHE
+> Task :notification-collector:generateDebugResources FROM-CACHE
+> Task :notification-control:generateDebugResources FROM-CACHE
+> Task :notification-host:generateDebugResources FROM-CACHE
+> Task :platform-kernel:generateDebugResValues FROM-CACHE
+> Task :gateway-client:packageDebugResources UP-TO-DATE
+> Task :plugin-runtime-wasm:generateDebugResValues FROM-CACHE
+> Task :plugin-package:generateDebugResValues FROM-CACHE
+> Task :platform-kernel:generateDebugResources FROM-CACHE
+> Task :plugin-package:generateDebugResources FROM-CACHE
+> Task :plugin-ui:generateDebugResValues FROM-CACHE
+> Task :plugin-runtime-wasm:generateDebugResources FROM-CACHE
+> Task :plugin-ui:generateDebugResources FROM-CACHE
+> Task :policy-engine:generateDebugResValues FROM-CACHE
+> Task :screen-control:generateDebugResValues FROM-CACHE
+> Task :policy-engine:generateDebugResources FROM-CACHE
+> Task :sms-collector:generateDebugResValues FROM-CACHE
+> Task :ui-resources:generateDebugResValues UP-TO-DATE
+> Task :sms-collector:generateDebugResources FROM-CACHE
+> Task :screen-control:generateDebugResources
+> Task :capability-sync-runtime:packageDebugResources
+> Task :assistant-holder:packageDebugResources
+> Task :control-ports:packageDebugResources
+> Task :device-primitives:packageDebugResources
+> Task :notification-collector:packageDebugResources
+> Task :conversation-data:packageDebugResources
+> Task :assistant-holder:extractDebugSupportedLocales
+> Task :call-log-collector:packageDebugResources
+> Task :ui-resources:generateDebugResources UP-TO-DATE
+> Task :encrypted-store:packageDebugResources
+> Task :call-log-collector:extractDebugSupportedLocales FROM-CACHE
+> Task :capability-ports:extractDebugSupportedLocales FROM-CACHE
+> Task :app:extractFullDebugSupportedLocales
+> Task :capability-sync-runtime:extractDebugSupportedLocales FROM-CACHE
+> Task :notification-control:packageDebugResources
+> Task :policy-engine:packageDebugResources
+> Task :conversation-domain:extractDebugSupportedLocales FROM-CACHE
+> Task :conversation-ui:extractDebugSupportedLocales FROM-CACHE
+> Task :conversation-data:extractDebugSupportedLocales FROM-CACHE
+> Task :control-ports:extractDebugSupportedLocales FROM-CACHE
+> Task :plugin-package:packageDebugResources
+> Task :encrypted-store:extractDebugSupportedLocales FROM-CACHE
+> Task :plugin-runtime-wasm:packageDebugResources
+> Task :core-model:extractDebugSupportedLocales FROM-CACHE
+> Task :device-primitives:extractDebugSupportedLocales FROM-CACHE
+> Task :ui-resources:packageDebugResources UP-TO-DATE
+> Task :gateway-client:extractDebugSupportedLocales FROM-CACHE
+> Task :notification-control:extractDebugSupportedLocales FROM-CACHE
+> Task :notification-host:extractDebugSupportedLocales FROM-CACHE
+> Task :platform-kernel:packageDebugResources
+> Task :plugin-ui:packageDebugResources
+> Task :platform-kernel:extractDebugSupportedLocales FROM-CACHE
+> Task :plugin-runtime-wasm:extractDebugSupportedLocales FROM-CACHE
+> Task :plugin-ui:extractDebugSupportedLocales FROM-CACHE
+> Task :plugin-package:extractDebugSupportedLocales FROM-CACHE
+> Task :notification-collector:extractDebugSupportedLocales FROM-CACHE
+> Task :policy-engine:extractDebugSupportedLocales FROM-CACHE
+> Task :notification-host:packageDebugResources
+> Task :sms-collector:packageDebugResources
+> Task :screen-control:extractDebugSupportedLocales
+> Task :capability-ports:extractDeepLinksDebug UP-TO-DATE
+> Task :assistant-holder:extractDeepLinksDebug FROM-CACHE
+> Task :call-log-collector:extractDeepLinksDebug FROM-CACHE
+> Task :sms-collector:extractDebugSupportedLocales FROM-CACHE
+> Task :ui-resources:extractDebugSupportedLocales
+> Task :app:extractDeepLinksFullDebug FROM-CACHE
+> Task :app:generateFullDebugResources
+> Task :capability-ports:processDebugManifest UP-TO-DATE
+> Task :control-ports:extractDeepLinksDebug FROM-CACHE
+> Task :conversation-data:extractDeepLinksDebug FROM-CACHE
+> Task :conversation-domain:extractDeepLinksDebug UP-TO-DATE
+> Task :capability-sync-runtime:extractDeepLinksDebug FROM-CACHE
+> Task :conversation-ui:extractDeepLinksDebug UP-TO-DATE
+> Task :conversation-domain:processDebugManifest UP-TO-DATE
+> Task :app:createFullDebugCompatibleScreenManifests
+> Task :core-model:extractDeepLinksDebug UP-TO-DATE
+> Task :device-primitives:extractDeepLinksDebug FROM-CACHE
+> Task :screen-control:packageDebugResources
+> Task :encrypted-store:extractDeepLinksDebug FROM-CACHE
+> Task :control-ports:processDebugManifest
+> Task :call-log-collector:processDebugManifest
+> Task :encrypted-store:processDebugManifest
+> Task :conversation-data:processDebugManifest
+> Task :gateway-client:extractDeepLinksDebug UP-TO-DATE
+> Task :notification-collector:extractDeepLinksDebug FROM-CACHE
+> Task :gateway-client:processDebugManifest UP-TO-DATE
+> Task :notification-control:extractDeepLinksDebug FROM-CACHE
+> Task :notification-host:extractDeepLinksDebug FROM-CACHE
+> Task :platform-kernel:extractDeepLinksDebug FROM-CACHE
+> Task :conversation-ui:processDebugManifest UP-TO-DATE
+> Task :core-model:processDebugManifest UP-TO-DATE
+> Task :plugin-package:extractDeepLinksDebug FROM-CACHE
+> Task :plugin-runtime-wasm:extractDeepLinksDebug FROM-CACHE
+> Task :capability-sync-runtime:processDebugManifest
+> Task :assistant-holder:processDebugManifest
+> Task :device-primitives:processDebugManifest
+> Task :plugin-ui:extractDeepLinksDebug FROM-CACHE
+> Task :platform-kernel:processDebugManifest
+> Task :notification-collector:processDebugManifest
+> Task :policy-engine:extractDeepLinksDebug FROM-CACHE
+> Task :screen-control:extractDeepLinksDebug FROM-CACHE
+> Task :notification-control:processDebugManifest
+> Task :ui-resources:extractDeepLinksDebug UP-TO-DATE
+> Task :sms-collector:extractDeepLinksDebug FROM-CACHE
+> Task :assistant-holder:compileDebugLibraryResources FROM-CACHE
+> Task :policy-engine:processDebugManifest
+> Task :ui-resources:processDebugManifest UP-TO-DATE
+> Task :plugin-runtime-wasm:processDebugManifest
+> Task :screen-control:processDebugManifest
+> Task :plugin-package:processDebugManifest
+> Task :plugin-ui:processDebugManifest
+> Task :call-log-collector:compileDebugLibraryResources FROM-CACHE
+> Task :assistant-holder:parseDebugLocalResources FROM-CACHE
+> Task :sms-collector:processDebugManifest
+> Task :notification-host:processDebugManifest
+> Task :capability-ports:compileDebugLibraryResources UP-TO-DATE
+> Task :conversation-data:compileDebugLibraryResources FROM-CACHE
+> Task :capability-ports:parseDebugLocalResources UP-TO-DATE
+> Task :capability-sync-runtime:compileDebugLibraryResources FROM-CACHE
+> Task :capability-sync-runtime:parseDebugLocalResources FROM-CACHE
+> Task :call-log-collector:parseDebugLocalResources FROM-CACHE
+> Task :conversation-domain:compileDebugLibraryResources UP-TO-DATE
+> Task :control-ports:compileDebugLibraryResources FROM-CACHE
+> Task :control-ports:parseDebugLocalResources FROM-CACHE
+> Task :conversation-data:parseDebugLocalResources FROM-CACHE
+> Task :capability-ports:generateDebugRFile UP-TO-DATE
+> Task :conversation-domain:parseDebugLocalResources UP-TO-DATE
+> Task :conversation-ui:compileDebugLibraryResources UP-TO-DATE
+> Task :conversation-ui:parseDebugLocalResources UP-TO-DATE
+> Task :core-model:compileDebugLibraryResources UP-TO-DATE
+> Task :conversation-domain:generateDebugRFile UP-TO-DATE
+> Task :core-model:parseDebugLocalResources UP-TO-DATE
+> Task :conversation-ui:generateDebugRFile UP-TO-DATE
+> Task :device-primitives:compileDebugLibraryResources FROM-CACHE
+> Task :core-model:generateDebugRFile UP-TO-DATE
+> Task :encrypted-store:parseDebugLocalResources FROM-CACHE
+> Task :device-primitives:parseDebugLocalResources FROM-CACHE
+> Task :encrypted-store:compileDebugLibraryResources FROM-CACHE
+> Task :gateway-client:compileDebugLibraryResources UP-TO-DATE
+> Task :gateway-client:parseDebugLocalResources UP-TO-DATE
+> Task :gateway-client:generateDebugRFile UP-TO-DATE
+> Task :app:mapFullDebugSourceSetPaths
+> Task :notification-collector:compileDebugLibraryResources FROM-CACHE
+> Task :notification-collector:parseDebugLocalResources FROM-CACHE
+> Task :notification-control:compileDebugLibraryResources FROM-CACHE
+> Task :notification-control:parseDebugLocalResources FROM-CACHE
+> Task :app:checkFullDebugAarMetadata
+> Task :notification-host:compileDebugLibraryResources FROM-CACHE
+> Task :notification-host:parseDebugLocalResources FROM-CACHE
+> Task :conversation-data:generateDebugRFile
+> Task :notification-control:generateDebugRFile
+> Task :control-ports:generateDebugRFile
+> Task :encrypted-store:generateDebugRFile
+> Task :notification-collector:generateDebugRFile
+> Task :call-log-collector:generateDebugRFile
+> Task :assistant-holder:generateDebugRFile
+> Task :capability-sync-runtime:generateDebugRFile
+> Task :device-primitives:generateDebugRFile
+> Task :platform-kernel:parseDebugLocalResources FROM-CACHE
+> Task :plugin-package:compileDebugLibraryResources FROM-CACHE
+> Task :plugin-package:parseDebugLocalResources FROM-CACHE
+> Task :platform-kernel:compileDebugLibraryResources FROM-CACHE
+> Task :policy-engine:compileDebugLibraryResources FROM-CACHE
+> Task :plugin-ui:compileDebugLibraryResources FROM-CACHE
+> Task :plugin-runtime-wasm:compileDebugLibraryResources FROM-CACHE
+> Task :plugin-runtime-wasm:parseDebugLocalResources FROM-CACHE
+> Task :plugin-ui:parseDebugLocalResources FROM-CACHE
+> Task :policy-engine:parseDebugLocalResources FROM-CACHE
+> Task :sms-collector:parseDebugLocalResources FROM-CACHE
+> Task :sms-collector:compileDebugLibraryResources FROM-CACHE
+> Task :notification-host:generateDebugRFile
+> Task :ui-resources:compileDebugLibraryResources UP-TO-DATE
+> Task :assistant-holder:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-domain:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :ui-resources:parseDebugLocalResources UP-TO-DATE
+> Task :platform-kernel:generateDebugRFile
+> Task :plugin-package:generateDebugRFile
+> Task :capability-ports:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core-model:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :plugin-ui:generateDebugRFile
+> Task :conversation-domain:javaPreCompileDebug UP-TO-DATE
+> Task :ui-resources:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :policy-engine:generateDebugRFile
+> Task :ui-resources:javaPreCompileDebug UP-TO-DATE
+> Task :core-model:javaPreCompileDebug UP-TO-DATE
+> Task :conversation-ui:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gateway-client:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :plugin-runtime-wasm:generateDebugRFile
+> Task :ui-resources:generateDebugRFile UP-TO-DATE
+> Task :capability-ports:javaPreCompileDebug UP-TO-DATE
+> Task :gateway-client:javaPreCompileDebug UP-TO-DATE
+> Task :control-ports:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-ui:javaPreCompileDebug UP-TO-DATE
+> Task :sms-collector:generateDebugRFile
+> Task :conversation-data:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :encrypted-store:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :ui-resources:compileDebugKotlin NO-SOURCE
+> Task :assistant-holder:javaPreCompileDebug FROM-CACHE
+> Task :control-ports:javaPreCompileDebug FROM-CACHE
+> Task :conversation-data:javaPreCompileDebug FROM-CACHE
+> Task :notification-control:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :platform-kernel:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :plugin-package:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :encrypted-store:javaPreCompileDebug FROM-CACHE
+> Task :notification-control:javaPreCompileDebug FROM-CACHE
+> Task :platform-kernel:javaPreCompileDebug FROM-CACHE
+> Task :plugin-package:javaPreCompileDebug FROM-CACHE
+> Task :plugin-ui:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :plugin-runtime-wasm:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :plugin-runtime-wasm:javaPreCompileDebug FROM-CACHE
+> Task :plugin-ui:javaPreCompileDebug FROM-CACHE
+> Task :app:preFullDebugUnitTestBuild
+> Task :ui-resources:compileDebugJavaWithJavac NO-SOURCE
+> Task :app:javaPreCompileFullDebugUnitTest FROM-CACHE
+> Task :app:javaPreCompileFullDebug FROM-CACHE
+> Task :ui-resources:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :screen-control:parseDebugLocalResources
+> Task :screen-control:compileDebugLibraryResources
+> Task :capability-ports:mergeDebugShaders UP-TO-DATE
+> Task :capability-ports:compileDebugShaders NO-SOURCE
+> Task :capability-ports:generateDebugAssets UP-TO-DATE
+> Task :app:stageBundledPlugins
+> Task :capability-ports:mergeDebugAssets UP-TO-DATE
+> Task :call-log-collector:mergeDebugShaders
+> Task :control-ports:mergeDebugShaders
+> Task :capability-sync-runtime:mergeDebugShaders
+> Task :assistant-holder:mergeDebugShaders
+> Task :app:mergeFullDebugShaders
+> Task :gateway-client:compileDebugKotlin UP-TO-DATE
+> Task :control-ports:compileDebugShaders NO-SOURCE
+> Task :control-ports:generateDebugAssets UP-TO-DATE
+> Task :app:compileFullDebugShaders NO-SOURCE
+> Task :assistant-holder:compileDebugShaders NO-SOURCE
+> Task :capability-sync-runtime:compileDebugShaders NO-SOURCE
+> Task :assistant-holder:generateDebugAssets UP-TO-DATE
+> Task :call-log-collector:compileDebugShaders NO-SOURCE
+> Task :capability-sync-runtime:generateDebugAssets UP-TO-DATE
+> Task :call-log-collector:generateDebugAssets UP-TO-DATE
+> Task :app:generateFullDebugAssets UP-TO-DATE
+> Task :core-model:compileDebugKotlin UP-TO-DATE
+> Task :gateway-client:compileDebugJavaWithJavac NO-SOURCE
+> Task :core-model:compileDebugJavaWithJavac NO-SOURCE
+> Task :gateway-client:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :core-model:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :screen-control:generateDebugRFile
+> Task :conversation-domain:mergeDebugShaders UP-TO-DATE
+> Task :control-ports:mergeDebugAssets
+> Task :conversation-domain:compileDebugKotlin UP-TO-DATE
+> Task :call-log-collector:mergeDebugAssets
+> Task :conversation-data:mergeDebugShaders
+> Task :assistant-holder:mergeDebugAssets
+> Task :conversation-domain:compileDebugShaders NO-SOURCE
+> Task :conversation-domain:generateDebugAssets UP-TO-DATE
+> Task :core-model:mergeDebugShaders UP-TO-DATE
+> Task :conversation-ui:mergeDebugShaders UP-TO-DATE
+> Task :conversation-data:compileDebugShaders NO-SOURCE
+> Task :conversation-data:generateDebugAssets UP-TO-DATE
+> Task :conversation-ui:compileDebugShaders NO-SOURCE
+> Task :core-model:compileDebugShaders NO-SOURCE
+> Task :conversation-ui:generateDebugAssets UP-TO-DATE
+> Task :conversation-domain:compileDebugJavaWithJavac NO-SOURCE
+> Task :core-model:generateDebugAssets UP-TO-DATE
+> Task :conversation-domain:mergeDebugAssets UP-TO-DATE
+> Task :conversation-domain:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :core-model:mergeDebugAssets UP-TO-DATE
+> Task :conversation-ui:mergeDebugAssets UP-TO-DATE
+> Task :conversation-data:mergeDebugAssets
+> Task :capability-sync-runtime:mergeDebugAssets
+> Task :capability-ports:compileDebugKotlin UP-TO-DATE
+> Task :gateway-client:mergeDebugShaders UP-TO-DATE
+> Task :device-primitives:mergeDebugShaders
+> Task :notification-collector:mergeDebugShaders
+> Task :gateway-client:compileDebugShaders NO-SOURCE
+> Task :gateway-client:generateDebugAssets UP-TO-DATE
+> Task :gateway-client:mergeDebugAssets UP-TO-DATE
+> Task :notification-collector:compileDebugShaders NO-SOURCE
+> Task :notification-collector:generateDebugAssets UP-TO-DATE
+> Task :app:processFullDebugMainManifest
+> Task :encrypted-store:mergeDebugShaders
+> Task :device-primitives:compileDebugShaders NO-SOURCE
+> Task :device-primitives:generateDebugAssets UP-TO-DATE
+> Task :notification-control:mergeDebugShaders
+> Task :encrypted-store:compileDebugShaders NO-SOURCE
+> Task :capability-ports:compileDebugJavaWithJavac NO-SOURCE
+> Task :encrypted-store:generateDebugAssets UP-TO-DATE
+> Task :app:generateFullDebugLocaleConfig
+> Task :notification-control:compileDebugShaders NO-SOURCE
+> Task :capability-ports:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :device-primitives:mergeDebugAssets
+> Task :notification-control:generateDebugAssets UP-TO-DATE
+> Task :notification-collector:mergeDebugAssets
+> Task :notification-host:mergeDebugShaders
+> Task :notification-control:mergeDebugAssets
+> Task :notification-host:compileDebugShaders NO-SOURCE
+> Task :notification-host:generateDebugAssets UP-TO-DATE
+> Task :encrypted-store:mergeDebugAssets
+> Task :notification-host:mergeDebugAssets
+> Task :platform-kernel:mergeDebugShaders
+> Task :platform-kernel:compileDebugShaders NO-SOURCE
+> Task :platform-kernel:generateDebugAssets UP-TO-DATE
+> Task :plugin-package:mergeDebugShaders
+> Task :plugin-package:compileDebugShaders NO-SOURCE
+> Task :plugin-package:generateDebugAssets UP-TO-DATE
+> Task :plugin-package:mergeDebugAssets
+> Task :app:packageFullDebugResources
+> Task :platform-kernel:mergeDebugAssets
+> Task :plugin-runtime-wasm:mergeDebugShaders
+> Task :plugin-runtime-wasm:compileDebugShaders NO-SOURCE
+> Task :plugin-runtime-wasm:generateDebugAssets UP-TO-DATE
+> Task :app:processFullDebugManifest
+> Task :plugin-ui:mergeDebugShaders
+> Task :plugin-ui:compileDebugShaders NO-SOURCE
+> Task :plugin-ui:generateDebugAssets UP-TO-DATE
+> Task :app:processFullDebugManifestForPackage
+> Task :plugin-runtime-wasm:mergeDebugAssets
+> Task :screen-control:mergeDebugShaders
+> Task :screen-control:compileDebugShaders NO-SOURCE
+> Task :screen-control:generateDebugAssets UP-TO-DATE
+> Task :sms-collector:mergeDebugShaders
+> Task :sms-collector:compileDebugShaders NO-SOURCE
+> Task :sms-collector:generateDebugAssets UP-TO-DATE
+> Task :screen-control:mergeDebugAssets
+> Task :ui-resources:mergeDebugShaders UP-TO-DATE
+> Task :ui-resources:compileDebugShaders NO-SOURCE
+> Task :ui-resources:generateDebugAssets UP-TO-DATE
+> Task :ui-resources:mergeDebugAssets UP-TO-DATE
+> Task :call-log-collector:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :capability-sync-runtime:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :plugin-ui:mergeDebugAssets
+> Task :policy-engine:mergeDebugShaders
+> Task :sms-collector:mergeDebugAssets
+> Task :policy-engine:compileDebugShaders NO-SOURCE
+> Task :call-log-collector:javaPreCompileDebug FROM-CACHE
+> Task :policy-engine:generateDebugAssets UP-TO-DATE
+> Task :capability-sync-runtime:javaPreCompileDebug FROM-CACHE
+> Task :capability-ports:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :conversation-domain:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :capability-ports:processDebugJavaRes UP-TO-DATE
+> Task :core-model:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :conversation-domain:processDebugJavaRes UP-TO-DATE
+> Task :device-primitives:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :notification-collector:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :policy-engine:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :core-model:processDebugJavaRes UP-TO-DATE
+> Task :app:parseFullDebugLocalResources
+> Task :policy-engine:javaPreCompileDebug FROM-CACHE
+> Task :notification-host:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :policy-engine:mergeDebugAssets
+> Task :notification-host:javaPreCompileDebug FROM-CACHE
+> Task :notification-collector:javaPreCompileDebug FROM-CACHE
+> Task :screen-control:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :sms-collector:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-ui:compileDebugKotlin UP-TO-DATE
+> Task :sms-collector:javaPreCompileDebug FROM-CACHE
+> Task :screen-control:javaPreCompileDebug FROM-CACHE
+> Task :conversation-ui:compileDebugJavaWithJavac NO-SOURCE
+> Task :gateway-client:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :device-primitives:javaPreCompileDebug FROM-CACHE
+> Task :conversation-ui:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :conversation-ui:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :conversation-ui:processDebugJavaRes UP-TO-DATE
+> Task :gateway-client:processDebugJavaRes UP-TO-DATE
+> Task :ui-resources:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :ui-resources:processDebugJavaRes NO-SOURCE
+> Task :app:mergeFullDebugAssets
+> Task :app:mergeFullDebugResources
+> Task :app:processFullDebugResources
+> Task :app:packageFullDebugUnitTestForUnitTest
+> Task :app:generateFullDebugUnitTestConfig
+> Task :notification-control:compileDebugKotlin
+> Task :notification-control:compileDebugJavaWithJavac NO-SOURCE
+> Task :notification-control:bundleLibRuntimeToJarDebug
+> Task :notification-control:processDebugJavaRes
+> Task :notification-control:bundleLibCompileToJarDebug
+> Task :capability-sync-runtime:compileDebugKotlin
+> Task :capability-sync-runtime:compileDebugJavaWithJavac NO-SOURCE
+> Task :capability-sync-runtime:processDebugJavaRes
+> Task :capability-sync-runtime:bundleLibRuntimeToJarDebug
+> Task :capability-sync-runtime:bundleLibCompileToJarDebug
+> Task :policy-engine:compileDebugKotlin
+> Task :policy-engine:compileDebugJavaWithJavac NO-SOURCE
+> Task :policy-engine:bundleLibCompileToJarDebug
+> Task :policy-engine:bundleLibRuntimeToJarDebug
+> Task :policy-engine:processDebugJavaRes
+> Task :plugin-ui:compileDebugKotlin
+> Task :plugin-ui:compileDebugJavaWithJavac NO-SOURCE
+> Task :plugin-ui:processDebugJavaRes
+> Task :plugin-ui:bundleLibCompileToJarDebug
+> Task :plugin-ui:bundleLibRuntimeToJarDebug
+> Task :encrypted-store:compileDebugKotlin
+> Task :encrypted-store:compileDebugJavaWithJavac NO-SOURCE
+> Task :encrypted-store:bundleLibCompileToJarDebug
+> Task :encrypted-store:bundleLibRuntimeToJarDebug
+> Task :encrypted-store:processDebugJavaRes
+
+> Task :control-ports:compileDebugKotlin
+w: file:///tmp/oai-fix165-v2/apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/ControlPorts.kt:236:37 Non-public primary constructor is exposed via the generated 'copy()' method of the 'data' class.
+
+The generated 'copy()' will change its visibility in future releases.
+
+To suppress the warning do one of the following:
+- Annotate the data class with the '@ConsistentCopyVisibility' annotation.
+- Use the '-Xconsistent-data-class-copy-visibility' compiler flag.
+- Annotate the data class with the '@ExposedCopyVisibility' annotation
+  (Discouraged, but can be used to keep binary compatibility).
+
+To learn more, see the documentation of the '@ConsistentCopyVisibility' and '@ExposedCopyVisibility' annotations.
+
+This will become an error in Kotlin 2.2.
+w: file:///tmp/oai-fix165-v2/apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/ControlPorts.kt:241:24 Non-public primary constructor is exposed via the generated 'copy()' method of the 'data' class.
+
+The generated 'copy()' will change its visibility in future releases.
+
+To suppress the warning do one of the following:
+- Annotate the data class with the '@ConsistentCopyVisibility' annotation.
+- Use the '-Xconsistent-data-class-copy-visibility' compiler flag.
+- Annotate the data class with the '@ExposedCopyVisibility' annotation
+  (Discouraged, but can be used to keep binary compatibility).
+
+To learn more, see the documentation of the '@ConsistentCopyVisibility' and '@ExposedCopyVisibility' annotations.
+
+This will become an error in Kotlin 2.2.
+w: file:///tmp/oai-fix165-v2/apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/ScreenLocalAuthorization.kt:25:31 Non-public primary constructor is exposed via the generated 'copy()' method of the 'data' class.
+
+The generated 'copy()' will change its visibility in future releases.
+
+To suppress the warning do one of the following:
+- Annotate the data class with the '@ConsistentCopyVisibility' annotation.
+- Use the '-Xconsistent-data-class-copy-visibility' compiler flag.
+- Annotate the data class with the '@ExposedCopyVisibility' annotation
+  (Discouraged, but can be used to keep binary compatibility).
+
+To learn more, see the documentation of the '@ConsistentCopyVisibility' and '@ExposedCopyVisibility' annotations.
+
+This will become an error in Kotlin 2.2.
+
+> Task :control-ports:compileDebugJavaWithJavac NO-SOURCE
+> Task :control-ports:processDebugJavaRes
+> Task :control-ports:bundleLibRuntimeToJarDebug
+> Task :control-ports:bundleLibCompileToJarDebug
+> Task :plugin-package:compileDebugKotlin
+> Task :plugin-package:compileDebugJavaWithJavac NO-SOURCE
+> Task :plugin-package:processDebugJavaRes
+> Task :plugin-package:bundleLibCompileToJarDebug
+> Task :plugin-package:bundleLibRuntimeToJarDebug
+> Task :conversation-data:compileDebugKotlin
+> Task :conversation-data:compileDebugJavaWithJavac NO-SOURCE
+> Task :conversation-data:processDebugJavaRes
+> Task :conversation-data:bundleLibRuntimeToJarDebug
+> Task :conversation-data:bundleLibCompileToJarDebug
+> Task :assistant-holder:compileDebugKotlin
+> Task :sms-collector:compileDebugKotlin
+> Task :sms-collector:compileDebugJavaWithJavac NO-SOURCE
+> Task :sms-collector:processDebugJavaRes
+> Task :sms-collector:bundleLibRuntimeToJarDebug
+> Task :sms-collector:bundleLibCompileToJarDebug
+> Task :notification-collector:compileDebugKotlin
+> Task :notification-collector:compileDebugJavaWithJavac NO-SOURCE
+> Task :notification-collector:processDebugJavaRes
+> Task :notification-collector:bundleLibRuntimeToJarDebug
+> Task :notification-collector:bundleLibCompileToJarDebug
+> Task :screen-control:compileDebugKotlin
+> Task :screen-control:compileDebugJavaWithJavac NO-SOURCE
+> Task :screen-control:processDebugJavaRes
+> Task :screen-control:bundleLibRuntimeToJarDebug
+> Task :screen-control:bundleLibCompileToJarDebug
+
+> Task :assistant-holder:compileDebugKotlin
+w: file:///tmp/oai-fix165-v2/apps/android/assistant-holder/src/main/kotlin/com/openandroidintelligence/assistant/AssistantAttachmentContract.kt:27:31 Non-public primary constructor is exposed via the generated 'copy()' method of the 'data' class.
+
+The generated 'copy()' will change its visibility in future releases.
+
+To suppress the warning do one of the following:
+- Annotate the data class with the '@ConsistentCopyVisibility' annotation.
+- Use the '-Xconsistent-data-class-copy-visibility' compiler flag.
+- Annotate the data class with the '@ExposedCopyVisibility' annotation
+  (Discouraged, but can be used to keep binary compatibility).
+
+To learn more, see the documentation of the '@ConsistentCopyVisibility' and '@ExposedCopyVisibility' annotations.
+
+This will become an error in Kotlin 2.2.
+w: file:///tmp/oai-fix165-v2/apps/android/assistant-holder/src/main/kotlin/com/openandroidintelligence/assistant/AssistantAttachmentContract.kt:49:41 Non-public primary constructor is exposed via the generated 'copy()' method of the 'data' class.
+
+The generated 'copy()' will change its visibility in future releases.
+
+To suppress the warning do one of the following:
+- Annotate the data class with the '@ConsistentCopyVisibility' annotation.
+- Use the '-Xconsistent-data-class-copy-visibility' compiler flag.
+- Annotate the data class with the '@ExposedCopyVisibility' annotation
+  (Discouraged, but can be used to keep binary compatibility).
+
+To learn more, see the documentation of the '@ConsistentCopyVisibility' and '@ExposedCopyVisibility' annotations.
+
+This will become an error in Kotlin 2.2.
+w: file:///tmp/oai-fix165-v2/apps/android/assistant-holder/src/main/kotlin/com/openandroidintelligence/assistant/AssistantSessionService.kt:182:25 'fun setDecorFitsSystemWindows(p0: Boolean): Unit' is deprecated. Deprecated in Java.
+
+> Task :assistant-holder:compileDebugJavaWithJavac NO-SOURCE
+> Task :assistant-holder:bundleLibRuntimeToJarDebug
+> Task :assistant-holder:bundleLibCompileToJarDebug
+> Task :assistant-holder:processDebugJavaRes
+> Task :call-log-collector:compileDebugKotlin
+> Task :notification-host:compileDebugKotlin
+> Task :notification-host:compileDebugJavaWithJavac NO-SOURCE
+> Task :notification-host:bundleLibRuntimeToJarDebug
+> Task :notification-host:bundleLibCompileToJarDebug
+> Task :notification-host:processDebugJavaRes
+> Task :platform-kernel:compileDebugKotlin
+> Task :call-log-collector:compileDebugJavaWithJavac NO-SOURCE
+> Task :call-log-collector:bundleLibCompileToJarDebug
+> Task :call-log-collector:processDebugJavaRes
+> Task :call-log-collector:bundleLibRuntimeToJarDebug
+> Task :platform-kernel:compileDebugJavaWithJavac NO-SOURCE
+> Task :platform-kernel:processDebugJavaRes
+> Task :platform-kernel:bundleLibRuntimeToJarDebug
+> Task :platform-kernel:bundleLibCompileToJarDebug
+> Task :plugin-runtime-wasm:compileDebugKotlin
+> Task :plugin-runtime-wasm:compileDebugJavaWithJavac NO-SOURCE
+> Task :plugin-runtime-wasm:bundleLibRuntimeToJarDebug
+> Task :plugin-runtime-wasm:processDebugJavaRes
+> Task :plugin-runtime-wasm:bundleLibCompileToJarDebug
+> Task :device-primitives:compileDebugKotlin
+> Task :device-primitives:compileDebugJavaWithJavac NO-SOURCE
+> Task :device-primitives:processDebugJavaRes
+> Task :device-primitives:bundleLibRuntimeToJarDebug
+> Task :app:compileFullDebugKotlin
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/AgentSessionForegroundService.kt:120:14 'fun setDefaults(p0: Int): Notification.Builder!' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/SettingsViewModel.kt:208:33 This declaration needs opt-in. Its usage should be marked with '@kotlinx.coroutines.ExperimentalCoroutinesApi' or '@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)'
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/OnboardingFlow.kt:95:26 'val LocalLifecycleOwner: ProvidableCompositionLocal<LifecycleOwner>' is deprecated. Moved to lifecycle-runtime-compose library in androidx.lifecycle.compose package.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/onboarding/screens/PermissionsScreen.kt:509:39 'val Icons.Filled.ScreenShare: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Filled.ScreenShare.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/screen/ScreenErrorMessages.kt:43:5 Duplicate branch condition in 'when'.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/capabilities/CapabilitySettingsScreen.kt:183:21 'val LocalLifecycleOwner: ProvidableCompositionLocal<LifecycleOwner>' is deprecated. Moved to lifecycle-runtime-compose library in androidx.lifecycle.compose package.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/capabilities/DeviceCapabilitiesScreen.kt:73:21 'val LocalLifecycleOwner: ProvidableCompositionLocal<LifecycleOwner>' is deprecated. Moved to lifecycle-runtime-compose library in androidx.lifecycle.compose package.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/capabilities/DeviceCapabilitiesScreen.kt:204:29 'val Icons.Filled.Assignment: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Filled.Assignment.
+
+> Task :app:processFullDebugJavaRes
+> Task :app:compileFullDebugJavaWithJavac
+> Task :app:bundleFullDebugClassesToRuntimeJar
+> Task :app:bundleFullDebugClassesToCompileJar
+> Task :app:compileFullDebugUnitTestKotlin
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/AndroidAttachmentContentTypeTest.kt:124:42 Java type mismatch: inferred type is 'String?', but 'String' was expected.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/AuthSessionLifecycleTest.kt:91:25 Check for instance is always 'false'.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/ContentResolverAttachmentSourceTest.kt:9:8 'class BaseCursor : Any, Cursor' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/ContentResolverAttachmentSourceTest.kt:36:24 'fun setCursor(p0: Uri!, p1: BaseCursor!): Unit' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/ContentResolverAttachmentSourceTest.kt:60:39 'class BaseCursor : Any, Cursor' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/ConversationAttachmentPickersTest.kt:25:8 'class BaseCursor : Any, Cursor' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/ConversationAttachmentPickersTest.kt:140:28 'fun setCursor(p0: Uri!, p1: BaseCursor!): Unit' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/ConversationAttachmentPickersTest.kt:140:52 'class BaseCursor : Any, Cursor' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/ConversationAttachmentPickersTest.kt:185:47 'fun setCursor(p0: Uri!, p1: BaseCursor!): Unit' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/ConversationAttachmentPickersTest.kt:185:71 'class BaseCursor : Any, Cursor' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/ConversationAttachmentPickersTest.kt:229:47 'fun setCursor(p0: Uri!, p1: BaseCursor!): Unit' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/ConversationAttachmentPickersTest.kt:229:71 'class BaseCursor : Any, Cursor' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/InputPlatformRegressionTest.kt:24:49 'static field SOFT_INPUT_ADJUST_RESIZE: Int' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/ci/metrics/AppRobolectricPerfReporter.kt:28:19 Only safe (?.) or non-null asserted (!!.) calls are allowed on a nullable receiver of type 'Any?'.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/onboarding/AssistantRoleTest.kt:62:31 'fun addAvailableRole(p0: String): Unit' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/onboarding/AssistantRoleTest.kt:71:31 'fun addHeldRole(p0: String): Unit' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/onboarding/AssistantRoleTest.kt:80:31 'fun addHeldRole(p0: String): Unit' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/onboarding/AssistantRoleTest.kt:83:31 'fun removeHeldRole(p0: String): Unit' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/onboarding/AssistantRoleTest.kt:96:31 'fun addAvailableRole(p0: String): Unit' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/onboarding/AssistantRoleTest.kt:114:24 'fun addResolveInfoForIntent(p0: Intent!, p1: ResolveInfo!): Unit' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/onboarding/AssistantRoleTest.kt:150:28 'fun addResolveInfoForIntent(p0: Intent!, p1: ResolveInfo!): Unit' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/onboarding/AssistantRoleTest.kt:178:31 'fun addAvailableRole(p0: String): Unit' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/onboarding/AssistantRoleTest.kt:181:31 'fun addHeldRole(p0: String): Unit' is deprecated. Deprecated in Java.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/NotificationCapabilityHttpTest.kt:62:42 Java type mismatch: inferred type is 'String?', but 'String' was expected.
+w: file:///tmp/oai-fix165-v2/apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/TestAlpPackages.kt:22:42 Java type mismatch: inferred type is 'String?', but 'String' was expected.
+
+> Task :app:compileFullDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :app:processFullDebugUnitTestJavaRes
+
+> Task :app:testFullDebugUnitTest
+
+NativeConversationMirrorTest > classMethod FAILED
+    java.lang.AssertionError at MavenArtifactFetcher.java:129
+        Caused by: java.util.concurrent.ExecutionException at AbstractFuture.java:292
+            Caused by: java.io.IOException at HttpURLConnection.java:2052
+
+1 test completed, 1 failed
+
+> Task :app:testFullDebugUnitTest FAILED
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:testFullDebugUnitTest'.
+> There were failing tests. See the report at: file:///tmp/oai-fix165-v2/apps/android/app/build/reports/tests/testFullDebugUnitTest/index.html
+
+* Try:
+> Run with --scan to get full insights.
+
+BUILD FAILED in 3m 42s
+443 actionable tasks: 226 executed, 123 from cache, 94 up-to-date
+Configuration cache entry stored.

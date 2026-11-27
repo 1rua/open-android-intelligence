@@ -1,0 +1,9 @@
+{"event":"started","deadline_seconds":300,"interval_seconds":2,"ack_submitted":false,"phone_subscription":"not_inferred"}
+{"event":"route_available","endpoint":"A","phone_subscription":"not_inferred"}
+{"event":"route_available","endpoint":"B","phone_subscription":"not_inferred"}
+{"event":"sample_observed","endpoint":"A","eventId":"push_45e447a7...f6345750","deliveryId":"delivery_75ccc125...b66a89e6","event_type_matches":true,"route_matches":true,"body_equals_expected":true,"expectedBody":"OAI-SAMPLE-NOTIFICATION-20261101 complete synthetic body","ack_submitted":false}
+{"event":"receive_count","endpoint":"A","count":1,"non_target_count":0,"ack_submitted":false}
+{"event":"sample_observed","endpoint":"B","eventId":"push_45e447a7...f6345750","deliveryId":"delivery_e185c0b2...8e90ccf6","event_type_matches":true,"route_matches":true,"body_equals_expected":true,"expectedBody":"OAI-SAMPLE-NOTIFICATION-20261101 complete synthetic body","ack_submitted":false}
+{"event":"receive_count","endpoint":"B","count":1,"non_target_count":0,"ack_submitted":false}
+{"event":"both_observed","eventId":"push_45e447a7...f6345750","deliveryIdA":"delivery_75ccc125...b66a89e6","deliveryIdB":"delivery_e185c0b2...8e90ccf6","distinct_delivery_ids":true,"body_equals_expected":true,"route_matches":true,"ack_submitted":false}
+{"event":"finished","result":"PASS","reason":"BOTH_OBSERVED_SAME_SAMPLE_WITH_DISTINCT_DELIVERIES","elapsed_seconds":0.083,"endpoints":{"A":{"polls":1,"last_count":1,"returned_items_including_repeats":1,"non_target_items_including_repeats":0,"sample_mismatches_including_repeats":0,"matching_sample_count":1,"ack_submitted":false},"B":{"polls":1,"last_count":1,"returned_items_including_repeats":1,"non_target_items_including_repeats":0,"sample_mismatches_including_repeats":0,"matching_sample_count":1,"ack_submitted":false}},"ack_submitted":false,"phone_subscription":"not_inferred"}

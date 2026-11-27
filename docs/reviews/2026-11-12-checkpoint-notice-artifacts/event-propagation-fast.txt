@@ -1,0 +1,55 @@
+npm warn Unknown user config "minimum-release-age". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> test:fast
+> python3 tools/smart-test.py --level fast
+
+npm warn Unknown env config "minimum-release-age". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+npm warn Unknown user config "minimum-release-age". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> mvp:lock:check
+> npm run lock:check
+
+npm warn Unknown env config "minimum-release-age". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+npm warn Unknown user config "minimum-release-age". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> lock:check
+> node --experimental-strip-types tools/check-dependency-lock.ts
+
+MVP dependency lock: PASS (8 rows)
+✅ 源码级硬编码中文扫描通过! (已豁免/基线承接: 1546 处, 新增违规: 0 处)
+Starting a Gradle Daemon, 2 incompatible and 9 stopped Daemons could not be reused, use --status for details
+Unable to initialize metrics, ensure /home/djbd/.android is writable, details: /home/djbd/.android/analytics.settings (Read-only file system)
+Calculating task graph as configuration cache cannot be reused because output of the external process 'git' has changed.
+> Task :noVpnSurfaceCheck
+
+BUILD SUCCESSFUL in 11s
+1 actionable task: 1 executed
+Configuration cache entry stored.
+检测到变更文件数量: 26
+  - apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/conversations/NativeConversationMirrorTest.kt
+  - apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/state/WorkbenchController.kt
+  - apps/android/conversation-ui/src/test/kotlin/com/openandroidintelligence/conversation/state/WorkbenchCheckpointNoticeRecoveryTest.kt
+  - apps/android/conversation-ui/src/test/kotlin/com/openandroidintelligence/conversation/state/WorkbenchEventCommitRecoveryTest.kt
+  - docs/plans/2026-11-12-checkpoint-notice-recovery.zh-CN.md
+  - docs/reviews/2026-11-12-checkpoint-notice-artifacts/WorkbenchCheckpointNoticeRecoveryTest.xml
+  - docs/reviews/2026-11-12-checkpoint-notice-artifacts/WorkbenchEventCommitRecoverySpecProbeTest.kt
+  - docs/reviews/2026-11-12-checkpoint-notice-artifacts/WorkbenchEventCommitRecoveryTest.xml
+  - docs/reviews/2026-11-12-checkpoint-notice-artifacts/controller-green.txt
+  - docs/reviews/2026-11-12-checkpoint-notice-artifacts/cross-thread-retry-red.txt
+  ... 及其余 16 个文件
+=== 智能测试验证计划 [Level: FAST] ===
+影响范围评估: {'is_full_required': False, 'affects_security_or_contract': False, 'affects_oai_core': False, 'affects_configuration': False, 'affects_measurements': False, 'affects_observer': False, 'affects_android_kernel': False, 'affects_hermes': False, 'affects_dsh': False, 'affects_plugins': False, 'affects_android_control': False, 'affects_android_conversation': True, 'affects_android_gateway': False, 'affects_android_app': True, 'affects_android_settings': False, 'affects_android_notifications': False}
+
+--- 阶段 1: 静态安全与契约门禁 ---
+
+[EXEC] npm run mvp:lock:check (cwd: /tmp/oai-fix165-v2)
+
+--- 阶段 1.1: 源码级硬编码中文扫描 (check_hardcoded_chinese) ---
+
+[EXEC] /home/djbd/.local/share/venv-oai/bin/python3 tools/check_hardcoded_chinese.py (cwd: /tmp/oai-fix165-v2)
+
+--- 阶段 4: Android 增量测试 [1 个参数] ---
+
+[EXEC] ./gradlew noVpnSurfaceCheck (cwd: /tmp/oai-fix165-v2/apps/android)
+
+✅ 所有阶段验证通过！

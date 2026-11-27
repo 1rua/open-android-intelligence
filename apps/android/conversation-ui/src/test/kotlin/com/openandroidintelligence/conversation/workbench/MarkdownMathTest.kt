@@ -28,6 +28,20 @@ import org.robolectric.annotation.Config
  * 安全、离线、颜色/字号/displayMode 正确」，以及缓存与估算这两个纯数据逻辑。
  */
 class MarkdownMathTest {
+    @Test fun 公式内容边界独立于居中满宽容器且支持滚动后的负坐标() {
+        val centered = requireNotNull(parseMathMeasurement("\"320,32,320,32,0,150,3,20,25\""))
+        assertEquals(androidx.compose.ui.geometry.Rect(150f, 3f, 170f, 28f), centered.contentBounds)
+        val scrolled = requireNotNull(parseMathMeasurement("\"800,32,800,32,0,-400,3,600,25\""))
+        assertEquals(200f, requireNotNull(scrolled.contentBounds).right)
+        assertNull(requireNotNull(parseMathMeasurement("\"320,32,320,32,0\"" )).contentBounds)
+        assertNull(requireNotNull(parseMathMeasurement("\"320,32,320,32,0,NaN,0,20,25\"" )).contentBounds)
+        val html = buildKaTeXHtml("x", true, 16f, 0xFF000000.toInt(), 0xFFFF0000.toInt())
+        assertTrue(html.contains("querySelector('.katex-html')"))
+        assertTrue("正文排版块从满宽外壳的直属子节点中选取", html.contains("glyph.children"))
+        assertTrue("仅正文 base 参与末端测量，换行和编号不属于正文", html.contains("child.classList.contains('base')"))
+        assertFalse("满宽外壳的右缘不能再作为公式末端", html.contains("content=glyph.getBoundingClientRect()"))
+        assertTrue("无正文块时测量实际内容范围而非外壳", html.contains("range.selectNodeContents(glyph||target)"))
+    }
 
     @Before
     fun clearCache() {

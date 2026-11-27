@@ -21,10 +21,12 @@ class OnboardingStateTest {
         assertEquals(1, state.stepIndex)
     }
 
-    /** 阶段推进顺序：欢迎 → 权限 → 部署 → 教程 → 完成。 */
+    /** 阶段推进顺序：欢迎 → 外观 → 权限 → 部署 → 教程 → 完成。 */
     @Test
     fun `next advances through all four screens`() {
         var state = OnboardingState.Initial
+        assertEquals(OnboardingStage.APPEARANCE, state.next())
+        state = state.copy(stage = OnboardingStage.APPEARANCE)
         assertEquals(OnboardingStage.PERMISSIONS, state.next())
         state = state.copy(stage = OnboardingStage.PERMISSIONS)
         assertEquals(OnboardingStage.DEPLOYMENT, state.next())
@@ -40,6 +42,10 @@ class OnboardingStateTest {
         assertEquals(null, OnboardingState.Initial.previous())
         assertEquals(
             OnboardingStage.WELCOME,
+            OnboardingState.Initial.copy(stage = OnboardingStage.APPEARANCE).previous(),
+        )
+        assertEquals(
+            OnboardingStage.APPEARANCE,
             OnboardingState.Initial.copy(stage = OnboardingStage.PERMISSIONS).previous(),
         )
         assertEquals(
@@ -117,17 +123,18 @@ class OnboardingStateTest {
         assertEquals(null, OnboardingStage.fromPersisted(null))
     }
 
-    /** 每个页面阶段的步号正确、总数恒为 4。 */
+    /** 每个页面阶段的步号正确、总数恒为 5。 */
     @Test
     fun `step indexes map to the four screens`() {
         val stages = listOf(
             OnboardingStage.WELCOME,
+            OnboardingStage.APPEARANCE,
             OnboardingStage.PERMISSIONS,
             OnboardingStage.DEPLOYMENT,
             OnboardingStage.GUIDE,
         )
-        assertEquals(listOf(1, 2, 3, 4), stages.map { OnboardingState(stage = it).stepIndex })
-        stages.forEach { assertEquals(4, OnboardingState(stage = it).stepCount) }
+        assertEquals(listOf(1, 2, 3, 4, 5), stages.map { OnboardingState(stage = it).stepIndex })
+        stages.forEach { assertEquals(5, OnboardingState(stage = it).stepCount) }
         assertEquals(null, OnboardingState(stage = OnboardingStage.COMPLETED).stepIndex)
     }
 

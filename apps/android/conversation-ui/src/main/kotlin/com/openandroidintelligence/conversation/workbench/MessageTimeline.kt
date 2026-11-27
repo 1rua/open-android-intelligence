@@ -19,23 +19,27 @@ import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -44,15 +48,20 @@ import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.AttachmentDownloadState
 import com.openandroidintelligence.conversation.model.AttachmentLocalState
 import com.openandroidintelligence.conversation.model.GenerationState
+import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.model.TimelineAttachment
 import com.openandroidintelligence.conversation.ports.AgentMessageErrorCode
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
+import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
+import com.openandroidintelligence.conversation.voice.formatVoiceDuration
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
+import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import kotlinx.coroutines.delay
 import java.time.Instant
 import java.time.ZoneId
@@ -66,8 +75,9 @@ import java.time.format.DateTimeFormatter
  *    等待用 warning、失败才用 error —— 颜色永远不是唯一信号；
  * 4. Markdown 代码块：深色圆角容器、语言标签、独立复制代码按钮、横向自由滚动与等宽字体。
  *
- * @param onDecide 提交一次审批决策，走它自己的端点；卡片永不用「在会话里打字」的方式作答
- *   （§7.2）。决策与被按下卡片的标识一起传递，因此一组行可以共用同一个回调而不丢失回答的是哪张审批。
+ * @param onDecide 提交一次结构化审批决策，走它自己的端点（§7.2）。决策与被按下卡片的
+ *   标识一起传递，因此一组行可以共用同一个回调而不丢失回答的是哪张审批。无法渲染的
+ *   卡片不调用此回调，而是在文本降级行中明确要求用户手动回复宿主命令。
  */
 @Composable
 fun MessageTimeline(
@@ -80,6 +90,7 @@ fun MessageTimeline(
 ) {
     val displayItems = rememberTimelineDisplayItems(entries, generation = generation)
     val timing = rememberExecutionTimingStore(threadId = null)
+    val presentations = rememberStreamingPresentations(entries, owner = null, generation = generation)
     AttachmentPreviewHost(
         attachments = entries.flatMap { it.attachments },
         onDownload = onDownloadAttachment,
@@ -95,6 +106,7 @@ fun MessageTimeline(
                     item = item,
                     onDecide = onDecide,
                     timing = timing,
+                    presentations = presentations,
                     onDownloadAttachment = onDownloadAttachment,
                     onRequestOriginalAttachment = onRequestOriginalAttachment,
                     onOpenAttachmentPreview = openPreview,
@@ -114,6 +126,7 @@ fun MessageTimeline(
 fun TimelineRow(
     entry: TimelineEntry,
     onDecide: (String, ApprovalChoice) -> Unit,
+    presentations: StreamingPresentationRegistry? = null,
     modifier: Modifier = Modifier,
     onDownloadAttachment: ((String) -> Unit)? = null,
     onRequestOriginalAttachment: ((String) -> Unit)? = null,
@@ -136,9 +149,14 @@ fun TimelineRow(
             onRequestOriginalAttachment = onRequestOriginalAttachment,
             onOpenAttachmentPreview = onOpenAttachmentPreview,
         )
-    } else {
+    } else if (
+        entry.systemThreadId != null ||
+        entry.executionFact ||
+        ContextInjectionFilter.classifySender(entry.sender) == ContextInjectionFilter.SenderRole.ASSISTANT
+    ) {
         AssistantMessageRow(
             entry = entry,
+            presentations = presentations,
             onDownloadAttachment = onDownloadAttachment,
             onRequestOriginalAttachment = onRequestOriginalAttachment,
             onOpenAttachmentPreview = onOpenAttachmentPreview,
@@ -147,6 +165,7 @@ fun TimelineRow(
             },
         )
     }
+    // 缺失或非对话角色（system/developer/context/tool/unknown）在非本地特殊卡片场景下严禁退化渲染为助手气泡
 }
 
 /**
@@ -171,19 +190,10 @@ private fun UserMessageBubble(
             onOpenPreview = onOpenAttachmentPreview,
             fileMetadata = if (fileMetadataVisible) { { MessageMetadata(entry, failed) } } else null,
         )
-        if (entry.text.isNotBlank() || entry.attachments.isEmpty()) {
+        if (entry.text.isNotBlank()) {
             MessageBubble(isUser = true, messageKey = entry.key) {
-                if (entry.text.isNotBlank()) {
-                    SelectionContainer {
-                        Text(text = entry.text, style = MaterialTheme.typography.bodyLarge)
-                    }
-                } else if (entry.attachments.isEmpty()) {
-                    SelectionContainer {
-                        Text(
-                            text = "此消息没有可显示的文本",
-                            style = MaterialTheme.typography.bodyLarge,
-                        )
-                    }
+                SelectionContainer {
+                    Text(text = entry.text, style = MaterialTheme.typography.bodyLarge)
                 }
             }
         }
@@ -209,7 +219,7 @@ private fun MessageRowLayout(
 ) {
     val alignment = if (isUser) Alignment.TopEnd else Alignment.TopStart
     Box(modifier.fillMaxWidth(), contentAlignment = alignment) {
-        // Use ordinary layout nodes so execution-panel expansion can remeasure
+        // Use ordinary layout nodes so expandable step cards can remeasure
         // the bubble directly, without a subcomposition in the animated parent.
         Box(Modifier.fillMaxWidth(Dimensions.MessageWidthFraction), contentAlignment = alignment) {
             Column(
@@ -249,9 +259,15 @@ fun messageStatusLabel(status: AgentMessageStatus, errorCode: AgentMessageErrorC
     AgentMessageStatus.COMPLETED -> "Agent 处理完成"
     AgentMessageStatus.FAILED -> "Agent 处理失败：" + when (errorCode) {
         AgentMessageErrorCode.AGENT_UNAVAILABLE -> "Agent 暂不可用"
+        AgentMessageErrorCode.INVALID_MESSAGE -> "消息内容或附件参数无效"
+        AgentMessageErrorCode.UNSUPPORTED_CAPABILITY -> "当前 Agent 不支持此消息或附件功能"
+        AgentMessageErrorCode.PROTOCOL_ERROR -> "会话协议响应无效，请更新 Core 与适配器"
+        AgentMessageErrorCode.AGENT_REQUEST_FAILED -> "请求未能完成，请检查会话连接或服务日志"
         AgentMessageErrorCode.ATTACHMENT_READ_FAILED -> "Agent 读取附件失败"
         AgentMessageErrorCode.AGENT_MEDIA_REJECTED -> "Agent 无法处理此媒体"
         AgentMessageErrorCode.MODEL_REQUEST_REJECTED -> "模型请求格式不接受"
+        AgentMessageErrorCode.APPROVAL_UNSUPPORTED ->
+            "审批卡不可用，命令尚未执行；请回复 /approve 或 /deny"
         null -> "请重试或重新选择附件"
     }
 }
@@ -341,6 +357,7 @@ private fun MessageAttachments(
 /**
  * 附件卡分流：
  * - 图片：气泡内只保留图片本身（文件名与下载按钮都已移除），点击进入全屏预览；
+ * - 语音：文件名 + 时长芯片，不提供大图预览；
  * - 其它文件：保留文件名、本地/下载状态与下载按钮，PDF 等仍可保存。
  */
 @Composable
@@ -353,10 +370,92 @@ fun HistoricalAttachmentCard(
     showCaption: Boolean = false,
     fileMetadata: (@Composable () -> Unit)? = null,
 ) {
-    if (attachment.isImage) {
-        ImageAttachmentCard(attachment, modifier, onDownload, onRequestOriginal, onOpenPreview, showCaption)
-    } else {
-        FileAttachmentCard(attachment, modifier, onDownload, fileMetadata)
+    when {
+        attachment.isImage ->
+            ImageAttachmentCard(attachment, modifier, onDownload, onRequestOriginal, onOpenPreview, showCaption)
+        attachment.isAudio ->
+            AudioAttachmentCard(attachment, modifier, onDownload, fileMetadata)
+        else ->
+            FileAttachmentCard(attachment, modifier, onDownload, fileMetadata)
+    }
+}
+
+/**
+ * 语音附件：文件名 + 真实时长芯片。
+ *
+ * 时长只来自本进程观察到的录音结果（见 `TimelineAttachment.audioDurationMs`）；
+ * 没有记录时只显示文件名，不编造一个「0 秒」。
+ */
+@Composable
+private fun AudioAttachmentCard(
+    attachment: TimelineAttachment,
+    modifier: Modifier,
+    onDownload: ((String) -> Unit)?,
+    metadata: (@Composable () -> Unit)?,
+) {
+    val name = attachment.filename.ifBlank { "语音消息" }
+    Column(modifier.widthIn(max = Dimensions.MessageWidth), verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny)) {
+        Surface(
+            shape = RoundedCornerShape(AppRadius.Small),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { contentDescription = "语音附件：$name" },
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceSmall),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.GraphicEq,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(Dimensions.SmallIcon),
+                )
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                attachment.audioDurationMs?.takeIf { it > 0L }?.let { duration ->
+                    Surface(
+                        shape = RoundedCornerShape(AppRadius.ExtraSmall),
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.testTag("attachment-audio-duration:${attachment.draftId}"),
+                    ) {
+                        Text(
+                            text = formatVoiceDuration(duration),
+                            style = AppTextStyles.MonoSmall,
+                            modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall, vertical = 2.dp),
+                        )
+                    }
+                }
+            }
+        }
+        when (attachment.localState) {
+            AttachmentLocalState.PENDING -> Text("正在读取语音…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            AttachmentLocalState.UNAVAILABLE -> Text("原件不可用，附件信息仍保留", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            AttachmentLocalState.FAILED -> Text("本地保存失败，请检查手机存储空间或连接", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            AttachmentLocalState.SAVED -> Unit
+        }
+        when (attachment.downloadState) {
+            AttachmentDownloadState.SAVED -> Text("已保存到下载目录", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            AttachmentDownloadState.FAILED -> Text("下载失败，请重试", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            else -> Unit
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+            TextButton(onClick = { onDownload?.invoke(attachment.draftId) }, enabled =
+                onDownload != null && attachment.localState != AttachmentLocalState.UNAVAILABLE && attachment.downloadState != AttachmentDownloadState.DOWNLOADING) {
+                Text(if (attachment.downloadState == AttachmentDownloadState.DOWNLOADING) "下载中…" else "下载")
+            }
+            Spacer(Modifier.weight(1f))
+            metadata?.invoke()
+        }
     }
 }
 
@@ -383,7 +482,15 @@ private fun ImageAttachmentCard(
     }
     // 缩略图解码放到 IO 线程并交给 ImageDecoder 处理 EXIF 方向；失败时保留可点的
     // 占位，用户仍可进入 Lightbox 尝试加载原图，而不是得到一张空白。
-    val image = rememberDecodedPreview(attachment.previewBytes)
+    val imageState = rememberImagePreviewState(attachment.previewBytes, attachment.draftId)
+    val previewScope = LocalImagePreviewScope.current
+    val previewStarted = remember(previewScope,attachment.draftId) { System.nanoTime() }
+    val previewDrawn = remember(previewScope,attachment.draftId) { java.util.concurrent.atomic.AtomicBoolean(false) }
+    val image = when (imageState) {
+        is ImagePreviewState.Ready -> imageState.bitmap
+        is ImagePreviewState.Pending -> imageState.lastGood
+        ImagePreviewState.Failed, ImagePreviewState.Missing -> null
+    }
     val canOpen = image != null || attachment.localState != AttachmentLocalState.UNAVAILABLE
 
     Column(
@@ -412,6 +519,11 @@ private fun ImageAttachmentCard(
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
                             .testTag("attachment-image:${attachment.draftId}")
+                            .drawWithContent {
+                                drawContent()
+                                if (previewDrawn.compareAndSet(false,true)) GatewayLog.protocolEvidence("preview.first_draw",mapOf(
+                                    "attachmentId" to attachment.draftId,"elapsedNs" to System.nanoTime()-previewStarted))
+                            }
                             .size(width = imageWidth, height = imageWidth / ratio)
                             .clip(RoundedCornerShape(AppRadius.Medium))
                             .background(MaterialTheme.colorScheme.surfaceContainerLow),
@@ -419,10 +531,12 @@ private fun ImageAttachmentCard(
                 }
             }
         } else {
-            ImageUnavailablePlaceholder(
+            ImagePreviewPlaceholder(
                 attachment = attachment,
                 canOpen = canOpen,
                 onOpen = openPreview,
+                loading = imageState is ImagePreviewState.Pending ||
+                    (imageState is ImagePreviewState.Missing && attachment.localState == AttachmentLocalState.PENDING),
             )
         }
 
@@ -495,10 +609,11 @@ private fun ImageAttachmentCard(
 }
 
 @Composable
-private fun ImageUnavailablePlaceholder(
+private fun ImagePreviewPlaceholder(
     attachment: TimelineAttachment,
     canOpen: Boolean,
     onOpen: () -> Unit,
+    loading: Boolean,
 ) {
     val shape = RoundedCornerShape(AppRadius.Medium)
     Column(
@@ -517,30 +632,40 @@ private fun ImageUnavailablePlaceholder(
                         .clickable(role = Role.Button, onClickLabel = "查看大图", onClick = onOpen)
                         .semantics {
                             contentDescription = "查看大图：${attachment.filename.ifBlank { "图片" }}"
+                            if (loading) stateDescription = "正在加载"
                         }
                 } else {
-                    Modifier.semantics { contentDescription = "图片预览不可用" }
+                    Modifier.semantics {
+                        contentDescription = if (loading) "正在加载图片预览" else "图片预览不可用"
+                    }
                 },
             )
             .padding(Dimensions.SpaceMedium),
         verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(
-            imageVector = Icons.Default.Image,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(Dimensions.Icon),
-        )
-        Text(
-            text = if (attachment.localState == AttachmentLocalState.UNAVAILABLE) {
-                "原件不可用，暂时无法查看"
-            } else {
-                "图片预览不可用"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        if (loading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(Dimensions.Icon),
+                strokeWidth = 2.dp,
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Default.Image,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(Dimensions.Icon),
+            )
+            Text(
+                text = if (attachment.localState == AttachmentLocalState.UNAVAILABLE) {
+                    "原件不可用，暂时无法查看"
+                } else {
+                    "图片预览不可用"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -584,6 +709,7 @@ private fun FileAttachmentCard(
 @Composable
 private fun AssistantMessageRow(
     entry: TimelineEntry,
+    presentations: StreamingPresentationRegistry? = null,
     modifier: Modifier = Modifier,
     onDownloadAttachment: ((String) -> Unit)? = null,
     onRequestOriginalAttachment: ((String) -> Unit)? = null,
@@ -600,13 +726,25 @@ private fun AssistantMessageRow(
             fileMetadata = if (fileMetadataVisible) { { MessageMetadata(entry, failed) } } else null,
         )
 
-        // 文本内容（含实时执行卡片/最终回答）统一交给执行过程渲染层；
-        // 附件、元数据与复制仍由这一层负责，保持四个宿主一致。
-        if (entry.text.isNotBlank() || entry.attachments.isEmpty() || entry.isStreaming) {
-            MessageBubble(isUser = false, messageKey = entry.key) { AssistantMessageContent(entry = entry) }
+        // 与 AssistantMessageContent 的流式光标门禁保持严格一致：仅当存在可见正文、思考、步骤或处于活跃流式时才挂载气泡，
+        // 避免在非活跃流式快照下挂载无内容的空 MessageBubble。
+        val streamingBubbleActive = entry.isStreaming &&
+            (presentations == null || presentations.frameFor(entry)?.active == true)
+        val hasVisibleContent = entry.text.isNotBlank() ||
+            entry.reasoning.isNotEmpty() ||
+            entry.executionSteps.isNotEmpty() ||
+            entry.timelineSteps.isNotEmpty() ||
+            streamingBubbleActive
+
+        if (hasVisibleContent) {
+            MessageBubble(isUser = false, messageKey = entry.key) {
+                AssistantMessageContent(entry = entry, presentations = presentations)
+            }
         }
 
-        if (!fileMetadataVisible) MessageMetadata(entry = entry, failed = failed)
+        if (!fileMetadataVisible && (hasVisibleContent || entry.isStreaming || entry.attachments.isNotEmpty() || failed)) {
+            MessageMetadata(entry = entry, failed = failed)
+        }
 
         // 与用户气泡一致的「原文复制」入口：复制的是含 Markdown 标记的原始内容。
         if (entry.text.isNotBlank()) {
@@ -617,8 +755,8 @@ private fun AssistantMessageRow(
 
 /**
  * 时间线一行的一次渲染结果：普通条目仍交给 [TimelineRow]，
- * 折叠后的执行段交给 [ExecutionTurnRow]。耗时 store 在这一层注入，
- * 因此从实时卡片收进聚合面板时，已观察到的耗时不会丢失。
+ * 执行段交给 [ExecutionTurnRow]。耗时 store 在这一层注入，
+ * 因此从单条呈现转为执行段时，已观察到的耗时不会丢失。
  */
 @Composable
 fun TimelineDisplayRow(
@@ -629,38 +767,106 @@ fun TimelineDisplayRow(
     onDownloadAttachment: ((String) -> Unit)? = null,
     onRequestOriginalAttachment: ((String) -> Unit)? = null,
     onOpenAttachmentPreview: ((String) -> Unit)? = null,
+    evidenceOwner: Any? = null,
+    presentations: StreamingPresentationRegistry? = null,
 ) {
-    CompositionLocalProvider(LocalExecutionTiming provides timing) {
-        when (item) {
-            is TimelineDisplayItem.Single -> TimelineRow(
-                entry = item.entry,
-                onDecide = onDecide,
-                modifier = modifier,
-                onDownloadAttachment = onDownloadAttachment,
-                onRequestOriginalAttachment = onRequestOriginalAttachment,
-                onOpenAttachmentPreview = onOpenAttachmentPreview,
-            )
+    val inheritedPreviewScope = LocalImagePreviewScope.current
+    if (GatewayLog.protocolEvidenceEnabled) {
+        val entry = when (item) {
+            is TimelineDisplayItem.Single -> item.entry
+            is TimelineDisplayItem.Execution -> item.run.finalEntry
+        }
+        val steps = (item as? TimelineDisplayItem.Execution)?.run?.steps.orEmpty()
+        val hasContent = entry.text.isNotBlank() || entry.attachments.isNotEmpty() || steps.isNotEmpty()
+        val streaming = when (item) {
+            is TimelineDisplayItem.Single -> entry.isStreaming
+            is TimelineDisplayItem.Execution -> item.run.isStreaming
+        }
+        val unknownStep = steps.filterIsInstance<ExecutionStep.ToolCall>()
+            .any { it.block.executionStatus == NativeExecutionStatus.UNKNOWN }
+        var observed by rememberSaveable(evidenceOwner, item.key, entry.clientMessageId, entry.generationId) { mutableIntStateOf(0) }
+        val view = LocalView.current
+        val frameCallbacks = remember(view, evidenceOwner, item.key, entry.clientMessageId, entry.generationId) { mutableSetOf<Runnable>() }
+        DisposableEffect(view, evidenceOwner, item.key, entry.clientMessageId, entry.generationId) {
+            val observer = view.viewTreeObserver
+            onDispose {
+                if (observer.isAlive) frameCallbacks.toList().forEach(observer::unregisterFrameCommitCallback)
+                frameCallbacks.clear()
+            }
+        }
+        // SideEffect 只在本次组合成功应用后执行。首个可见内容与非流式快照
+        // 各记录一次，不按 token 记录，也不把此边界冒充屏幕/GPU呈现测量。
+        SideEffect {
+            if (hasContent) {
+                val phases = buildList {
+                    if ((observed and 1) == 0) add(1 to "first_visible")
+                    if (!streaming && !entry.pendingAcceptance && !unknownStep && (observed and 2) == 0)
+                        add(2 to "non_streaming_visible")
+                }
+                phases.forEach { (bit, phase) ->
+                    GatewayLog.protocolEvidence("T9.compose_applied", mapOf(
+                        "messageId" to entry.key, "clientMessageId" to entry.clientMessageId?.value,
+                        "generationId" to entry.generationId, "phase" to phase, "stepCount" to steps.size,
+                    ))
+                    // 真正的渲染帧提交回调与组合应用分别记时；软件渲染没有这个事实。
+                    if (GatewayLog.protocolEvidenceEnabled && view.isHardwareAccelerated) {
+                        val observer = view.viewTreeObserver
+                        lateinit var callback: Runnable
+                        callback = Runnable {
+                            frameCallbacks.remove(callback)
+                            GatewayLog.protocolEvidence("T10.frame_committed", mapOf(
+                                "messageId" to entry.key, "clientMessageId" to entry.clientMessageId?.value,
+                                "generationId" to entry.generationId, "phase" to phase))
+                        }
+                        frameCallbacks.add(callback)
+                        observer.registerFrameCommitCallback(callback)
+                    }
+                    observed = observed or bit
+                }
+            }
+        }
+    }
+    CompositionLocalProvider(
+        LocalExecutionTiming provides timing,
+        LocalStreamingPresentationRegistry provides presentations,
+    ) {
+        CompositionLocalProvider(
+            LocalImagePreviewScope provides (evidenceOwner ?: inheritedPreviewScope),
+        ) {
+            when (item) {
+                is TimelineDisplayItem.Single -> TimelineRow(
+                    entry = item.entry,
+                    presentations = presentations,
+                    onDecide = onDecide,
+                    modifier = modifier,
+                    onDownloadAttachment = onDownloadAttachment,
+                    onRequestOriginalAttachment = onRequestOriginalAttachment,
+                    onOpenAttachmentPreview = onOpenAttachmentPreview,
+                )
 
-            is TimelineDisplayItem.Execution -> ExecutionTurnRow(
-                run = item.run,
-                modifier = modifier,
-                onDownloadAttachment = onDownloadAttachment,
-                onRequestOriginalAttachment = onRequestOriginalAttachment,
-                onOpenAttachmentPreview = onOpenAttachmentPreview,
-            )
+                is TimelineDisplayItem.Execution -> ExecutionTurnRow(
+                    run = item.run,
+                    presentations = presentations,
+                    modifier = modifier,
+                    onDownloadAttachment = onDownloadAttachment,
+                    onRequestOriginalAttachment = onRequestOriginalAttachment,
+                    onOpenAttachmentPreview = onOpenAttachmentPreview,
+                )
+            }
         }
     }
 }
 
 /**
- * 一个被折叠的执行段：最终消息附件 → 执行过程面板 + 最终回答 → 元数据/复制。
+ * 一个助手执行段：最终消息附件 → 按时序平铺的独立步骤卡片 + 最终回答 → 元数据/复制。
  *
- * 过程条目自身的附件由 [AssistantExecutionTurnBody] 的 slot 在面板内部渲染；
+ * 过程条目自身的附件由 [AssistantExecutionTurnBody] 的 slot 在过程区域内部渲染；
  * 没有最终回答时，最终消息的附件也属于过程内容，因此不在外层重复渲染。
  */
 @Composable
 private fun ExecutionTurnRow(
     run: AssistantExecutionRun,
+    presentations: StreamingPresentationRegistry?,
     modifier: Modifier,
     onDownloadAttachment: ((String) -> Unit)?,
     onRequestOriginalAttachment: ((String) -> Unit)?,
@@ -682,9 +888,16 @@ private fun ExecutionTurnRow(
 
         AssistantExecutionTurnBody(
             run = run,
-            finalAnswerSlot = { blocks, streaming ->
+            presentations = presentations,
+            finalAnswerSlot = { _, _ ->
                 MessageBubble(isUser = false, messageKey = run.finalEntry.key) {
-                    MarkdownDocumentView(blocks = blocks, isStreaming = streaming)
+                    StreamingReplyBody(
+                        entry = run.finalEntry,
+                        registry = presentations,
+                        finalOnly = true,
+                    ) { shownBlocks, presenting ->
+                        MarkdownDocumentView(blocks = shownBlocks, isStreaming = presenting)
+                    }
                 }
             },
             processAttachmentsSlot = { processEntry ->
@@ -699,7 +912,13 @@ private fun ExecutionTurnRow(
             },
         )
 
-        if (!fileMetadataVisible) MessageMetadata(entry = run.finalEntry, failed = failed)
+        val hasVisibleTurnContent = run.steps.isNotEmpty() ||
+            (run.hasFinalAnswer && run.finalBlocks.isNotEmpty()) ||
+            run.finalEntry.attachments.isNotEmpty() ||
+            run.isStreaming
+        if (!fileMetadataVisible && (hasVisibleTurnContent || failed)) {
+            MessageMetadata(entry = run.finalEntry, failed = failed)
+        }
 
         // 复制的是最终消息的原始文本（含 Markdown 标记），与既有逐条复制语义一致。
         if (run.finalEntry.text.isNotBlank()) {
@@ -814,7 +1033,7 @@ private fun MessageMetadata(
 /** 流式输出的状态点：极缓的 1.2s alpha 呼吸；减少动态时完全静止。 */
 @Composable
 private fun StreamingStatusDot() {
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    val reduced = LocalMotionPolicy.current.isReduced
     val alpha = if (reduced) {
         0.75f
     } else {
@@ -842,7 +1061,7 @@ private fun StreamingStatusDot() {
  */
 @Composable
 fun StreamingCursor(modifier: Modifier = Modifier) {
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    val reduced = LocalMotionPolicy.current.isReduced
     val alpha = if (reduced) {
         1f
     } else {
@@ -885,9 +1104,9 @@ private const val StaticTypingDotAlpha = 0.55f
 @Composable
 fun ThinkingIndicator(
     modifier: Modifier = Modifier,
-    text: String = "AI 正在思考",
+    text: String = "正在思考",
 ) {
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    val reduced = LocalMotionPolicy.current.isReduced
     Box(
         modifier = modifier
             .fillMaxWidth(),

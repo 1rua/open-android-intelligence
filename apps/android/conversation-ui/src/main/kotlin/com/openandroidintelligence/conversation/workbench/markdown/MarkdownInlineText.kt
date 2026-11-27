@@ -3,7 +3,6 @@ package com.openandroidintelligence.conversation.workbench
 import android.widget.Toast
 import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -14,7 +13,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -25,9 +23,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.unit.isSpecified
-
-/** 流式输出光标在 AnnotatedString 中的固定占位 id。 */
-internal const val StreamingCursorInlineId = "streaming_cursor"
 
 /**
  * 行内 Markdown 文本：AnnotatedString 负责样式、链接与公式占位，
@@ -55,6 +50,17 @@ fun MarkdownInlineText(
     val density = LocalDensity.current
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
+    // 正文以当前叶节点为准；来源图只能定位相同文字，不能把补齐的空单元格替换成整块原文。
+    // 无匹配来源时保留空映射，避免从消息开头伪造光标、渐入和触觉范围。
+    val source = LocalMarkdownLeafSource.current?.takeIf { it.text == text }
+        ?: LocalMarkdownBlockSource.current?.takeIf { it.text == text }
+    val document = LocalStreamingMarkdownDocument.current
+    val active = isStreaming && LocalStreamingTextPresentation.current?.active == true
+    // 同一份正文的尾换行来源必须复用，否则布局回调重组时会不断更换来源与偏移数组。
+    val laidOutSource = remember(text, source, document, active) {
+        source?.let { streamingInlineSource(text, it, document, active) }
+    }
+    val laidOutText = laidOutSource?.text ?: text
 
     // 默认行为：交给系统处理（浏览器 / 邮件 / 电话），失败时给用户一个明确提示而不是静默无响应。
     val linkHandler: (String) -> Unit = remember(uriHandler, onLinkClick, context) {
@@ -66,8 +72,8 @@ fun MarkdownInlineText(
         }
     }
 
-    val result = remember(text, colors, linkHandler) {
-        buildMarkdownInline(text, colors, linkHandler)
+    val result = remember(laidOutText, colors, linkHandler) {
+        buildMarkdownInline(laidOutText, colors, linkHandler)
     }
 
     val effectiveFontSize = when {
@@ -80,25 +86,10 @@ fun MarkdownInlineText(
     // 同一段文本内相同 LaTeX 复用同一测量结果；WebView 异步上报后触发重新排版。
     val measuredMathSizes = remember(text) { mutableStateMapOf<String, IntSize>() }
 
-    val annotated = remember(result, isStreaming) {
-        if (!isStreaming) {
-            result.annotated
-        } else {
-            AnnotatedString.Builder(result.annotated).apply {
-                append(" ")
-                appendInlineContent(StreamingCursorInlineId, "[cursor]")
-            }.toAnnotatedString()
-        }
-    }
-
-    val cursorHeight = (effectiveFontSize.value * 1.05f).sp
-    val cursorPlaceholders = streamingCursorInlineContent(
-        isStreaming = isStreaming,
-        cursorHeight = cursorHeight,
-    )
+    // 光标由正文容器的独立 Overlay 绘制，不把占位字符加入 AnnotatedString，避免改变换行、选择和复制。
+    val annotated = result.annotated
 
     val inlineContent = buildMap {
-        putAll(cursorPlaceholders)
         result.inlineMath.forEach { span ->
             val key = MarkdownMathKey(
                 latex = span.latex,
@@ -117,9 +108,16 @@ fun MarkdownInlineText(
                         placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
                     ),
                 ) {
+                    val leaf = laidOutSource
+                    val mathSource = leaf?.let { original ->
+                        val start = result.sourceOffsets.getOrNull(span.start) ?: 0
+                        original.slice(start.coerceAtMost(original.text.length),
+                            (start + span.latex.length).coerceAtMost(original.text.length))
+                    }
                     MarkdownMathInline(
                         latex = span.latex,
                         fontSize = effectiveFontSize,
+                        modifier = streamingAtomicModifier(mathSource, Modifier),
                         onMeasured = { size -> measuredMathSizes[span.latex] = size },
                     )
                 },
@@ -127,11 +125,19 @@ fun MarkdownInlineText(
         }
     }
 
+    val sourceOffsets = remember(result, laidOutSource) { sourceOffsetsFor(result, laidOutSource) }
+    val (decoratedModifier, onTextLayout) = streamingTextModifier(
+        text = annotated.text,
+        sourceOffsets = sourceOffsets,
+        modifier = modifier,
+    )
+
     SelectionContainer {
         Text(
             text = annotated,
             inlineContent = inlineContent,
-            modifier = modifier,
+            modifier = decoratedModifier,
+            onTextLayout = onTextLayout,
             color = color,
             fontSize = fontSize,
             lineHeight = lineHeight,
@@ -144,29 +150,3 @@ fun MarkdownInlineText(
     }
 }
 
-/**
- * 流式光标的 InlineTextContent。宽度按字高比例取 0.14（约等于 14sp 字号下的 2dp），
- * 高度跟随当前字号。非流式状态返回空表，避免无谓的占位与重排。
- *
- * 刻意保持非 @Composable：思考卡片在 remember 块里构造它，光标宽度又与密度无关
- * （直接按 sp 比例给出），这样调用方不需要额外提升状态。
- */
-internal fun streamingCursorInlineContent(
-    isStreaming: Boolean,
-    cursorInlineId: String = StreamingCursorInlineId,
-    cursorHeight: TextUnit = 14.sp,
-): Map<String, InlineTextContent> {
-    if (!isStreaming) return emptyMap()
-    val cursorWidth = cursorHeight * 0.14f
-    return mapOf(
-        cursorInlineId to InlineTextContent(
-            Placeholder(
-                width = if (cursorWidth.value > 0f) cursorWidth else 2.sp,
-                height = cursorHeight,
-                placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
-            ),
-        ) {
-            StreamingCursor()
-        },
-    )
-}

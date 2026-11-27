@@ -7,16 +7,12 @@ import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
 import com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache
 import com.openandroidintelligence.mobile.plugins.EncryptedDocuments
 import com.openandroidintelligence.gateway.schema.Json
-import com.openandroidintelligence.gateway.http.*
-import com.openandroidintelligence.gateway.events.EventCursorStore
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.InputStream
 import java.security.MessageDigest
 import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.emptyFlow
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -134,24 +130,16 @@ class PersistentHistoryMediaTest {
     @Test fun remoteOriginalLargerThanTwentyFiveMibStreamsOnceAndThenReadsOffline() = runBlocking {
         val size = 26L * 1024 * 1024 + 7
         var contentReads = 0
-        val transport = object : GatewayByteTransport {
-            override suspend fun execute(request: WireRequest): WireResponse {
-                val data = if (request.target.endsWith("/cache-grant?format=stream-v1")) mapOf("grantId" to "G".repeat(43)) else {
-                    check(request.target.endsWith("/metadata?format=stream-v1")) { "原件不能通过整文件字节入口读取" }
-                    mapOf("metadata" to mapOf("conversationId" to "conv", "attachmentId" to "remote_large", "filename" to "large.bin",
-                        "mediaType" to "application/octet-stream", "sizeBytes" to size, "sha256" to "sha256:${repeatedDigest(size)}", "remoteAvailable" to true))
-                }
-                return WireResponse(200, emptyList(), Json.canonical(Json.of(mapOf("data" to data))).toByteArray())
-            }
-            override suspend fun <T> consumeResponse(request: WireRequest, consume: suspend (Int, List<RawHeader>, InputStream) -> T): T {
+        val source = object : HistoricalMediaSource {
+            override fun checkCurrent() = Unit
+            override suspend fun metadata(conversationId: String, attachmentId: String) = HistoricalMediaMetadata(
+                conversationId, attachmentId, "large.bin", "application/octet-stream", size, "", true, size)
+            override suspend fun consumeOriginal(metadata: HistoricalMediaMetadata, consume: (InputStream) -> Unit) {
                 contentReads++
-                assertTrue(request.target.contains("/content?format=stream-v1&grantId="))
-                return RepeatedStream(size).use { consume(200, listOf(RawHeader("Content-Type", "application/octet-stream"),
-                    RawHeader("Content-Length", size.toString()), RawHeader("X-Open-Android-Intelligence-Media-Format", "stream-v1")), it) }
+                RepeatedStream(size).use(consume)
             }
-            override fun eventStream(request: WireRequest): Flow<ByteArray> = emptyFlow()
         }
-        val cache = EncryptedHistoryMediaCache(context, scope, client(transport), key)
+        val cache = EncryptedHistoryMediaCache(context, scope, source, key)
         cache.ensureLocal("conv", "remote_large"); cache.ensureLocal("conv", "remote_large")
         assertEquals(1, contentReads)
         val offline = EncryptedHistoryMediaCache(context, scope, keyProvider = key)
@@ -164,28 +152,18 @@ class PersistentHistoryMediaTest {
         offline.clearMedia()
     }
 
-    @Test fun anUnboundedLegacyJsonBodyFailsBeforePublishingAnOriginal() = runBlocking {
-        val transport = object : GatewayByteTransport {
-            override suspend fun execute(request: WireRequest) = WireResponse(200, emptyList(),
-                Json.canonical(Json.of(mapOf("data" to mapOf("grantId" to "G".repeat(43))))).toByteArray())
-            override suspend fun <T> consumeResponse(request: WireRequest, consume: suspend (Int, List<RawHeader>, InputStream) -> T): T =
-                RepeatedStream(13L * 1024 * 1024).use { consume(200, listOf(RawHeader("Content-Type", "application/json")), it) }
-            override fun eventStream(request: WireRequest): Flow<ByteArray> = emptyFlow()
+    @Test fun declaredLengthMismatchFailsBeforePublishingAnOriginal() = runBlocking {
+        val source = object : HistoricalMediaSource {
+            override fun checkCurrent() = Unit
+            override suspend fun metadata(conversationId: String, attachmentId: String) = error("测试直接保留已确认元数据")
+            override suspend fun consumeOriginal(metadata: HistoricalMediaMetadata, consume: (InputStream) -> Unit) {
+                RepeatedStream(1025).use(consume)
+            }
         }
-        val cache = EncryptedHistoryMediaCache(context, scope, client(transport), key)
-        val metadata = HistoricalMediaMetadata("conv", "legacy_large", "large.bin", "application/octet-stream", 10L * 1024 * 1024,
-            "sha256:" + "0".repeat(64), true, 0)
-        assertEquals("MEDIA_STREAM_UNSUPPORTED", runCatching { cache.retain(metadata) }.exceptionOrNull()?.message)
-        assertNull(cache.localMetadata("conv", "legacy_large")); cache.clearMedia()
-    }
-
-    private fun client(transport: GatewayByteTransport): GatewayHttpClient {
-        val cursors = object : EventCursorStore {
-            override fun load(accountId: String): String? = null
-            override fun save(accountId: String, cursor: String) = Unit
-            override fun clear(accountId: String) = Unit
-        }
-        return GatewayHttpClient(GatewayProfile(scope.accountId, "device", "session", scope.gatewayId, accessToken = "test"), transport, { ByteArray(64) }, cursors)
+        val cache = EncryptedHistoryMediaCache(context, scope, source, key)
+        val metadata = HistoricalMediaMetadata("conv", "bad_length", "large.bin", "application/octet-stream", 1024, "", true, 0)
+        assertEquals("MEDIA_INTEGRITY_FAILED", runCatching { cache.retain(metadata) }.exceptionOrNull()?.message)
+        assertNull(cache.localMetadata("conv", "bad_length")); cache.clearMedia()
     }
 
     private suspend fun archive(cache: EncryptedHistoryMediaCache, conversation: String, id: String, bytes: ByteArray) =

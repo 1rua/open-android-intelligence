@@ -40,6 +40,20 @@ class PersistentNotificationPolicyPortTest {
     }
 
     @Test
+    fun persistence_failure_is_returned_as_a_rejected_update() {
+        val authority = PersistentNotificationPolicyAuthority(object : com.openandroidintelligence.policy.NotificationPolicyPersistence {
+            override fun read(): ByteArray? = null
+            override fun write(value: ByteArray) { throw java.io.IOException("storage unavailable") }
+        })
+        val port = PersistentNotificationPolicyPort(authority)
+        val before = port.snapshot()
+        val outcome = port.update(NotificationPolicyUpdate(before.revision, granted = true))
+        assertTrue(outcome is NotificationPolicyUpdateOutcome.Rejected)
+        assertEquals("LOCAL_POLICY_SAVE_FAILED", (outcome as NotificationPolicyUpdateOutcome.Rejected).reason)
+        assertFalse(port.snapshot().granted)
+    }
+
+    @Test
     fun snapshot_matches_authority_snapshot_field_by_field() {
         val authority = authorityOn()
         val port = PersistentNotificationPolicyPort(authority)

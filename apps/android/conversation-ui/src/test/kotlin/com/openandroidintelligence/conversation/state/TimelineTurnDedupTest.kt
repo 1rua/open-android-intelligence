@@ -21,6 +21,7 @@ import com.openandroidintelligence.conversation.ports.TimelineMessage
 import com.openandroidintelligence.conversation.ports.TimelinePage
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.TestScope
@@ -39,6 +40,66 @@ import org.junit.Test
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class TimelineTurnDedupTest {
+
+    @Test
+    fun nativeUserMessagesWithDifferentRealIdsKeepEqualTextWithoutClientIdentity() = runTest {
+        val first = user("继续", 1_000L).copy(id = "native-user-first")
+        val second = user("继续", 1_100L).copy(id = "native-user-second")
+        assertEquals(listOf(first.id, second.id), rendered(first, second, authoritativeMessageIds = true).map { it.key })
+    }
+
+    @Test
+    fun nativeUserIdsThatLookLikeLocalPrefixesRemainDifferentAcrossAnAnswer() = runTest {
+        val first = user("第一问", 1_000L).copy(id = "local_shared")
+        val answer = assistant("第一答", "native-answer", 1_500L)
+        val second = user("第二问", 2_000L).copy(id = "stream_shared")
+        assertEquals(listOf(first.id, answer.id, second.id),
+            rendered(first, answer, second, authoritativeMessageIds = true).map { it.key })
+    }
+
+    @Test
+    fun nativeLocalPlaceholderStillMergesUsingItsExplicitClientIdentity() = runTest {
+        val client = com.openandroidintelligence.conversation.model.ClientMessageId("cm_native")
+        val local = user("同一次提交", 1_000L).copy(id = "local_native", clientMessageId = client,
+            state = "PENDING", localPlaceholder = true)
+        val confirmed = user("同一次提交", 1_100L).copy(id = "native-user", clientMessageId = client)
+        assertEquals(listOf(confirmed.id), rendered(local, confirmed, authoritativeMessageIds = true).map { it.key })
+    }
+
+    @Test
+    fun completedLocalAtomRemainsProvisionalUntilItsAuthoritativeUserRowArrives() = runTest {
+        val client = com.openandroidintelligence.conversation.model.ClientMessageId("cm_late_identity")
+        val atom = com.openandroidintelligence.conversation.model.LocalSendAtom(
+            com.openandroidintelligence.conversation.model.ConversationId("conv_test"), client,
+            listOf(MessagePart.Text("同一次提交")), 1_000L,
+            status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED)
+        val local = com.openandroidintelligence.conversation.model.mergeLocalSendAtoms(emptyList(), listOf(atom)).single()
+        val confirmed = user("同一次提交", 1_100L).copy(id = "native-late-user", clientMessageId = client)
+        assertEquals(listOf(confirmed.id), rendered(local, confirmed, authoritativeMessageIds = true).map { it.key })
+    }
+
+    @Test
+    fun twoRecordedNativeUserIdsCannotBeHiddenByASharedClientIdentity() = runTest {
+        val client = com.openandroidintelligence.conversation.model.ClientMessageId("cm_native")
+        val first = user("已写入的第一条", 1_000L).copy(id = "native-one", clientMessageId = client)
+        val second = user("已写入的第二条", 1_100L).copy(id = "native-two", clientMessageId = client)
+        assertEquals(listOf(first.id, second.id), rendered(first, second, authoritativeMessageIds = true).map { it.key })
+    }
+
+    @Test fun liveNativeRowsAndHistoryKeepTheSameDistinctServerIdentities() = runTest {
+        val client = com.openandroidintelligence.conversation.model.ClientMessageId("client-conflict")
+        val first = user("第一次真实输入", 1).copy(id="real-one", clientMessageId=client)
+        val second = user("第二次真实输入", 2).copy(id="real-two", clientMessageId=client)
+        val events = MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity=8)
+        val controller = controller(FixedTimelineRepository(listOf(first), events), authoritativeMessageIds=true)
+        try {
+            controller.openThread(CONVERSATION_ID); advanceUntilIdle()
+            events.emit(VerifiedConversationEvent.TimelineUpsert("live-real-two", 2, 2, second))
+            advanceUntilIdle()
+            assertEquals("实时入口不能吞掉不同的真实 ID", listOf("real-one","real-two"),
+                (controller.state.value.timeline as Loadable.Ready).value.map { it.key })
+        } finally { controller.close() }
+    }
 
     @Test
     fun distinctClientIdentitiesKeepRepeatedUserText() = runTest {
@@ -62,6 +123,100 @@ class TimelineTurnDedupTest {
         val replay = first.copy(id = "msg_replayed", timestamp = 1_100L)
 
         assertEquals("同一客户端身份的回放只显示一次", 1, rendered(first, replay).count { it.isUser })
+    }
+
+    @Test
+    fun equalTimestampsPreserveTheNativeConversationOrder() = runTest {
+        val entries = rendered(
+            user("第一问", timestamp = 1_000L).copy(id = "u1"),
+            assistant("第一答", id = "a1", timestamp = 1_000L),
+            user("第二问", timestamp = 1_000L).copy(id = "u2"),
+            assistant("第二答", id = "a2", timestamp = 1_000L),
+        )
+
+        assertEquals(listOf("第一问", "第一答", "第二问", "第二答"), entries.map { it.text })
+    }
+
+    @Test
+    fun repeatedRepliesInDifferentTurnsWithEqualTimestampsAreKept() = runTest {
+        val entries = rendered(
+            user("第一问", timestamp = 1_000L).copy(id = "u1"),
+            assistant("好的", id = "a1", timestamp = 1_000L),
+            user("第二问", timestamp = 1_000L).copy(id = "u2"),
+            assistant("好的", id = "a2", timestamp = 1_000L),
+        )
+
+        assertEquals(listOf("u1", "a1", "u2", "a2"), entries.map { it.key })
+    }
+
+    @Test
+    fun correlatedHistoryReplacesStreamingDraftDespiteClockDifference() = runTest {
+        val identity = com.openandroidintelligence.conversation.model.ClientMessageId("assistant_cm_turn")
+        val draft = assistant("草稿内容", id = "asst_temporary", timestamp = 40_000L)
+            .copy(state = "STREAMING", clientMessageId = identity)
+        val confirmed = assistant("最终修订正文", id = "msg_native", timestamp = 1_000L)
+            .copy(clientMessageId = identity)
+
+        val entries = rendered(user("问题", timestamp = 1L), draft, confirmed)
+
+        assertEquals(listOf("最终修订正文"), entries.filterNot { it.isUser }.map { it.text })
+    }
+
+    @Test
+    fun explicitlyDifferentAssistantCorrelationsAreNotCollapsedByEqualContent() = runTest {
+        val first = assistant("好的", id = "a1", timestamp = 1_000L).copy(
+            clientMessageId = com.openandroidintelligence.conversation.model.ClientMessageId("assistant_cm_first"),
+        )
+        val second = assistant("好的", id = "a2", timestamp = 1_000L).copy(
+            clientMessageId = com.openandroidintelligence.conversation.model.ClientMessageId("assistant_cm_second"),
+        )
+
+        assertEquals(listOf("a1", "a2"), rendered(first, second).map { it.key })
+    }
+
+    @Test
+    fun distinctNativeMessagesInOneTurnKeepIdenticalText() = runTest {
+        val identity = com.openandroidintelligence.conversation.model.ClientMessageId("assistant_cm_turn")
+        val first = assistant("好的", id = "native_step", timestamp = 1_000L).copy(clientMessageId = identity)
+        val second = assistant("好的", id = "native_answer", timestamp = 1_000L).copy(clientMessageId = identity)
+
+        assertEquals(listOf("native_step", "native_answer"), rendered(first, second).map { it.key })
+        assertEquals(listOf("native_step", "native_answer"), rendered(first.copy(clientMessageId = null), second).map { it.key })
+    }
+
+    @Test
+    fun authoritativeNativeIdsKeepIdenticalMessagesWithoutClientCorrelation() = runTest {
+        val first = assistant("好的", id = "native_step", timestamp = 1_000L)
+        val second = assistant("好的", id = "native_answer", timestamp = 1_000L)
+
+        assertEquals(
+            listOf("native_step", "native_answer"),
+            rendered(first, second, authoritativeMessageIds = true).map { it.key },
+        )
+    }
+
+    @Test
+    fun distinctNativeStreamingAnswerIsNotCoveredByAnEarlierMessageWithTheSamePrefix() = runTest {
+        val identity = com.openandroidintelligence.conversation.model.ClientMessageId("assistant_cm_turn")
+        val first = assistant("好的，先检查配置", id = "native_step", timestamp = 1_000L).copy(clientMessageId = identity)
+        val events = MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity = 8)
+        val controller = controller(FixedTimelineRepository(listOf(first), events))
+        try {
+            controller.openThread(CONVERSATION_ID)
+            advanceUntilIdle()
+            val answer = assistant("好的", id = "native_answer", timestamp = 2_000L)
+                .copy(clientMessageId = identity, state = "STREAMING")
+            events.emit(VerifiedConversationEvent.TimelineUpsert("native_delta", 2_000L, 1L, answer))
+            advanceUntilIdle()
+            var rows = (controller.state.value.timeline as Loadable.Ready).value
+            assertEquals(listOf("native_step", "native_answer"), rows.map { it.key })
+            events.emit(VerifiedConversationEvent.TimelineUpsert("native_done", 2_100L, 2L, answer.copy(state = "CONFIRMED")))
+            advanceUntilIdle()
+            rows = (controller.state.value.timeline as Loadable.Ready).value
+            assertEquals(listOf("native_step", "native_answer"), rows.map { it.key })
+        } finally {
+            controller.cancel()
+        }
     }
 
     @Test
@@ -121,10 +276,13 @@ class TimelineTurnDedupTest {
         assertEquals(1, entries.count { it.text == REPLY })
     }
 
-    private suspend fun TestScope.rendered(vararg messages: TimelineMessage): List<TimelineEntry> {
-        val controller = WorkbenchController(
+    private fun TestScope.controller(
+        repository: ConversationRepository,
+        authoritativeMessageIds: Boolean = false,
+    ) = WorkbenchController(
             scope = this,
-            repository = FixedTimelineRepository(messages.toList()),
+            repository = repository,
+            authoritativeMessageIds = authoritativeMessageIds,
             catalogRepository = object : AgentCommandCatalogRepository {
                 override suspend fun get(gatewayId: String, languageCode: String) =
                     AgentCommandCatalog(CatalogVersion("v1"), emptyList())
@@ -133,6 +291,12 @@ class TimelineTurnDedupTest {
             replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
             newConversationTimeouts = WorkbenchController.NewConversationTimeouts(enabled = false),
         )
+
+    private suspend fun TestScope.rendered(
+        vararg messages: TimelineMessage,
+        authoritativeMessageIds: Boolean = false,
+    ): List<TimelineEntry> {
+        val controller = controller(FixedTimelineRepository(messages.toList()), authoritativeMessageIds)
         try {
             controller.openThread(CONVERSATION_ID)
             advanceUntilIdle()
@@ -161,12 +325,15 @@ class TimelineTurnDedupTest {
     )
 
     /** A repository that only has to serve one conversation's stored history. */
-    private class FixedTimelineRepository(private val messages: List<TimelineMessage>) : ConversationRepository {
+    private class FixedTimelineRepository(
+        private val messages: List<TimelineMessage>,
+        private val events: Flow<VerifiedConversationEvent> = emptyFlow(),
+    ) : ConversationRepository {
         override suspend fun listConversations(scope: ConversationScope, page: PageRequest): ConversationPage =
             ConversationPage(listOf(ConversationSummary(ConversationId(CONVERSATION_ID), "会话", 1L)), null)
 
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation =
-            Conversation(ConversationId("conv_created"), "新对话", 0L)
+            Conversation(ConversationId("conv_created"), "", 0L)
 
         override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage =
             TimelinePage(messages, null)
@@ -180,7 +347,7 @@ class TimelineTurnDedupTest {
         override suspend fun submitMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance =
             MessageAcceptance("msg_sent", message.clientMessageId.value)
 
-        override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> = emptyFlow()
+        override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> = events
 
         override suspend fun cancelGeneration(generationId: String, requestId: String): CancelGenerationResult =
             CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)

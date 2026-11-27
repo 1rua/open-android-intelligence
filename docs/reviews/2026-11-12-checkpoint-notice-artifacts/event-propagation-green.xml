@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.openandroidintelligence.conversation.state.WorkbenchEventCommitRecoverySpecProbeTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-11-12T00:06:09" hostname="djbd-cachyos" time="0.173">
+  <properties/>
+  <testcase name="persistentStorageFailureStopsWithAVisibleErrorAndReentryCanApplyTheUnmarkedEvent" classname="com.openandroidintelligence.conversation.state.WorkbenchEventCommitRecoverySpecProbeTest" time="0.173"/>
+  <system-out><![CDATA[PR168_SPEC beforeRecovery checkpointOrigin=true tokenPresent=true notice=LOCAL_SAVE_FAILED:SYNTHETIC_PERSISTENT_COMMIT_FAILED
+PR168_SPEC afterRecovery committed=true checkpointFailureCleared=true finalNotice=null
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

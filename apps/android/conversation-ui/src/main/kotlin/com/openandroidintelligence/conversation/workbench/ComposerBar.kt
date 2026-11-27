@@ -8,27 +8,26 @@ import androidx.compose.foundation.content.consume
 import androidx.compose.foundation.content.contentReceiver
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.snap
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
@@ -38,29 +37,47 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlin.math.ceil
+import com.openandroidintelligence.conversation.components.M3MorphingButtonDefaults
+import com.openandroidintelligence.conversation.components.M3MorphingIconButton
 import com.openandroidintelligence.conversation.components.bouncyClickable
 import com.openandroidintelligence.conversation.model.AttachmentDraft
 import com.openandroidintelligence.conversation.model.AttachmentState
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.conversation.motion.ProvideSharedVisibilityScope
+import com.openandroidintelligence.conversation.motion.SharedTransitionKeys
+import com.openandroidintelligence.conversation.motion.m3SharedBounds
+import com.openandroidintelligence.conversation.ports.PendingDelivery
+import com.openandroidintelligence.conversation.ports.PendingDeliveryState
+import com.openandroidintelligence.conversation.ports.MessageDeliveryMode
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
+import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
+import com.openandroidintelligence.conversation.voice.VoiceRecordingRow
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.flow.collect
-import kotlin.math.roundToInt
 
 /** Keep the IME's URI permission token alive until the host has staged the selected images. */
 data class PastedImageContent(val uris: List<Uri>, val permissionOwner: Bundle? = null)
@@ -77,7 +94,7 @@ data class PastedImageContent(val uris: List<Uri>, val permissionOwner: Bundle? 
  * 水平/垂直边距。导航栏 inset 随后被消费，`imePadding()` 只补键盘超出导航栏的高度，
  * 键盘弹出时不会出现「导航栏高度加键盘高度」的双重留白。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalSharedTransitionApi::class)
 @Composable
 fun ComposerBar(
     draft: String,
@@ -97,24 +114,110 @@ fun ComposerBar(
     applyImePadding: Boolean = true,
     onQuickChip: ((String) -> Unit)? = null,
     voiceInputEnabled: Boolean = true,
+    /**
+     * 正在录音时的真实时长与音量；null 表示没有录音，显示普通输入行。
+     *
+     * 录音态与默认数字助手共用 [VoiceRecordingRow]：同一份波形、计时与取消/发送动作，
+     * 不在这里另画一套录音界面，也不弹独立卡片遮挡会话内容。
+     */
+    recording: ActiveVoiceRecording? = null,
+    onCancelRecording: () -> Unit = {},
+    onFinishRecording: () -> Unit = {},
     inFlightAttachmentIds: Set<String> = emptySet(),
-    hasUnknownSubmissionOutcome: Boolean = false,
     onPasteImages: ((PastedImageContent) -> Unit)? = null,
     /** Controller and conversation identity; a change discards selection, IME composition and undo. */
     editorKey: Any? = null,
+    /** Submission callbacks: selecting a mode does not invoke either one. */
+    onQueue: () -> Unit = onSend,
+    onSteer: () -> Unit = onSend,
+    pendingDeliveries: List<PendingDelivery> = emptyList(),
+    onRetryPendingDelivery: () -> Unit = {},
+    draftEpoch: Long = 0L,
+    onDraftEdit: ((String, Long) -> Unit)? = null,
+    onSubmitDraft: ((String, Long, MessageDeliveryMode) -> Long?)? = null,
 ) {
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    val reduced = LocalMotionPolicy.current.isReduced
+    val editor = key(editorKey) { rememberTextFieldState(draft) }
+    var editorEpoch by remember(editorKey) { mutableLongStateOf(draftEpoch) }
+    var reportedValue by remember(editorKey) { mutableStateOf(draft) }
+    val currentDraft by rememberUpdatedState(draft)
+    val currentDraftEpoch by rememberUpdatedState(draftEpoch)
+    val currentOnDraftChange by rememberUpdatedState(onDraftChange)
+    val currentOnDraftEdit by rememberUpdatedState(onDraftEdit)
+
+    fun reportEdit(text: String, epoch: Long) {
+        reportedValue = text
+        currentOnDraftEdit?.invoke(text, epoch) ?: currentOnDraftChange(text)
+    }
+    // Read the last report during composition as well: edit and external clear can
+    // happen in one input callback without changing the last composed draft string.
+    val restoreExternalDraft = draftEpoch > editorEpoch ||
+        (draftEpoch == editorEpoch && draft != reportedValue)
+    SideEffect {
+        // A successful submit advances locally before the host's next render arrives.
+        // Never restore text from props that still belong to the frozen draft.
+        if (restoreExternalDraft && draftEpoch >= editorEpoch) {
+            val changedEpoch = draftEpoch != editorEpoch
+            editorEpoch = draftEpoch
+            reportedValue = draft
+            if (changedEpoch || editor.text.toString() != draft) {
+                editor.edit { replace(0, length, draft) }
+            }
+        }
+    }
+    LaunchedEffect(editor) {
+        // Undo/redo bypass InputTransformation. Each observed edit belongs to its
+        // captured epoch; pending observations cannot revive an already sent draft.
+        snapshotFlow {
+            Triple(editor.text.toString(), editorEpoch, currentDraft to currentDraftEpoch)
+        }.collect { (text, epoch, external) ->
+            if (epoch == editorEpoch && text == editor.text.toString() && text != reportedValue &&
+                (external.second < epoch ||
+                    (external.second == epoch && external.first == reportedValue))) {
+                reportEdit(text, epoch)
+            }
+        }
+    }
+    val reportUserEdits = remember(editor) {
+        InputTransformation {
+            val text = asCharSequence().toString()
+            if (text != reportedValue) reportEdit(text, editorEpoch)
+        }
+    }
     val running = generation == GenerationState.RUNNING || generation == GenerationState.QUEUED
     val waitingCancel = generation == GenerationState.CANCEL_REQUESTED
-    val unknown = generation == GenerationState.OUTCOME_UNKNOWN
     val hasPendingInput = draft.isNotBlank() || attachments.any { it.id.value !in inFlightAttachmentIds }
-    // While a turn is active, a populated composer belongs to the next turn.
-    // Keep cancellation visible only when there is nothing queued by the user.
+    val showBusyDeliveryChoice = running && hasPendingInput
+    var deliveryMode by remember(editorKey, running) { mutableStateOf(MessageDeliveryMode.STEER) }
+    val legacySubmitDraft = if (showBusyDeliveryChoice) {
+        when (deliveryMode) {
+            MessageDeliveryMode.QUEUE -> onQueue
+            MessageDeliveryMode.STEER -> onSteer
+            MessageDeliveryMode.NORMAL -> onSend
+        }
+    } else onSend
+    val submitDraft: () -> Unit = {
+        if (onSubmitDraft != null) {
+            val acceptedEpoch = onSubmitDraft(
+                editor.text.toString(), editorEpoch,
+                if (showBusyDeliveryChoice) deliveryMode else MessageDeliveryMode.NORMAL,
+            )
+            if (acceptedEpoch != null) {
+                editorEpoch = acceptedEpoch
+                reportedValue = ""
+                editor.edit { replace(0, length, "") }
+            }
+        } else {
+            legacySubmitDraft()
+        }
+    }
+    // A populated composer submits through the selected delivery mode.
+    // Keep cancellation visible when the user has no pending input.
     val showStop = waitingCancel || (running && !hasPendingInput)
     val actionEnabled = when {
-        waitingCancel || unknown -> false
+        waitingCancel -> false
         showStop -> running && !hasPendingInput
-        else -> hasPendingInput && canSend && !hasUnknownSubmissionOutcome
+        else -> hasPendingInput && canSend
     }
 
     var focused by remember(editorKey) { mutableStateOf(false) }
@@ -126,6 +229,10 @@ fun ComposerBar(
         .then(if (applyImePadding) Modifier.imePadding() else Modifier)
 
     Column(modifier = modifier.fillMaxWidth().then(insetModifier)) {
+        PendingDeliveryStrip(
+            deliveries = pendingDeliveries,
+            onRetry = onRetryPendingDelivery,
+        )
         // ===== 1. 附件草稿横条：显隐用同一个临界阻尼形变（M14）=====
         AnimatedVisibility(
             visible = attachments.isNotEmpty(),
@@ -143,45 +250,101 @@ fun ComposerBar(
             )
         }
 
+        if (showBusyDeliveryChoice) {
+            BusyDeliveryChoice(
+                selectedMode = deliveryMode,
+                onSelect = { deliveryMode = it },
+            )
+        }
+
         // ===== 2. 输入坞主行：视觉 44dp / 触摸 48dp，主操作 48dp，行距 8dp =====
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = Dimensions.SpaceTiny),
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-        ) {
-            ComposerIconAction(
-                icon = Icons.Default.Add,
-                contentDescription = "添加附件",
-                onClick = { showAttachmentsSheet = true },
-            )
-
-            key(editorKey) {
-                ComposerInputField(
-                    value = draft,
-                    onValueChange = onDraftChange,
-                    isFocused = focused,
-                    onFocusChange = { focused = it },
-                    onPasteImages = onPasteImages,
-                    modifier = Modifier.weight(1f),
+        // 录音态原地替换主行而不遮挡会话：波形/计时/取消/发送与默认数字助手是同一份实现。
+        AnimatedContent(
+            targetState = recording,
+            // 每秒的计时更新只是同一段录音的新数据，不应重复播放进入/退出动画。
+            contentKey = { it != null },
+            contentAlignment = Alignment.BottomCenter,
+            transitionSpec = {
+                fadeIn(MotionSpecs.fade(reduced)) togetherWith
+                    fadeOut(MotionSpecs.fade(reduced))
+            },
+            label = "composer-recording-mode",
+        ) { activeRecording ->
+            ProvideSharedVisibilityScope {
+                val containerBounds = Modifier.m3SharedBounds(
+                    key = SharedTransitionKeys.composerContainer(),
+                    clipShape = RoundedCornerShape(AppRadius.Bubble),
                 )
+                if (activeRecording != null) {
+                    // 录音态与输入态并列保留「添加附件」：录音是独立的附件型消息，但录制期间
+                    // 仍然要能继续挑选附件，不能因为换了主行就把附件操作锁死。
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(containerBounds)
+                            .padding(vertical = Dimensions.SpaceTiny),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                    ) {
+                        ComposerIconAction(
+                            icon = Icons.Default.Add,
+                            contentDescription = "添加附件",
+                            onClick = { showAttachmentsSheet = true },
+                        )
+                        VoiceRecordingRow(
+                            elapsedMs = activeRecording.elapsedMs,
+                            level = activeRecording.level,
+                            onCancel = onCancelRecording,
+                            onSend = onFinishRecording,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(containerBounds)
+                            .padding(vertical = Dimensions.SpaceTiny),
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                    ) {
+                        ComposerIconAction(
+                            icon = Icons.Default.Add,
+                            contentDescription = "添加附件",
+                            onClick = { showAttachmentsSheet = true },
+                            modifier = Modifier.testTag("chat-composer-attach"),
+                        )
+
+                        key(editorKey) {
+                            ComposerInputField(
+                                editor = editor,
+                                inputTransformation = reportUserEdits,
+                                isFocused = focused,
+                                onFocusChange = { focused = it },
+                                onPasteImages = onPasteImages,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+
+                        ComposerIconAction(
+                            icon = Icons.Default.Mic,
+                            contentDescription = "语音输入",
+                            modifier = Modifier.testTag("chat-composer-voice"),
+                            enabled = voiceInputEnabled,
+                            onClick = onVoiceInput,
+                        )
+
+                        ComposerSendStopAction(
+                            showStop = showStop,
+                            waitingCancel = waitingCancel,
+                            enabled = actionEnabled,
+                            onSend = submitDraft,
+                            onStop = onStop,
+                            modifier = Modifier.testTag("chat-composer-send"),
+                        )
+                    }
+                }
             }
-
-            ComposerIconAction(
-                icon = Icons.Default.Mic,
-                contentDescription = "语音输入",
-                enabled = voiceInputEnabled,
-                onClick = onVoiceInput,
-            )
-
-            ComposerSendStopAction(
-                showStop = showStop,
-                waitingCancel = waitingCancel,
-                enabled = actionEnabled,
-                onSend = onSend,
-                onStop = onStop,
-            )
         }
 
         // ===== 3. 生成状态行：输入坞内部左对齐，紧贴输入框下方 =====
@@ -191,47 +354,19 @@ fun ComposerBar(
     }
 
     // ===== 4. 多模态附件选择底部弹层 =====
+    // 与默认数字助手共用同一份实现（ComposerAttachmentSheet）：两处附件入口的
+    // 圆角、背景、间距与进出场动画必须一致，不能各维护一套视觉相似但独立的菜单。
     if (showAttachmentsSheet) {
-        ModalBottomSheet(onDismissRequest = { showAttachmentsSheet = false }) {
-            Column(
-                Modifier
-                    .navigationBarsPadding()
-                    .padding(bottom = Dimensions.SpaceLarge),
-            ) {
-                Text(
-                    "添加到当前对话",
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.padding(
-                        horizontal = Dimensions.SpaceLarge,
-                        vertical = Dimensions.SpaceSmall,
-                    ),
-                )
-                AttachmentChoice(
-                    icon = Icons.Default.PhotoCamera,
-                    title = "拍照",
-                    description = "使用系统相机拍摄照片",
-                ) {
-                    showAttachmentsSheet = false
-                    onPickCamera()
+        ComposerAttachmentSheet(
+            onDismiss = { showAttachmentsSheet = false },
+            onPick = { source ->
+                when (source) {
+                    ComposerAttachmentSource.CAMERA -> onPickCamera()
+                    ComposerAttachmentSource.GALLERY -> onPickGallery()
+                    ComposerAttachmentSource.DOCUMENT -> onPickDocument()
                 }
-                AttachmentChoice(
-                    icon = Icons.Default.PhotoLibrary,
-                    title = "相册选择",
-                    description = "从相册选择一张或多张图片",
-                ) {
-                    showAttachmentsSheet = false
-                    onPickGallery()
-                }
-                AttachmentChoice(
-                    icon = Icons.Default.AttachFile,
-                    title = "文档选择",
-                    description = "通过系统文件选择器添加文档",
-                ) {
-                    showAttachmentsSheet = false
-                    onPickDocument()
-                }
-            }
-        }
+            },
+        )
     }
 }
 
@@ -280,53 +415,18 @@ private fun ComposerIconAction(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ComposerInputField(
-    value: String,
-    onValueChange: (String) -> Unit,
+    editor: TextFieldState,
+    inputTransformation: InputTransformation,
     isFocused: Boolean,
     onFocusChange: (Boolean) -> Unit,
     onPasteImages: ((PastedImageContent) -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    LocalWorkbenchCompositionObserver.current?.invoke("composer_input")
+    val reduced = LocalMotionPolicy.current.isReduced
     val shape = RoundedCornerShape(AppRadius.Bubble)
     // The state-based editor supports Android's image paste/IME content contract.
     // The caller keys this editor by controller/thread so editing state cannot cross conversations.
-    val editor = rememberTextFieldState(value)
-    val currentValue by rememberUpdatedState(value)
-    val currentOnValueChange by rememberUpdatedState(onValueChange)
-    var reportedValue by remember { mutableStateOf(value) }
-    // Observe the last report as well: editing and Send may both happen before the next
-    // composition, leaving the external string equal to its previous composed value.
-    val restoreExternalValue = value != reportedValue
-    SideEffect {
-        if (restoreExternalValue) {
-            if (editor.text.toString() != value) editor.edit { replace(0, length, value) }
-            reportedValue = value
-        }
-    }
-    LaunchedEffect(editor) {
-        // Undo/redo bypass InputTransformation. Only report a current editor change while
-        // the controller still agrees with the last report; late snapshots cannot undo Send
-        // or an external draft restoration.
-        snapshotFlow { editor.text.toString() to currentValue }.collect { (text, controllerText) ->
-            if (text != controllerText && controllerText == currentValue &&
-                text == editor.text.toString() && controllerText == reportedValue) {
-                reportedValue = text
-                currentOnValueChange(text)
-            }
-        }
-    }
-    val reportUserEdits = remember {
-        InputTransformation {
-            // Report in the input transaction, before Send or a thread switch can run.
-            // Programmatic draft restoration does not invoke this transformation.
-            val text = asCharSequence().toString()
-            if (text != reportedValue) {
-                reportedValue = text
-                currentOnValueChange(text)
-            }
-        }
-    }
     val resolver = LocalContext.current.contentResolver
     val currentOnPasteImages by rememberUpdatedState(onPasteImages)
     val receiver = remember(resolver) {
@@ -348,13 +448,13 @@ private fun ComposerInputField(
             }
         }
     }
-    val borderColor by animateColorAsState(
+    val borderColorState = animateColorAsState(
         targetValue = if (isFocused) {
             MaterialTheme.colorScheme.primary
         } else {
             MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0f)
         },
-        animationSpec = if (reduced) snap() else tween(MotionSpecs.Fast, easing = MotionSpecs.StandardEasing),
+        animationSpec = MotionSpecs.effectsFast(reduced),
         label = "composer-field-border",
     )
     Surface(
@@ -363,15 +463,38 @@ private fun ComposerInputField(
         modifier = modifier
             .heightIn(min = Dimensions.ComposerMinHeight)
             .animateContentSize(MotionSpecs.morph(reduced))
-            .border(Dimensions.StrokeHairline, borderColor, shape),
+            .drawWithContent {
+                drawContent()
+                val color = borderColorState.value
+                if (color.alpha > 0f) {
+                    val strokePx = if (Dimensions.StrokeHairline == Dp.Hairline) {
+                        1f
+                    } else {
+                        ceil(Dimensions.StrokeHairline.toPx())
+                    }
+                    val halfStroke = strokePx / 2f
+                    val radiusPx = (AppRadius.Bubble.toPx() - halfStroke).coerceAtLeast(0f)
+                    drawRoundRect(
+                        color = color,
+                        topLeft = Offset(halfStroke, halfStroke),
+                        size = Size(
+                            width = (size.width - strokePx).coerceAtLeast(0f),
+                            height = (size.height - strokePx).coerceAtLeast(0f),
+                        ),
+                        cornerRadius = CornerRadius(radiusPx, radiusPx),
+                        style = Stroke(width = strokePx),
+                    )
+                }
+            },
     ) {
         BasicTextField(
             state = editor,
-            inputTransformation = reportUserEdits,
+            inputTransformation = inputTransformation,
             modifier = Modifier
                 .fillMaxWidth()
                 .then(if (onPasteImages != null) Modifier.contentReceiver(receiver) else Modifier)
-                .onFocusChanged { onFocusChange(it.isFocused) },
+                .onFocusChanged { onFocusChange(it.isFocused) }
+                .testTag("chat-composer-input"),
             lineLimits = TextFieldLineLimits.MultiLine(minHeightInLines = 1, maxHeightInLines = 4),
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
@@ -391,9 +514,10 @@ private fun ComposerInputField(
 
 /**
  * 发送 / 停止主操作（M07）：
- * 容器宽度、圆角、底色与图标在同一时间窗内一起变化，而不是只换一个图标；
- * 减少动态时宽度与圆角直接落位，只保留极短颜色过渡。
+ * 基于 [M3MorphingIconButton] 实现容器宽度、圆角百分比、底色与图标在同一物理弹簧下
+ * 同步形变（48dp -> 56dp、50% -> 36%），并挂载共享边界；减少动态时自动降级。
  */
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 private fun ComposerSendStopAction(
     showStop: Boolean,
@@ -403,71 +527,24 @@ private fun ComposerSendStopAction(
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val reduced = LocalMotionPolicy.current.reduceMotion
-    val targetWidth = if (showStop) StopActionWidth else Dimensions.ComposerPrimaryAction
-    val width by animateDpAsState(
-        targetValue = targetWidth,
-        animationSpec = MotionSpecs.snappy(reduced),
-        label = "composer-action-width",
+    M3MorphingIconButton(
+        onClick = if (showStop) onStop else onSend,
+        icon = Icons.Default.ArrowUpward,
+        contentDescription = "发送",
+        modifier = modifier,
+        morphed = showStop,
+        morphedIcon = Icons.Default.Stop,
+        morphedContentDescription = if (waitingCancel) "等待取消确认" else "停止生成",
+        enabled = enabled,
+        restingWidth = Dimensions.ComposerPrimaryAction,
+        morphedWidth = StopActionWidth,
+        height = Dimensions.ComposerPrimaryAction,
+        restingCornerPercent = 50f,
+        morphedCornerPercent = StopActionCornerPercent,
+        colors = M3MorphingButtonDefaults.sendStopColors(),
+        iconSize = Dimensions.Icon,
+        sharedBoundsKey = SharedTransitionKeys.composerAction("send-stop"),
     )
-    val cornerPercent by animateFloatAsState(
-        targetValue = if (showStop) StopActionCornerPercent else 50f,
-        animationSpec = MotionSpecs.snappy(reduced),
-        label = "composer-action-corner",
-    )
-    val colorSpec = if (reduced) snap<Color>() else tween(MotionSpecs.Fast, easing = MotionSpecs.StandardEasing)
-    val containerColor by animateColorAsState(
-        targetValue = when {
-            !enabled -> MaterialTheme.colorScheme.surfaceContainer
-            showStop -> MaterialTheme.colorScheme.surfaceContainerHighest
-            else -> MaterialTheme.colorScheme.primary
-        },
-        animationSpec = colorSpec,
-        label = "composer-action-container",
-    )
-    val contentColor by animateColorAsState(
-        targetValue = when {
-            !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
-            showStop -> MaterialTheme.colorScheme.onSurface
-            else -> MaterialTheme.colorScheme.onPrimary
-        },
-        animationSpec = colorSpec,
-        label = "composer-action-content",
-    )
-    val shape = RoundedCornerShape(percent = cornerPercent.roundToInt())
-
-    Box(
-        modifier = modifier
-            .width(width)
-            .height(Dimensions.ComposerPrimaryAction)
-            .clip(shape)
-            .bouncyClickable(
-                enabled = enabled,
-                role = Role.Button,
-                onClick = if (showStop) onStop else onSend,
-            )
-            .background(containerColor),
-        contentAlignment = Alignment.Center,
-    ) {
-        Crossfade(
-            targetState = showStop,
-            animationSpec = if (reduced) snap() else tween(MotionSpecs.Fast, easing = MotionSpecs.LinearOutSlowInEasing),
-            label = "send-stop",
-        ) { stop ->
-            Icon(
-                imageVector = if (stop) Icons.Default.Stop else Icons.Default.ArrowUpward,
-                contentDescription = if (waitingCancel) {
-                    "等待取消确认"
-                } else if (stop) {
-                    "停止生成"
-                } else {
-                    "发送"
-                },
-                tint = contentColor,
-                modifier = Modifier.size(Dimensions.Icon),
-            )
-        }
-    }
 }
 
 /** 生成状态行：文案来自真实 [GenerationState]，颜色只是第二通道。 */
@@ -515,54 +592,6 @@ private fun ComposerGenerationStatus(
     }
 }
 
-/**
- * 底部弹层的单个选项：M3 ListItem 的视觉节奏（40dp tonal 圆形前置图标 +
- * 标题/说明两行），条目最小高度 56dp，并额外应用底部安全区。
- */
-@Composable
-private fun AttachmentChoice(
-    icon: ImageVector,
-    title: String,
-    description: String,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = AttachmentChoiceHeight)
-            .bouncyClickable(
-                role = Role.Button,
-                onClickLabel = title,
-                onClick = onClick,
-            )
-            .padding(horizontal = Dimensions.SpaceLarge, vertical = Dimensions.SpaceCompact),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
-    ) {
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.primaryContainer,
-            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-            modifier = Modifier.size(AttachmentChoiceIconSize),
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    modifier = Modifier.size(Dimensions.Icon),
-                )
-            }
-        }
-        Column(modifier = Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            Text(
-                text = description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
 
 @Composable
 private fun AttachmentDraftStrip(
@@ -602,7 +631,7 @@ fun AttachmentDraftChip(
     modifier: Modifier = Modifier,
     removeEnabled: Boolean = true,
 ) {
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    val reduced = LocalMotionPolicy.current.isReduced
     val stateColors = LocalAppStateColors.current
     val state = draft.state
     val failed = state == AttachmentState.RETRYABLE_FAILURE || state == AttachmentState.TERMINAL_FAILURE
@@ -734,14 +763,14 @@ private fun attachmentStatusIcon(state: AttachmentState): ImageVector = when (st
 }
 
 fun attachmentStateLabel(state: AttachmentState): String = when (state) {
-    AttachmentState.LOCAL_PREPARING -> "正在加密暂存"
-    AttachmentState.CREATE_PENDING -> "正在申请上传"
+    AttachmentState.LOCAL_PREPARING -> "正在准备文件…"
+    AttachmentState.CREATE_PENDING -> "正在准备上传…"
     AttachmentState.UPLOADING -> "正在上传"
-    AttachmentState.VERIFYING -> "正在核验完整性"
-    AttachmentState.VERIFIED -> "已核验，可发送"
+    AttachmentState.VERIFYING -> "正在确认上传…"
+    AttachmentState.VERIFIED -> "已就绪，可发送"
     AttachmentState.RETRYABLE_FAILURE -> "上传失败，可重试"
     AttachmentState.TERMINAL_FAILURE -> "无法上传，请移除后重新选择"
-    AttachmentState.OUTCOME_UNKNOWN -> "上传结果未知，请先核实"
+    AttachmentState.OUTCOME_UNKNOWN -> "上传结果未确认，请核实"
     AttachmentState.CANCELLED -> "已取消上传"
 }
 
@@ -749,7 +778,7 @@ private fun attachmentProgressLabel(draft: AttachmentDraft): String {
     val totalBytes = draft.totalBytes
     return when {
     draft.state == AttachmentState.LOCAL_PREPARING && draft.transferredBytes > 0L ->
-        "正在加密暂存 · 已读 ${formatAttachmentSize(draft.transferredBytes)}"
+        "正在准备文件 · 已读 ${formatAttachmentSize(draft.transferredBytes)}"
     draft.state == AttachmentState.UPLOADING && totalBytes != null ->
         "正在上传 · ${formatAttachmentSize(draft.transferredBytes)} / ${formatAttachmentSize(totalBytes)}"
     else -> attachmentStateLabel(draft.state)
@@ -771,13 +800,120 @@ fun generationLabel(state: GenerationState): String? = when (state) {
     GenerationState.CANCELLED -> "本次生成已停止"
     GenerationState.FAILED -> "本次生成失败，请检查连接后重试"
     GenerationState.UNSUPPORTED -> "当前 Gateway 不支持停止生成"
-    GenerationState.OUTCOME_UNKNOWN -> "生成结果尚未确认，请先刷新会话核实，避免重复发送"
+    GenerationState.OUTCOME_UNKNOWN -> null
 }
 
 fun formatAttachmentSize(bytes: Long): String = when {
     bytes < 1024 -> "$bytes B"
     bytes < 1024 * 1024 -> "${bytes / 1024} KB"
     else -> java.lang.String.format(java.util.Locale.getDefault(), "%.1f MB", bytes.toDouble() / (1024 * 1024))
+}
+
+@Composable
+private fun BusyDeliveryChoice(
+    selectedMode: MessageDeliveryMode,
+    onSelect: (MessageDeliveryMode) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceTiny),
+        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().selectableGroup(),
+            horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FilterChip(
+                selected = selectedMode == MessageDeliveryMode.QUEUE,
+                onClick = { onSelect(MessageDeliveryMode.QUEUE) },
+                modifier = Modifier.weight(1f).semantics { contentDescription = "排队等待当前任务完成" },
+                label = { Text("排队") },
+                leadingIcon = {
+                    Icon(
+                        if (selectedMode == MessageDeliveryMode.QUEUE) Icons.Default.Check else Icons.Default.Schedule,
+                        contentDescription = null,
+                        modifier = Modifier.size(Dimensions.SmallIcon),
+                    )
+                },
+            )
+            FilterChip(
+                selected = selectedMode == MessageDeliveryMode.STEER,
+                onClick = { onSelect(MessageDeliveryMode.STEER) },
+                modifier = Modifier.weight(1f).semantics { contentDescription = "引导当前任务" },
+                label = { Text("引导") },
+                leadingIcon = {
+                    Icon(
+                        if (selectedMode == MessageDeliveryMode.STEER) Icons.Default.Check else Icons.Default.Send,
+                        contentDescription = null,
+                        modifier = Modifier.size(Dimensions.SmallIcon),
+                    )
+                },
+            )
+        }
+        Text(
+            text = "选择方式后点击发送。排队等待本轮结束；引导发送给当前任务。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+fun PendingDeliveryStrip(
+    deliveries: List<PendingDelivery>,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (deliveries.isEmpty()) return
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceTiny),
+        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
+    ) {
+        deliveries.forEach { delivery ->
+            Surface(
+                shape = RoundedCornerShape(AppRadius.Small),
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Schedule,
+                        contentDescription = null,
+                        modifier = Modifier.size(Dimensions.SmallIcon),
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = delivery.text.ifBlank { "${delivery.attachmentCount} 个附件" },
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = when (delivery.state) {
+                                PendingDeliveryState.QUEUED -> "排队中，当前任务结束后发送"
+                                PendingDeliveryState.SENDING -> "正在发送"
+                                PendingDeliveryState.FAILED -> "发送失败，等待重连后重试"
+                                PendingDeliveryState.OUTCOME_UNKNOWN -> "发送结果未知，不会自动重发"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                    if (delivery.state == PendingDeliveryState.FAILED) {
+                        TextButton(onClick = onRetry) { Text("重试") }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -831,12 +967,6 @@ private val StopActionWidth = 56.dp
 
 /** 停止态的圆角百分比（相对短边），由圆形渐变到胶囊。 */
 private const val StopActionCornerPercent = 36f
-
-/** 底部弹层选项的最小高度。 */
-private val AttachmentChoiceHeight = 56.dp
-
-/** 底部弹层选项前置 tonal 圆形图标的直径。 */
-private val AttachmentChoiceIconSize = 40.dp
 
 /** 附件卡片文件名区域的最大宽度，避免长文件名把操作按钮挤出屏幕。 */
 private val AttachmentNameWidth = 150.dp

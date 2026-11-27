@@ -1,0 +1,8 @@
+<resources>
+    <string name="remote_phone_bus_title">手机控制总线</string>
+    <string name="remote_phone_task_title">手机控制任务</string>
+    <string name="remote_phone_workspace_title">手机能力</string>
+    <string name="remote_phone_request_failed">手机执行请求未能完成，请核对本机状态。</string>
+    <string name="remote_phone_stream_unavailable">手机任务观察已失效。</string>
+    <string name="remote_phone_request_rejected">手机控制请求被拒绝。</string>
+</resources>

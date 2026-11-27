@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -14,7 +15,10 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import com.openandroidintelligence.conversation.motion.MotionSpecs
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -184,6 +188,105 @@ internal suspend fun decodeImagePreview(
     }
 }
 
+internal fun interface ImagePreviewDecoder {
+    suspend fun decode(bytes: ByteArray?, maxEdgePx: Int): ImageBitmap?
+}
+
+private val PlatformImagePreviewDecoder = ImagePreviewDecoder(::decodeImagePreview)
+
+internal val LocalImagePreviewDecoder = compositionLocalOf { PlatformImagePreviewDecoder }
+internal val LocalImagePreviewScope = compositionLocalOf<Any?> { null }
+
+internal sealed interface ImagePreviewState {
+    data class Pending(val lastGood: ImageBitmap? = null) : ImagePreviewState
+    data class Ready(val bitmap: ImageBitmap) : ImagePreviewState
+    data object Missing : ImagePreviewState
+    data object Failed : ImagePreviewState
+}
+
+private data class ImagePreviewLoad(
+    val sourceBytes: ByteArray?,
+    val ownedBytes: ByteArray?,
+    val maxEdgePx: Int,
+    val decoder: ImagePreviewDecoder,
+    val state: ImagePreviewState,
+)
+
+@Composable
+internal fun rememberImagePreviewState(
+    bytes: ByteArray?,
+    attachmentId: String,
+    maxEdgePx: Int = OriginalImagePolicy.MaxEdgePx,
+): ImagePreviewState {
+    val decoder = LocalImagePreviewDecoder.current
+    val scope = LocalImagePreviewScope.current
+    val hasBytes = bytes != null && bytes.isNotEmpty()
+    val withinPreviewBudget = hasBytes && bytes!!.size <= MaxPreviewDecodeBytes
+    val ownedBytes = remember(scope, attachmentId, bytes, maxEdgePx, decoder) {
+        bytes?.takeIf { it.isNotEmpty() && it.size <= MaxPreviewDecodeBytes }?.copyOf()
+    }
+    var load by remember(scope, attachmentId) { mutableStateOf<ImagePreviewLoad?>(null) }
+    val currentLoad = load?.takeIf {
+        it.sourceBytes === bytes && it.ownedBytes === ownedBytes &&
+            it.maxEdgePx == maxEdgePx && it.decoder === decoder
+    }
+    val visibleState = when {
+        !hasBytes -> ImagePreviewState.Missing
+        !withinPreviewBudget -> ImagePreviewState.Failed
+        currentLoad != null -> currentLoad.state
+        else -> ImagePreviewState.Pending(
+            if (scope == null) null else load?.state.lastGoodBitmap(),
+        )
+    }
+
+    LaunchedEffect(scope, attachmentId, bytes, ownedBytes, maxEdgePx, decoder) {
+        if (!hasBytes || !withinPreviewBudget) {
+            load = ImagePreviewLoad(bytes, ownedBytes, maxEdgePx, decoder, visibleState)
+            return@LaunchedEffect
+        }
+        val lastGood = if (scope == null) null else load?.state.lastGoodBitmap()
+        load = ImagePreviewLoad(
+            bytes,
+            ownedBytes,
+            maxEdgePx,
+            decoder,
+            ImagePreviewState.Pending(lastGood),
+        )
+        val result = try {
+            decoder.decode(ownedBytes, maxEdgePx)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        } finally {
+            ownedBytes?.fill(0)
+        }
+        currentCoroutineContext().ensureActive()
+        load = ImagePreviewLoad(
+            bytes,
+            ownedBytes,
+            maxEdgePx,
+            decoder,
+            result?.let(ImagePreviewState::Ready) ?: ImagePreviewState.Failed,
+        )
+    }
+    return when {
+        visibleState is ImagePreviewState.Pending && visibleState.lastGood == null -> {
+            (load?.state as? ImagePreviewState.Ready)?.let { ImagePreviewState.Pending(it.bitmap) }
+                ?: visibleState
+        }
+        else -> visibleState
+    }
+}
+
+private const val MaxPreviewDecodeBytes = 256 * 1024
+
+private fun ImagePreviewState?.lastGoodBitmap(): ImageBitmap? = when (this) {
+    is ImagePreviewState.Ready -> bitmap
+    is ImagePreviewState.Pending -> lastGood
+    ImagePreviewState.Missing, ImagePreviewState.Failed, null -> null
+}
+
 /**
  * 控制器专用：把原图字节解码、缩到最长边 [maxEdgePx]，再压缩成 JPEG [quality]。
  *
@@ -244,9 +347,21 @@ internal fun rememberDecodedPreview(
     bytes: ByteArray?,
     maxEdgePx: Int = OriginalImagePolicy.MaxEdgePx,
 ): ImageBitmap? {
+    val decoder = LocalImagePreviewDecoder.current
+    val ownedBytes = remember(bytes, maxEdgePx, decoder) {
+        bytes?.takeIf { it.size <= OriginalImagePolicy.MaxBytes }?.copyOf()
+    }
     var decoded by remember(bytes) { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(bytes, maxEdgePx) {
-        decoded = decodeImagePreview(bytes, maxEdgePx)
+    LaunchedEffect(bytes, maxEdgePx, decoder) {
+        decoded = try {
+            decoder.decode(ownedBytes, maxEdgePx)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        } finally {
+            ownedBytes?.fill(0)
+        }
     }
     return decoded
 }

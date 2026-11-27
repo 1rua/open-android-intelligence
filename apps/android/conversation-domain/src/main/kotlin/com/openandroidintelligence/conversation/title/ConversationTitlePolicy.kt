@@ -1,6 +1,7 @@
 package com.openandroidintelligence.conversation.title
 
 import com.openandroidintelligence.conversation.ports.OutgoingMessage
+import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 import java.text.BreakIterator
 import java.util.Locale
 
@@ -13,9 +14,13 @@ object ConversationTitlePolicy {
         attachmentNames: List<String> = emptyList(),
         locale: Locale = Locale.getDefault(),
     ): String {
-        val rawText = firstMessage.text.trim()
+        val rawText = ContextInjectionFilter.sanitizeText(
+            text = firstMessage.text,
+            role = ContextInjectionFilter.SenderRole.USER,
+            streaming = false,
+        )
         if (rawText == "/new" || rawText.startsWith("/new ")) {
-            return "新对话"
+            return ""
         }
         if (rawText.isBlank()) {
             val firstAttachment = attachmentNames.firstOrNull { it.isNotBlank() }?.trim()
@@ -29,11 +34,11 @@ object ConversationTitlePolicy {
                     }
                 }
                 firstMessage.attachmentIds.isNotEmpty() -> "附件内容"
-                else -> "新对话"
+                else -> ""
             }
         }
 
-        val firstLine = rawText.lines().firstOrNull { it.isNotBlank() }?.trim() ?: "新对话"
+        val firstLine = rawText.lines().firstOrNull { it.isNotBlank() }?.trim() ?: ""
         return truncateGraphemes(firstLine, locale)
     }
 

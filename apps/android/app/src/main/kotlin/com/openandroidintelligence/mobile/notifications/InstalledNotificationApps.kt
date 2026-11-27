@@ -44,3 +44,43 @@ internal fun loadInstalledNotificationApps(packageManager: PackageManager): List
         }
         .toList()
 }
+
+/**
+ * 进程内的已安装应用目录缓存。
+ *
+ * 存在的理由是一个真实缺陷：每次重新进入设置页都要重新枚举全部应用，枚举完成之前
+ * 已保存的选择没有名称可显示，界面于是先说「应用信息暂不可用」，几百毫秒后才变成真名。
+ * 缓存让再次打开时立刻有名字可读，刷新在后台进行且失败时保留旧值。
+ *
+ * 缓存只在进程内有效：应用安装、卸载或改名后由下一次刷新自然修正，不会长期陈旧。
+ */
+internal object InstalledNotificationAppCache {
+    @Volatile private var apps: List<InstalledNotificationApp>? = null
+
+    /** 当前已知的应用目录；从未成功读取过时为 null。 */
+    fun current(): List<InstalledNotificationApp>? = apps
+
+    /** 记录一次成功读取；空列表也是有效事实（例如极简系统），会覆盖旧值。 */
+    fun publish(next: List<InstalledNotificationApp>) {
+        apps = next
+    }
+
+    /** 仅用于测试与进程级重置。 */
+    fun clear() {
+        apps = null
+    }
+}
+
+/**
+ * 供设置页使用的应用目录读取：优先复用缓存，同时刷新。
+ *
+ * @param loader 真实枚举实现；测试可注入固定列表。
+ */
+internal fun cachedInstalledNotificationApps(
+    packageManager: PackageManager,
+    loader: (PackageManager) -> List<InstalledNotificationApp> = ::loadInstalledNotificationApps,
+): List<InstalledNotificationApp> {
+    val loaded = loader(packageManager)
+    InstalledNotificationAppCache.publish(loaded)
+    return loaded
+}

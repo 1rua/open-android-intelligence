@@ -1,0 +1,65 @@
+{
+  "verification": "Core A 有界重启及 MANUAL 取消终态复测",
+  "sourceCommit": "1f338778ecd6c39fc8eb0bd11134867d6c238568",
+  "corePySha256": "026a6119fb16545a1250c454a55073fc7d4aaec7950849dd56929759847398f7",
+  "sourceDigestSha256": "ed26cf20e41fca86c05090ce1f2ca884dcce7da4e774db8d16715bd2983a0ccc",
+  "newCoreAPidAtVerification": 3342590,
+  "tlsVerificationAndUnauthenticated401Passed": true,
+  "coreBProcessUnchanged": true,
+  "oldSnapshotPreserved": true,
+  "nonterminalRequestsBeforeStop": 0,
+  "nonterminalRequestsAfterRestartBeforeProbe": 0,
+  "persistentStateComparison": {
+    "accountDatabaseCount": 2,
+    "allCapturedAccountCredentialPairingRequestAndClaimRowsUnchanged": true,
+    "coreTokenRowsUnchanged": true,
+    "masterKeyTlsAndExistingClientFilesUnchanged": true,
+    "pushMetadataRowsUnchanged": true,
+    "endpointRowsAndLeasesUnchanged": true,
+    "deliveryAndAcknowledgementRowsUnchanged": true,
+    "revocationLedgerRowsUnchanged": true
+  },
+  "sender55": {
+    "beforeAndAfter": {
+      "acknowledged": false,
+      "endpointGeneration": 1,
+      "generation": 1,
+      "payloadBytes": 0,
+      "state": "revoked"
+    },
+    "selectedEndpointRecordedLeaseExpiresAtUTC": "2026-11-01T10:53:08.905Z",
+    "leaseRenewed": false,
+    "generationChanged": false,
+    "explanation": "端点租约已到期，Core 对不活跃端点的投递清理可标记为 revoked；本次记录来自该到期逻辑，不表示用户手动撤销。",
+    "phoneQueueState": "未检查；不能由 Core revoked 或正文已释放推定手机队列已清空。"
+  },
+  "manualProbe": {
+    "requestId": "devreq_7720678b...54745a40",
+    "transport": "official CLI using the existing original-5554 credential",
+    "capability": "org.openandroidintelligence.call-log.query@1.0.0",
+    "parameters": {
+      "limit": 1,
+      "receivedAfter": "2099-01-01T00:00:00Z"
+    },
+    "observedSequence": [
+      {
+        "state": "claimed",
+        "localAuthorizationState": "awaiting_confirmation"
+      },
+      {
+        "state": "cancel_requested",
+        "localAuthorizationStatePresent": false
+      },
+      {
+        "state": "cancelled",
+        "localAuthorizationStatePresent": false,
+        "resultOutcome": "cancelled"
+      }
+    ],
+    "result": "PASS",
+    "ackSubmitted": false,
+    "phoneUiOperated": false
+  },
+  "privateEvidenceDirectory": "docs/plans/2026-11-01-global-device-authorization/runtime/core-a",
+  "evidenceLimit": "以上为已保存重启和请求回执的离线核对，未重新连接 Core 或检查手机当前状态。"
+}

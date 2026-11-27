@@ -148,10 +148,11 @@ class WorkbenchVoiceSendTest {
         assertFalse(voice.await())
         assertTrue(repository.sent.isEmpty())
         assertEquals("thread_b",controller.state.value.activeThreadId)
-        assertEquals("保留文字",controller.state.value.draft)
+        assertEquals("A 的草稿不能混入 B", "",controller.state.value.draft)
         assertTrue(controller.state.value.attachments.isEmpty())
         assertEquals(listOf("voice"),uploads.discarded)
         controller.openThread("thread_a"); runCurrent()
+        assertEquals("原草稿仍保存在原会话", "保留文字",controller.state.value.draft)
         val timeline=controller.state.value.timeline
         assertTrue(timeline is Loadable.Empty || (timeline is Loadable.Ready && timeline.value.isEmpty()))
         controller.cancel()
@@ -170,7 +171,7 @@ class WorkbenchVoiceSendTest {
         controller.cancel()
     }
 
-    @Test fun unknownPreviousSubmissionRejectsAnotherVoiceBeforeStaging() = runTest {
+    @Test fun unknownPreviousSubmissionAllowsVoiceEntryAfterTheRequestStops() = runTest {
         val uploads = Uploads()
         val repository = Repository().apply { submitGate = CompletableDeferred() }
         val controller = controller(repository, uploads)
@@ -179,10 +180,60 @@ class WorkbenchVoiceSendTest {
         runCurrent(); uploads.completeVoice(AttachmentState.VERIFIED); runCurrent()
         first.cancelAndJoin(); runCurrent()
         assertEquals(GenerationState.OUTCOME_UNKNOWN, controller.state.value.generation)
-        assertFalse(controller.sendVoiceAttachment(selection("second.m4a"), "thread_a"))
-        assertEquals("Unresolved sends must block recording staging and duplicate submission", 1, uploads.voicePrepares)
+        assertTrue(controller.canSendVoiceAttachment("thread_a"))
+        assertEquals("检查入口能力不应再次准备或提交音频", 1, uploads.voicePrepares)
         assertEquals(1, repository.sent.size)
         assertTrue(uploads.discarded.isEmpty())
+        controller.cancel()
+    }
+
+    @Test fun liveGenerationAndCancellationStillBlockVoiceEntry() = runTest {
+        val uploads = Uploads()
+        val repository = TrackingRepository(Repository())
+        val controller = controller(repository, uploads)
+        runCurrent(); controller.openThread("thread_a"); runCurrent()
+
+        repository.generationState.value = GenerationState.RUNNING
+        runCurrent()
+        assertFalse(controller.canSendVoiceAttachment("thread_a"))
+
+        repository.generationState.value = GenerationState.CANCEL_REQUESTED
+        runCurrent()
+        assertFalse(controller.canSendVoiceAttachment("thread_a"))
+
+        repository.generationState.value = GenerationState.IDLE
+        repository.generationId.value = "gen_live"
+        runCurrent()
+        assertTrue("Turn 结束后即使保留 generationId 也必须允许麦克风录音", controller.canSendVoiceAttachment("thread_a"))
+        controller.cancel()
+    }
+
+    @Test fun voiceCanBeSentConsecutivelyWhenGenerationIdLingers() = runTest {
+        val uploads = Uploads()
+        val baseRepo = Repository()
+        val repository = TrackingRepository(baseRepo)
+        val controller = controller(repository, uploads)
+        runCurrent(); controller.openThread("thread_a"); runCurrent()
+
+        val firstVoice = async { controller.sendVoiceAttachment(selection("v1.m4a"), "thread_a") }
+        runCurrent(); uploads.completeVoice(AttachmentState.VERIFIED); runCurrent()
+        assertTrue(firstVoice.await())
+        assertEquals(1, baseRepo.sent.size)
+
+        // 模拟首轮回复进行中到结束，状态回归 IDLE 但保留 generationId
+        repository.generationState.value = GenerationState.RUNNING
+        repository.generationId.value = "turn_1"
+        runCurrent()
+        assertFalse(controller.canSendVoiceAttachment("thread_a"))
+
+        repository.generationState.value = GenerationState.IDLE
+        runCurrent()
+        assertTrue("首次发送并生成完成后，麦克风保持可用", controller.canSendVoiceAttachment("thread_a"))
+
+        val secondVoice = async { controller.sendVoiceAttachment(selection("v2.m4a"), "thread_a") }
+        runCurrent(); uploads.completeVoice(AttachmentState.VERIFIED); runCurrent()
+        assertTrue(secondVoice.await())
+        assertEquals(2, baseRepo.sent.size)
         controller.cancel()
     }
 
@@ -269,7 +320,7 @@ class WorkbenchVoiceSendTest {
         controller.cancel()
     }
 
-    private fun TestScope.controller(repository: Repository, uploads: Uploads, media: HistoricalMediaPort? = null) = WorkbenchController(
+    private fun TestScope.controller(repository: ConversationRepository, uploads: Uploads, media: HistoricalMediaPort? = null) = WorkbenchController(
         workbenchTestScope(), repository,
         object : AgentCommandCatalogRepository {
             override suspend fun get(gatewayId: String, languageCode: String) = AgentCommandCatalog(CatalogVersion("v1"), emptyList())
@@ -322,7 +373,7 @@ class WorkbenchVoiceSendTest {
         override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(emptyList(), null)
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation {
             createGate?.await()
-            return Conversation(ConversationId("created"), "新对话", 0)
+            return Conversation(ConversationId("created"), "", 0)
         }
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
         override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance = error("UNSCOPED_SEND")
@@ -335,5 +386,13 @@ class WorkbenchVoiceSendTest {
         override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance = error("UNEXPECTED_BATCH")
         override fun observeEvents(scope: ConversationScope) = emptyFlow<VerifiedConversationEvent>()
         override suspend fun cancelGeneration(generationId: String, requestId: String) = CancelGenerationResult(CancelGenerationOutcome.CANCELLED)
+    }
+
+    private class TrackingRepository(private val delegate: Repository) :
+        ConversationRepository by delegate,
+        MessageOutcomeQuery by delegate,
+        GenerationTracker {
+        override val generationId = MutableStateFlow<String?>(null)
+        override val generationState = MutableStateFlow(GenerationState.IDLE)
     }
 }

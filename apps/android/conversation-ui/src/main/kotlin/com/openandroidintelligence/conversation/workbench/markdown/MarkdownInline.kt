@@ -64,6 +64,8 @@ fun defaultMarkdownColors(): MarkdownColors {
 data class MarkdownInlineMathSpan(
     val id: String,
     val latex: String,
+    val start: Int = 0,
+    val end: Int = 0,
 )
 
 /**
@@ -73,6 +75,8 @@ data class MarkdownInlineMathSpan(
 data class MarkdownInlineResult(
     val annotated: AnnotatedString,
     val inlineMath: List<MarkdownInlineMathSpan> = emptyList(),
+    /** 每个输出 UTF-16 单元的原文位置；语法闭合只改变样式，不制造新增文字。 */
+    val sourceOffsets: IntArray = IntArray(0),
 )
 
 /**
@@ -166,10 +170,16 @@ private class InlineRenderer(
 ) {
     private val builder = AnnotatedString.Builder()
     private val mathSpans = mutableListOf<MarkdownInlineMathSpan>()
+    private val sourceOffsets = ArrayList<Int>()
+
+    private fun appendMapped(content: String, sourceStart: Int, direct: Boolean = true) {
+        builder.append(content)
+        content.indices.forEach { sourceOffsets.add(if (direct) sourceStart + it else sourceStart) }
+    }
 
     fun render(): MarkdownInlineResult {
         parseRange(0, input.length)
-        return MarkdownInlineResult(builder.toAnnotatedString(), mathSpans)
+        return MarkdownInlineResult(builder.toAnnotatedString(), mathSpans, sourceOffsets.toIntArray())
     }
 
     private fun parseRange(start: Int, end: Int) {
@@ -183,7 +193,7 @@ private class InlineRenderer(
             if (character == '\\' && index + 1 < end) {
                 val next = input[index + 1]
                 if (next in EscapableCharacters) {
-                    builder.append(next)
+                    appendMapped(next.toString(), index + 1)
                     index += 2
                     continue
                 }
@@ -204,7 +214,7 @@ private class InlineRenderer(
                 }
                 // `$$` 不构成合法公式时整体按字面量消费，避免第二个 `$` 被当成单美元开头
                 if (input.startsWith("$$", index)) {
-                    builder.append("$$")
+                    appendMapped("$$", index)
                     index += 2
                     continue
                 }
@@ -255,7 +265,7 @@ private class InlineRenderer(
                 }
             }
 
-            builder.append(character)
+            appendMapped(character.toString(), index)
             index++
         }
     }
@@ -282,16 +292,18 @@ private class InlineRenderer(
         }
 
         if (closingStart == -1) {
-            builder.append(input, start, runEnd)
+            appendMapped(input.substring(start, runEnd), start)
             return runEnd
         }
 
+        var contentStart = runEnd
         var content = input.substring(runEnd, closingStart)
         if (content.length >= 2 && content.startsWith(" ") && content.endsWith(" ") && content.isNotBlank()) {
             content = content.substring(1, content.length - 1)
+            contentStart++
         }
         val styleStart = builder.length
-        builder.append(content)
+        appendMapped(content, contentStart)
         if (builder.length > styleStart) {
             builder.addStyle(
                 SpanStyle(
@@ -316,7 +328,7 @@ private class InlineRenderer(
             if (closing in (start + 2) until searchLimit) {
                 val latex = input.substring(start + 2, closing).trim()
                 if (latex.isNotEmpty() && !latex.contains('\n')) {
-                    appendMath(latex)
+                    appendMath(latex, start + 2 + input.substring(start + 2, closing).indexOfFirst { !it.isWhitespace() }.coerceAtLeast(0))
                     return closing + 2
                 }
             }
@@ -341,7 +353,7 @@ private class InlineRenderer(
                     !content.contains('\n') &&
                     !content.contains('$')
                 if (valid) {
-                    appendMath(content)
+                    appendMath(content, start + 1 + input.substring(start + 1, index).indexOfFirst { !it.isWhitespace() }.coerceAtLeast(0))
                     return index + 1
                 }
             }
@@ -350,10 +362,14 @@ private class InlineRenderer(
         return null
     }
 
-    private fun appendMath(latex: String) {
+    private fun appendMath(latex: String, sourceStart: Int) {
         val id = "md_math_${mathSpans.size}"
-        mathSpans.add(MarkdownInlineMathSpan(id, latex))
+        val start = builder.length
         builder.appendInlineContent(id, latex)
+        // appendInlineContent 会把无障碍替代文本实际写入 AnnotatedString，再把整个范围
+        // 标记为一个内联组件；来源数组长度必须与本次实际追加的 UTF-16 长度一致。
+        repeat(builder.length - start) { sourceOffsets.add(sourceStart + it) }
+        mathSpans.add(MarkdownInlineMathSpan(id, latex, start, builder.length))
     }
 
     private fun tryAngleConstruct(start: Int, end: Int, stack: MutableList<HtmlOpenTag>): Int? {
@@ -367,14 +383,14 @@ private class InlineRenderer(
             val schemeMatch = AngleAutolinkRegex.matchEntire(inner)
             if (schemeMatch != null) {
                 if (isSupportedLinkUrl(inner)) {
-                    appendLink(inner, inner)
+                    appendLink(inner, inner, start + 1)
                     return closingBracket + 1
                 }
             }
             val emailMatch = AngleEmailRegex.matchEntire(inner)
             if (emailMatch != null) {
                 val email = emailMatch.groupValues[1]
-                appendLink("mailto:$email", email)
+                appendLink("mailto:$email", email, start + 1)
                 return closingBracket + 1
             }
         }
@@ -382,13 +398,13 @@ private class InlineRenderer(
         if (token == null) return null
         val tag = token.tag
         if (tag == "br") {
-            builder.append('\n')
+            appendMapped("\n", start, direct = false)
             return token.nextIndex
         }
 
         if (token.isClosing) {
             if (stack.isEmpty() || stack.last().tag != tag) {
-                builder.append(input, start, token.nextIndex)
+                appendMapped(input.substring(start, token.nextIndex), start)
                 return token.nextIndex
             }
             val open = stack.removeAt(stack.lastIndex)
@@ -509,7 +525,7 @@ private class InlineRenderer(
         val linkStart = builder.length
         parseRange(start + 1, closingBracket)
         if (builder.length == linkStart) {
-            builder.append(destination.url)
+            appendMapped(destination.url, start, direct = false)
         }
         builder.addStyle(
             SpanStyle(color = colors.linkColor, textDecoration = TextDecoration.Underline),
@@ -564,13 +580,13 @@ private class InlineRenderer(
                 body.substring(1).toIntOrNull()
             }
             if (codePoint != null && codePoint in 1..0x10FFFF) {
-                builder.append(String(Character.toChars(codePoint)))
+                appendMapped(String(Character.toChars(codePoint)), start, direct = false)
                 return semicolon + 1
             }
             return null
         }
         val decoded = NamedEntities[body] ?: return null
-        builder.append(decoded)
+        appendMapped(decoded, start, direct = false)
         return semicolon + 1
     }
 
@@ -587,7 +603,7 @@ private class InlineRenderer(
             candidate = candidate.dropLast(1)
         }
         if (!isSupportedLinkUrl(candidate)) return null
-        appendLink(candidate, candidate)
+        appendLink(candidate, candidate, start)
         return start + candidate.length
     }
 
@@ -602,9 +618,9 @@ private class InlineRenderer(
         return !previous.isLetterOrDigit() && previous !in BareLinkAttachedCharacters
     }
 
-    private fun appendLink(url: String, displayText: String) {
+    private fun appendLink(url: String, displayText: String, sourceStart: Int) {
         val linkStart = builder.length
-        builder.append(displayText)
+        appendMapped(displayText, sourceStart)
         builder.addStyle(
             SpanStyle(color = colors.linkColor, textDecoration = TextDecoration.Underline),
             linkStart,

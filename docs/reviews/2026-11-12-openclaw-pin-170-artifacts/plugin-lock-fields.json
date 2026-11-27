@@ -1,0 +1,27 @@
+{
+  "original": {
+    "decision_id": "MVP-DEP-OPENCLAW-PLUGIN",
+    "official_reference": "https://github.com/1rua/openclaw-gateway-plugin",
+    "immutable_version": "openclaw-gateway-plugin@1.1.0; ref c7c087b9fe28adcc658a1cbdb71689a377b65214; commit c7c087b9fe28adcc658a1cbdb71689a377b65214",
+    "integrity": "sha256:8bdc01b7308d86c4c648ac9bed8cf159840075fa345fb2380ddc18f3d7f0a098",
+    "license_review": "MIT; reviewed",
+    "reviewer_time": "2026-10-19T18:34:29Z",
+    "evidence_expires_at": "2026-11-18T18:34:29Z",
+    "verify_command": "if git -C .openclaw-gateway-plugin rev-parse --git-dir >/dev/null 2>&1; then git -C .openclaw-gateway-plugin diff --quiet && git -C .openclaw-gateway-plugin diff --cached --quiet && test -z \"$(git -C .openclaw-gateway-plugin ls-files --others --exclude-standard)\"; else git clone https://github.com/1rua/openclaw-gateway-plugin.git .openclaw-gateway-plugin; fi && git -C .openclaw-gateway-plugin fetch origin c7c087b9fe28adcc658a1cbdb71689a377b65214 && test \"$(git -C .openclaw-gateway-plugin rev-parse FETCH_HEAD)\" = c7c087b9fe28adcc658a1cbdb71689a377b65214 && git -C .openclaw-gateway-plugin checkout --detach c7c087b9fe28adcc658a1cbdb71689a377b65214 && npm ci --prefix .openclaw-gateway-plugin --ignore-scripts && OPENCLAW_PLUGIN_ROOT=.openclaw-gateway-plugin python3 tools/check-openclaw-plugin-pin.py && OPEN_ANDROID_GATEWAY_CONTRACT_ROOT=\"$PWD/gateway-contract\" npm --prefix .openclaw-gateway-plugin run contract:check && npm --prefix .openclaw-gateway-plugin run typecheck && npm --prefix .openclaw-gateway-plugin test && npm --prefix .openclaw-gateway-plugin run build && git -C .openclaw-gateway-plugin diff --exit-code -- runtime && test -z \"$(git -C .openclaw-gateway-plugin ls-files --others -- runtime)\" && OPENCLAW_HOME=/tmp/oai-openclaw-home OPENCLAW_STATE_DIR=/tmp/oai-openclaw-state .openclaw-gateway-plugin/node_modules/.bin/openclaw plugins install git:github.com/1rua/openclaw-gateway-plugin@c7c087b9fe28adcc658a1cbdb71689a377b65214 --force && OPENCLAW_HOME=/tmp/oai-openclaw-home OPENCLAW_STATE_DIR=/tmp/oai-openclaw-state .openclaw-gateway-plugin/node_modules/.bin/openclaw plugins inspect open-android-intelligence-gateway --runtime --json > /tmp/oai-openclaw-runtime.json && node .openclaw-gateway-plugin/tools/assert-openclaw-runtime.mjs < /tmp/oai-openclaw-runtime.json",
+    "status": "locked",
+    "blocks": "WP-07,WP-09"
+  },
+  "updated": {
+    "decision_id": "MVP-DEP-OPENCLAW-PLUGIN",
+    "official_reference": "https://github.com/1rua/openclaw-gateway-plugin",
+    "immutable_version": "openclaw-gateway-plugin@1.1.0; ref e73ddfe1b333cfe0f69c4ea519db3553b056381a; commit e73ddfe1b333cfe0f69c4ea519db3553b056381a",
+    "integrity": "sha256:5ebe09f81961f14ec037bd33d4f9ae4592f76019cb5f389831ad0381c4554046",
+    "license_review": "MIT; reviewed",
+    "reviewer_time": "2026-10-19T18:34:29Z",
+    "evidence_expires_at": "2026-11-18T18:34:29Z",
+    "verify_command": "if git -C .openclaw-gateway-plugin rev-parse --git-dir >/dev/null 2>&1; then git -C .openclaw-gateway-plugin diff --quiet && git -C .openclaw-gateway-plugin diff --cached --quiet && test -z \"$(git -C .openclaw-gateway-plugin ls-files --others --exclude-standard)\"; else git clone https://github.com/1rua/openclaw-gateway-plugin.git .openclaw-gateway-plugin; fi && git -C .openclaw-gateway-plugin fetch origin e73ddfe1b333cfe0f69c4ea519db3553b056381a && test \"$(git -C .openclaw-gateway-plugin rev-parse FETCH_HEAD)\" = e73ddfe1b333cfe0f69c4ea519db3553b056381a && git -C .openclaw-gateway-plugin checkout --detach e73ddfe1b333cfe0f69c4ea519db3553b056381a && npm ci --prefix .openclaw-gateway-plugin --ignore-scripts && OPENCLAW_PLUGIN_ROOT=.openclaw-gateway-plugin python3 tools/check-openclaw-plugin-pin.py && OPEN_ANDROID_GATEWAY_CONTRACT_ROOT=\"$PWD/gateway-contract\" npm --prefix .openclaw-gateway-plugin run contract:check && npm --prefix .openclaw-gateway-plugin run typecheck && npm --prefix .openclaw-gateway-plugin test && npm --prefix .openclaw-gateway-plugin run build && git -C .openclaw-gateway-plugin diff --exit-code -- runtime && test -z \"$(git -C .openclaw-gateway-plugin ls-files --others -- runtime)\" && OPENCLAW_HOME=/tmp/oai-openclaw-home OPENCLAW_STATE_DIR=/tmp/oai-openclaw-state .openclaw-gateway-plugin/node_modules/.bin/openclaw plugins install git:github.com/1rua/openclaw-gateway-plugin@e73ddfe1b333cfe0f69c4ea519db3553b056381a --force && OPENCLAW_HOME=/tmp/oai-openclaw-home OPENCLAW_STATE_DIR=/tmp/oai-openclaw-state .openclaw-gateway-plugin/node_modules/.bin/openclaw plugins inspect open-android-intelligence-gateway --runtime --json > /tmp/oai-openclaw-runtime.json && node .openclaw-gateway-plugin/tools/assert-openclaw-runtime.mjs < /tmp/oai-openclaw-runtime.json",
+    "status": "locked",
+    "blocks": "WP-07,WP-09"
+  },
+  "reviewAndExpiryUnchanged": true
+}

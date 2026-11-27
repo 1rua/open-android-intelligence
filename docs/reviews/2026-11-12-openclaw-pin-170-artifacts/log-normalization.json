@@ -1,0 +1,20 @@
+[
+  {
+    "path": "cross-host-current.txt",
+    "removedTrailingNewlineBytes": 1,
+    "originalSha256": "4c0e12a9670703bab8a845442148f54fdafae17698f335cc30af373ad7be05ef",
+    "normalizedSha256": "dd6fa35a79cb0c1681b4f395c2c3c3df489f911b90886eb0396b0e39e257dabe"
+  },
+  {
+    "path": "lock-tools-green.txt",
+    "removedTrailingNewlineBytes": 1,
+    "originalSha256": "0ea4c1331bf84156dba35591868e77819fd14785daf3b76ae3dddfc16b124e2e",
+    "normalizedSha256": "c1e076540ff08720b92cab5fea8535b579c4a7498c67765447e0908677578345"
+  },
+  {
+    "path": "unsynchronized-lock-red.txt",
+    "removedTrailingNewlineBytes": 1,
+    "originalSha256": "69723827f30f8033c57e5acba4508dcd3a80419424d1bf4a324525d96b84eea9",
+    "normalizedSha256": "626baf5dd6eb26e504a15e5140816b85be56df8945c4c35b6676ad463734d913"
+  }
+]

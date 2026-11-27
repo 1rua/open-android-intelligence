@@ -1,0 +1,3 @@
+固定历史 Gateway + 固定历史契约：70/70 pass
+同一旧 Gateway + 当前契约：70/70 pass
+两次均运行真实 run_shared_vectors，不调用模型。

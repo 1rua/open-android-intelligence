@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" width="1200" height="420" role="img" aria-labelledby="title desc">
+  <title id="title">Open Android Intelligence — 把你的安卓手机安全地连上各种 AI 助手</title>
+  <desc id="desc">左侧展示项目名称与大白话核心价值：手机随时跟 AI 聊天、AI 帮你看消息操作手机、每次操作由手机本地确认；右侧为安卓终端与轨道节点的主视觉插画区。</desc>
+
+  <defs>
+    <pattern id="heroDotGrid" width="16" height="16" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="0.8" fill="#111111" opacity="0.08"/>
+    </pattern>
+    <clipPath id="rightPanelClip">
+      <rect x="700" y="64" width="456" height="296"/>
+    </clipPath>
+  </defs>
+
+  <style>
+    .mono { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", ui-monospace, monospace; font-size: 18px; letter-spacing: 0.6px; fill: #4A4A46; }
+    .mono-dark { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", ui-monospace, monospace; font-size: 18px; font-weight: 700; letter-spacing: 0.8px; fill: #111111; }
+    .eyebrow { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; font-size: 18px; font-weight: 700; fill: #B8501F; }
+    .disp { font-family: "Arial Black", "Inter", "Helvetica Neue", Arial, "PingFang SC", "Noto Sans CJK SC", sans-serif; font-weight: 900; font-size: 60px; letter-spacing: -1.5px; fill: #111111; }
+    .lede { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; font-size: 22px; font-weight: 700; fill: #111111; }
+    .body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; font-size: 18px; font-weight: 400; fill: #4A4A46; }
+    .tag-num { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", ui-monospace, monospace; font-size: 18px; font-weight: 700; fill: #B8501F; }
+    .tag-text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; font-size: 18px; font-weight: 700; fill: #111111; }
+  </style>
+
+  <rect width="1200" height="420" rx="20" fill="#F7F7F5"/>
+  <rect width="1200" height="420" rx="20" fill="url(#heroDotGrid)"/>
+  <rect x="20" y="20" width="1160" height="380" fill="none" stroke="#111111" stroke-width="1.4"/>
+
+  <g stroke="#111111" stroke-width="1.2">
+    <path d="M10 20H30M20 10V30"/>
+    <path d="M1170 20H1190M1180 10V30"/>
+    <path d="M10 400H30M20 390V410"/>
+    <path d="M1170 400H1190M1180 390V410"/>
+  </g>
+
+  <text x="44" y="48" class="mono-dark">OPEN ANDROID INTELLIGENCE (OAI)</text>
+  <text x="680" y="48" class="mono" text-anchor="end">SELF-HOSTED · NO ROOT</text>
+  <text x="1156" y="48" class="mono" text-anchor="end">ANDROID 12+ · PYTHON 3.11+</text>
+  <path d="M44 64H1156" stroke="#111111" stroke-width="1.2"/>
+  <path d="M700 64V360" stroke="#111111" stroke-width="1.2"/>
+  <path d="M44 360H1156" stroke="#111111" stroke-width="1.2"/>
+
+  <g id="title-block">
+    <text x="44" y="98" class="eyebrow">一个手机客户端 · 连接你的多种 AI 助手 · 权限永远由手机说了算</text>
+    <text x="42" y="162" class="disp">Open Android</text>
+    <text x="42" y="224" class="disp">Intelligence</text>
+    <rect x="44" y="240" width="64" height="5" fill="#B8501F"/>
+
+    <text x="44" y="276" class="lede">在手机上随时跟 AI 聊天，也让 AI 安全地帮你操作手机</text>
+    <text x="44" y="306" class="body">直连你自己的电脑或服务器 · 看通知、查短信、点屏幕全由你拍板</text>
+
+    <path d="M44 322H676" stroke="#D6D6CE" stroke-width="1"/>
+
+    <text x="44" y="348" class="tag-num">01</text>
+    <text x="74" y="348" class="tag-text">随时跟 AI 聊天</text>
+
+    <text x="246" y="348" class="tag-num">02</text>
+    <text x="276" y="348" class="tag-text">AI 帮你看消息点屏幕</text>
+
+    <text x="486" y="348" class="tag-num">03</text>
+    <text x="516" y="348" class="tag-text">手机弹窗手动确认</text>
+  </g>
+
+  <g id="right-backdrop" clip-path="url(#rightPanelClip)">
+    <rect x="701" y="65" width="454" height="294" fill="#EFEFE9" opacity="0.55"/>
+    <path d="M700 212H1156" stroke="#D6D6CE" stroke-width="0.9" stroke-dasharray="4 6"/>
+    <path d="M928 64V360" stroke="#D6D6CE" stroke-width="0.9" stroke-dasharray="4 6"/>
+    <circle cx="928" cy="212" r="126" fill="none" stroke="#D6D6CE" stroke-width="1"/>
+    <circle cx="928" cy="212" r="92" fill="none" stroke="#C9C9C2" stroke-width="0.9" stroke-dasharray="3 6"/>
+    <ellipse cx="928" cy="212" rx="188" ry="58" fill="none" stroke="#111111" stroke-width="1.2" opacity="0.35" transform="rotate(-17 928 212)"/>
+  </g>
+
+  <g id="hero-subject-slot" transform="translate(716 68)">
+  </g>
+
+  <text x="44" y="386" class="mono-dark">工作方式：你的安卓手机  ⇄  OAI Core（你的电脑/服务器）  ⇄  Hermes / DSH / Codex / Claude</text>
+  <text x="1156" y="386" class="mono" text-anchor="end">MIT LICENSE</text>
+</svg>

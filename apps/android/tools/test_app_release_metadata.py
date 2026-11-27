@@ -221,7 +221,7 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertEqual(environment["OAI_VERSION_CODE"], str(metadata["versionCode"]))
         self.assertEqual(environment["OAI_GIT_COMMIT"], metadata["commit"])
         self.assertEqual(environment["OAI_UPDATE_CHANNEL"], "preview")
-        self.assertEqual(metadata["versionName"], "2.1.1-dev")
+        self.assertEqual(metadata["versionName"], "2.2.1-dev")
 
     @patch.object(release, "git_value", return_value="true")
     def test_prepare_rejects_shallow_checkout_before_writing_outputs(self, _git):
@@ -236,43 +236,38 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertIn("Resolve stable version-code high-water", dev_workflow)
         self.assertIn("--minimum-version-code", dev_workflow)
         self.assertIn("group: dev-release", dev_workflow)
-        self.assertIn("cancel-in-progress: false", dev_workflow)
-        self.assertIn("queue: max", dev_workflow)
+        self.assertIn("cancel-in-progress: true", dev_workflow)
+        self.assertNotIn("verify-ci:", dev_workflow)
+        self.assertNotIn("release-gate.yml", dev_workflow)
         release_contract = (release.REPOSITORY_ROOT / "docs/contracts/app-update-release-v1.md").read_text(encoding="utf-8")
-        self.assertIn("最多保留 100 个等待运行", release_contract)
+        self.assertIn("cancel-in-progress: true", release_contract)
         self.assertIn("contents: write", dev_workflow)
         # 发布说明需要读取关联 PR 正文，因此保留 PR 读取权限。
         self.assertIn("pull-requests: read", dev_workflow)
-        # dev 预览版只由 push 触发。
-        #
-        # 不再使用 pull_request_target：它执行的是默认分支 main 上的工作流定义，
-        # 却 checkout dev 的合并提交。main 与 dev 的脚本命名一旦不同步，
-        # 这条 run 必然失败，且失败与被合并的代码无关。
-        #
-        # 断言只检查「on:」块内的实际触发器，不扫全文：
-        # 说明性注释里出现触发器名是合法且必要的。
+        # dev 预览版只由 push 与手动重跑触发，不再使用 pull_request_target。
         dev_triggers = dev_workflow.split("on:", 1)[1].split("permissions:", 1)[0]
         self.assertNotIn("pull_request_target", dev_triggers)
         self.assertIn("push:", dev_triggers)
         self.assertIn("workflow_dispatch", dev_triggers)
-        # 同理，PR 检出豁免与「跳过已合并 PR 的 push」逻辑都已随该触发器移除。
         self.assertNotIn("allow-unsafe-pr-checkout:", dev_workflow)
         self.assertNotIn("should-release", dev_workflow)
         self.assertIn("sign-plugin-packages:", dev_workflow)
+        self.assertIn("build-and-publish:", dev_workflow)
         self.assertIn("actions/download-artifact@v8", dev_workflow)
         self.assertIn("signed-plugins-$GITHUB_RUN_ATTEMPT", dev_workflow)
-        self.assertIn("preview-release-assets-$GITHUB_RUN_ATTEMPT", dev_workflow)
         self.assertIn("needs.sign-plugin-packages.outputs.signed-artifact-name", dev_workflow)
-        build_job = dev_workflow.split("  build-preview:", 1)[1].split("  publish-preview:", 1)[0]
-        self.assertIn("permissions:\n      contents: read", build_job)
-        self.assertNotIn("pull-requests: read", build_job)
-        publish_job = dev_workflow.split("  publish-preview:", 1)[1]
-        self.assertIn("permissions:\n      contents: write", publish_job)
-        self.assertNotIn("pull-requests: read", publish_job)
-        self.assertIn("v${{ needs.build-preview.outputs.package-version }}-dev", dev_workflow)
+        build_and_publish_job = dev_workflow.split("  build-and-publish:", 1)[1]
+        self.assertIn("contents: write", build_and_publish_job)
+        self.assertIn("pull-requests: read", build_and_publish_job)
+        self.assertIn("name: app-full-debug", build_and_publish_job)
+        self.assertIn("v${{ steps.package-version.outputs.version }}-dev", dev_workflow)
         self.assertIn("Move dev tag to published commit", dev_workflow)
+        move_dev_tag_section = dev_workflow.split("Move dev tag to published commit", 1)[1]
+        self.assertIn("apps/android/tools/sync_release_tag.py", move_dev_tag_section)
+        self.assertNotIn(">/dev/null", move_dev_tag_section)
         self.assertIn("prerelease: true", dev_workflow)
         self.assertIn('make_latest: "false"', dev_workflow)
+        self.assertIn("overwrite_files: true", dev_workflow)
         self.assertIn("body_path: ${{ runner.temp }}/release-assets/release-notes.md", dev_workflow)
         self.assertNotIn("--tag", dev_workflow)
 
@@ -281,10 +276,9 @@ class AppReleaseMetadataTest(unittest.TestCase):
         self.assertNotIn("pull_request_target", release_workflow)
         self.assertNotIn("allow-unsafe-pr-checkout: true", release_workflow)
         self.assertIn("refs/heads/main", release_workflow)
-        self.assertIn("group: dev-release", release_workflow)
+        self.assertIn("group: release-${{ github.workflow }}-${{ github.ref }}", release_workflow)
         self.assertIn("extract_package_version.py --platform android", release_workflow)
         self.assertIn("cancel-in-progress: false", release_workflow)
-        self.assertIn("queue: max", release_workflow)
         self.assertIn("contents: write", release_workflow)
         self.assertIn("pull-requests: read", release_workflow)
         self.assertIn("sign-plugin-packages:", release_workflow)
@@ -378,6 +372,19 @@ class ReleaseNotesForPushEventTest(unittest.TestCase):
                         "dev", "push", event_path, "owner/repo", COMMIT,
                     )
             self.assertEqual(body, "回退的提交说明")
+
+    def test_workflow_dispatch_on_dev_uses_same_notes_lookup(self):
+        """dev-release.yml 手动重跑（workflow_dispatch）也应正常生成发布说明。"""
+        import prepare_release_notes as notes
+
+        with tempfile.TemporaryDirectory() as directory:
+            event_path = self._write_event({}, directory)
+            with patch.object(notes, "_dispatch_pull_request_body", return_value="## 手动重跑 PR 正文") as lookup:
+                body = notes.prepare_release_notes(
+                    "dev", "workflow_dispatch", event_path, "owner/repo", COMMIT,
+                )
+            lookup.assert_called_once_with("owner/repo", COMMIT, "dev")
+            self.assertEqual(body, "## 手动重跑 PR 正文")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,0 @@
-
-com.openandroidintelligence.mobile.InterruptedDownloadProcessInstrumentedTest:.
-
-Time: 11.737
-
-OK (1 test)
-
-

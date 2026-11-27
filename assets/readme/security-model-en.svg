@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 460" width="100%" height="auto" role="img" aria-labelledby="title desc">
+  <title id="title">Your Phone Always Decides: 4-Step Approval and Hard Safety Boundaries</title>
+  <desc id="desc">Left side shows the 4 steps every AI request goes through: AI states its name and purpose, phone checks local switches and app scope, you approve on screen, and the phone logs the result. Right side lists four things the system never does.</desc>
+
+  <defs>
+    <pattern id="secGridEn" width="16" height="16" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="0.8" fill="#111111" opacity="0.07"/>
+    </pattern>
+  </defs>
+
+  <style>
+    .mono { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", ui-monospace, monospace; font-size: 18px; letter-spacing: 0.4px; fill: #4A4A46; }
+    .mono-d { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", ui-monospace, monospace; font-size: 18px; font-weight: 700; letter-spacing: 0.5px; fill: #111111; }
+    .num { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", ui-monospace, monospace; font-size: 18px; font-weight: 700; letter-spacing: 0.8px; fill: #B8501F; }
+    .disp { font-family: "Arial Black", "Inter", "Helvetica Neue", Arial, sans-serif; font-weight: 900; font-size: 40px; letter-spacing: -0.6px; fill: #111111; }
+    .stage { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; font-size: 20px; font-weight: 800; fill: #111111; }
+    .body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; font-size: 18px; font-weight: 400; fill: #4A4A46; }
+    .neg-t { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; font-size: 21px; font-weight: 800; fill: #F7F7F5; }
+    .neg-b { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; font-size: 18px; font-weight: 400; fill: #E4E4DE; }
+  </style>
+
+  <rect width="1200" height="460" rx="20" fill="#F7F7F5"/>
+  <rect width="1200" height="460" rx="20" fill="url(#secGridEn)"/>
+  <rect x="20" y="20" width="1160" height="420" fill="none" stroke="#111111" stroke-width="1.4"/>
+
+  <g stroke="#111111" stroke-width="1.2">
+    <path d="M10 20H30M20 10V30"/>
+    <path d="M1170 20H1190M1180 10V30"/>
+    <path d="M10 440H30M20 430V450"/>
+    <path d="M1170 440H1190M1180 430V450"/>
+  </g>
+
+  <text x="44" y="48" class="mono-d">PRIVACY &amp; CONTROL / WHY YOUR PHONE STAYS SAFE</text>
+  <text x="1156" y="48" class="mono" text-anchor="end">NO ROOT REQUIRED · ASK EVERY TIME BY DEFAULT</text>
+  <path d="M44 64H1156" stroke="#111111" stroke-width="1.2"/>
+
+  <text x="44" y="114" class="disp">Your Phone Always Has the Final Say</text>
+  <text x="44" y="146" class="body">Switching servers, accounts, or AI agents never resets or bypasses the permission switches on your phone.</text>
+  <path d="M44 168H1156" stroke="#111111" stroke-width="1.2"/>
+
+  <rect x="44" y="188" width="744" height="204" fill="#FFFFFF" stroke="#111111" stroke-width="1.4"/>
+  <rect x="44" y="188" width="744" height="46" fill="#EFEFE9" stroke="#111111" stroke-width="1.2"/>
+  <text x="60" y="217" class="mono-d">FOUR CHECKS BEFORE ANY PHONE ACTION RUNS</text>
+  <path d="M230 234V392M416 234V392M602 234V392" stroke="#D6D6CE" stroke-width="1"/>
+
+  <text x="60" y="266" class="num">01 / REQUEST</text>
+  <text x="60" y="298" class="stage">Who &amp; Why</text>
+  <text x="60" y="330" class="body">States agent name</text>
+  <text x="60" y="358" class="body">&amp; exact purpose</text>
+
+  <text x="246" y="266" class="num">02 / CHECK</text>
+  <text x="246" y="298" class="stage">Local Rules</text>
+  <text x="246" y="330" class="body">Checks switch &amp;</text>
+  <text x="246" y="358" class="body">allowed app scope</text>
+
+  <text x="432" y="266" class="num">03 / CONFIRM</text>
+  <text x="432" y="298" class="stage">Screen Prompt</text>
+  <text x="432" y="330" class="body">Deny, allow once,</text>
+  <text x="432" y="358" class="body">or 5–60 mins</text>
+
+  <text x="618" y="266" class="num">04 / RECORD</text>
+  <text x="618" y="298" class="stage">Run &amp; Audit</text>
+  <text x="618" y="330" class="body">Logs every result;</text>
+  <text x="618" y="358" class="body">revoke anytime</text>
+
+  <rect x="812" y="188" width="344" height="204" fill="#111111"/>
+  <text x="832" y="220" class="neg-t">Never Allowed by Design</text>
+  <path d="M832 234H1136" stroke="#4A4A46" stroke-width="1"/>
+
+  <g stroke="#D96B3F" stroke-width="2" stroke-linecap="round">
+    <path d="M834 256L846 268M846 256L834 268"/>
+    <path d="M834 292L846 304M846 292L834 304"/>
+    <path d="M834 328L846 340M846 328L834 340"/>
+    <path d="M834 364L846 376M846 364L834 376"/>
+  </g>
+  <text x="860" y="268" class="neg-b">No remote root shell access</text>
+  <text x="860" y="304" class="neg-b">No silent background file browsing</text>
+  <text x="860" y="340" class="neg-b">No call recording or auto-hangup</text>
+  <text x="860" y="376" class="neg-b">No sending SMS without your tap</text>
+
+  <path d="M44 408H1156" stroke="#111111" stroke-width="1.2"/>
+  <text x="44" y="430" class="body">Three modes per capability: Ask every time (default) · Read-only · Auto-allow (proactive push is off by default)</text>
+</svg>

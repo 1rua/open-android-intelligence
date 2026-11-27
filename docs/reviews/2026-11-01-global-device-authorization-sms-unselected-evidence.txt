@@ -1,0 +1,21 @@
+{
+  "label": "TerraSmsUnselected",
+  "ttlSeconds": 3600,
+  "route": {
+    "coreInstanceId": "core_...a4ea1e54",
+    "accountScope": "acct_...acb77745",
+    "endpointId": "endpoint_...b275b418",
+    "generation": 1
+  },
+  "leaseExpiresAt": "2026-11-01T11:33:02.493Z",
+  "fullRouteDiscoveryMatches": true,
+  "sameExisting5556Credential": true,
+  "sameAccountAndDeviceAsSelected": true,
+  "independentRegistrationKey": true,
+  "selectedRouteAndLeaseUnchanged": true,
+  "selectedLeaseExpiresAt": "2026-11-01T10:53:08.905Z",
+  "phoneNotOperatedByExecutor": true,
+  "notSelectedOnPhone": "reported by coordinating agent",
+  "privateRoute": "docs/plans/2026-11-01-global-device-authorization/runtime/sms-emulator/unselected-receiver/route.json",
+  "privateClient": "docs/plans/2026-11-01-global-device-authorization/runtime/sms-emulator/unselected-receiver/client.json"
+}

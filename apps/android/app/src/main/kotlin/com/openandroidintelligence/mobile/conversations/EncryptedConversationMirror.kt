@@ -4,13 +4,16 @@ import android.content.Context
 import com.openandroidintelligence.mobile.plugins.EncryptedDocuments
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
+import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 import com.openandroidintelligence.conversation.state.*
 import com.openandroidintelligence.gateway.schema.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.flow.mapNotNull
-import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -19,6 +22,19 @@ import kotlinx.coroutines.sync.withLock
 import com.openandroidintelligence.encrypted.store.AndroidKeystoreOutboxKeyProvider
 import java.io.File
 import java.util.UUID
+
+/** 本机镜像身份沿用既有安全字符范围；该约束不依赖网络协议或登录。 */
+private val MIRROR_ID_ALPHABET = Regex("[A-Za-z0-9._~-]{1,128}")
+
+/** 事件检查点是 SQLite 值中的不透明身份，不继承旧请求 ID 的路径字母表。 */
+private fun validEventCheckpoint(value: String): Boolean {
+    if (value.isBlank() || value.any(Char::isISOControl)) return false
+    return try {
+        Charsets.UTF_8.newEncoder().onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+            .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+            .encode(java.nio.CharBuffer.wrap(value)).remaining() <= 4096
+    } catch (_: java.nio.charset.CharacterCodingException) { false }
+}
 
 /** 加密范围包含 Gateway 身份；不同宿主的同名账号不会共用文档。 */
 class EncryptedConversationMirror(context: Context, private val scope: ConversationScope,
@@ -43,10 +59,16 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             }
         }
     }
+    private fun isUserSender(sender: String?): Boolean =
+        ContextInjectionFilter.classifySender(sender) == ContextInjectionFilter.SenderRole.USER
+
+    private fun isAssistantSender(sender: String?): Boolean =
+        ContextInjectionFilter.classifySender(sender) == ContextInjectionFilter.SenderRole.ASSISTANT
+
     init {
         documents.transaction {
             load()?.let { checkpoint ->
-                checkpoint.messages.filter { it.sender == "assistant" }.groupBy { it.conversationId?.value ?: checkpoint.threadId }
+                checkpoint.messages.filter { isAssistantSender(it.sender) }.groupBy { it.conversationId?.value ?: checkpoint.threadId }
                     .forEach { (id,rows) -> id?.let { saveTimeline(it,TimelinePage(rows,null)) } }
             }
         }
@@ -69,7 +91,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             else -> error("MIRROR_CORRUPTED")
         }
         return PendingConversationManagementOperation(str(value,"requestId").also {
-            check(com.openandroidintelligence.gateway.http.GatewayHttpClient.CURSOR_ALPHABET.matches(it)) { "MIRROR_CORRUPTED" }
+            check(MIRROR_ID_ALPHABET.matches(it)) { "MIRROR_CORRUPTED" }
         }, intent)
     }
     private fun pendingManagementOperation(id: String): PendingConversationManagementOperation? =
@@ -157,6 +179,8 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             messages=checkpoint.messages.filterNot { row -> (row.conversationId?.value ?: checkpoint.threadId)?.let(::isConversationDeleted) == true },
             revisions=if (removed) emptyMap() else checkpoint.revisions,
             submission=checkpoint.submission?.takeUnless { it.conversationId?.let(::isConversationDeleted) == true },
+            composerDrafts=checkpoint.composerDrafts.filterNot { it.threadId?.let(::isConversationDeleted) == true },
+            pendingSubmissions=checkpoint.pendingSubmissions.filterNot { it.conversationId?.let(::isConversationDeleted) == true },
             batches=checkpoint.batches.filterNot { isConversationDeleted(it.conversationId) },
             cancellations=checkpoint.cancellations.filterNot { isConversationDeleted(it.conversationId) },
             messageGenerations=checkpoint.messageGenerations.filterNot { isConversationDeleted(it.conversationId) },
@@ -169,25 +193,107 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             "sizeBytes" to p.sizeBytes,"sha256" to p.sha256)
         is MessagePart.Command -> mapOf("type" to "command","text" to p.rawText,"catalogVersion" to p.catalogVersion?.value)
     } }
-    private fun decodeParts(o: JsonValue.JObject) = JsonFields.objects(o,"parts").map { p -> when(str(p,"type")) {
+    private fun decodeParts(o: JsonValue.JObject, key: String = "parts") = JsonFields.objects(o, key).map { p -> when(str(p,"type")) {
         "text" -> MessagePart.Text(str(p,"text"))
         "attachment" -> MessagePart.Attachment(AttachmentDraftId(str(p,"id")),str(p,"name"),str(p,"mediaType"),
             JsonFields.long(p,"sizeBytes"),JsonFields.string(p,"sha256"))
         "command" -> MessagePart.Command(str(p,"text"),JsonFields.string(p,"catalogVersion")?.let(::CatalogVersion))
         else -> error("MIRROR_CORRUPTED")
     } }
+    private fun encodeExecutionStep(step: com.openandroidintelligence.conversation.model.NativeExecutionStep): Map<String, Any?> = mapOf(
+        "stepId" to step.stepId, "eventId" to step.eventId, "toolName" to step.toolName,
+        "arguments" to step.arguments, "output" to step.output, "status" to step.status.name,
+        "revision" to step.revision, "sourceMessageId" to step.sourceMessageId,
+        "occurredAt" to step.occurredAt, "orderSequence" to step.orderSequence,
+    )
+    private fun decodeExecutionStep(step: JsonValue.JObject) = com.openandroidintelligence.conversation.model.NativeExecutionStep(
+        str(step, "stepId"), str(step, "eventId"), str(step, "toolName"), str(step, "arguments"),
+        JsonFields.string(step, "output"),
+        com.openandroidintelligence.conversation.model.NativeExecutionStatus.valueOf(str(step, "status")),
+        JsonFields.long(step, "revision") ?: 0L,
+        JsonFields.string(step, "sourceMessageId"),
+        JsonFields.long(step, "occurredAt"),
+        JsonFields.long(step, "orderSequence"),
+    )
     private fun message(m: TimelineMessage): Map<String,Any?> = mapOf("id" to m.id,"sender" to m.sender,"parts" to parts(m.parts),
         "timestamp" to m.timestamp,"state" to m.state,"conversationId" to m.conversationId?.value,"errorCode" to m.errorCode,
         "batchId" to m.batchId,"clientMessageId" to m.clientMessageId?.value,"localSubmissionFailure" to m.localSubmissionFailure,
-        "contentRevision" to m.contentRevision,"generationId" to m.generationId)
+        "contentRevision" to m.contentRevision,"generationId" to m.generationId,"localPlaceholder" to m.localPlaceholder,
+        "isMeta" to m.isMeta,"visibility" to m.visibility,"messageType" to m.messageType,
+        "rawParts" to m.rawParts?.let(::parts),
+        "reasoning" to m.reasoning.map { mapOf("id" to it.id, "text" to it.text, "bodyOffset" to it.bodyOffset, "complete" to it.complete) },
+        "executionSteps" to m.executionSteps.map(::encodeExecutionStep),
+        "timelineSteps" to m.timelineSteps.map { step -> when (step) {
+            is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ThinkingStep -> mapOf(
+                "kind" to "thinking", "stepId" to step.stepId, "text" to step.text,
+                "bodyOffset" to step.bodyOffset, "complete" to step.complete, "orderIndex" to step.orderIndex,
+            )
+            is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ToolCallStep -> mapOf(
+                "kind" to "tool_call", "bodyOffset" to step.bodyOffset, "orderIndex" to step.orderIndex,
+                "step" to encodeExecutionStep(step.step),
+            )
+        } },
+        "orderSequence" to m.orderSequence)
     private fun decodeMessage(o: JsonValue.JObject) = TimelineMessage(str(o,"id"),str(o,"sender"),decodeParts(o),
         JsonFields.long(o,"timestamp") ?: 0L,str(o,"state"),JsonFields.string(o,"conversationId")?.let(::ConversationId),
         JsonFields.string(o,"errorCode"),JsonFields.string(o,"batchId"),JsonFields.string(o,"clientMessageId")?.let(::ClientMessageId),
-        JsonFields.string(o,"localSubmissionFailure"),JsonFields.long(o,"contentRevision"),JsonFields.string(o,"generationId"))
+        JsonFields.string(o,"localSubmissionFailure"),JsonFields.long(o,"contentRevision"),JsonFields.string(o,"generationId"),
+        localPlaceholder=JsonFields.bool(o,"localPlaceholder") ?: false,
+        reasoning=JsonFields.objects(o,"reasoning").map { block -> MessageReasoning(str(block,"id"), str(block,"text"),
+            JsonFields.int(block,"bodyOffset") ?: error("MIRROR_CORRUPTED"), JsonFields.bool(block,"complete") ?: error("MIRROR_CORRUPTED")) },
+        isMeta=JsonFields.bool(o,"isMeta") ?: false,
+        visibility=JsonFields.string(o,"visibility"),
+        messageType=JsonFields.string(o,"messageType"),
+        rawParts=(JsonFields.field(o, "rawParts") as? JsonValue.JArray)?.let { decodeParts(o, "rawParts") },
+        executionSteps=JsonFields.objects(o,"executionSteps").map(::decodeExecutionStep),
+        timelineSteps=JsonFields.objects(o,"timelineSteps").mapNotNull { item -> when (JsonFields.string(item,"kind")) {
+            "thinking" -> com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ThinkingStep(
+                stepId = str(item,"stepId"),
+                text = str(item,"text"),
+                bodyOffset = JsonFields.int(item,"bodyOffset") ?: 0,
+                complete = JsonFields.bool(item,"complete") ?: true,
+                orderIndex = JsonFields.int(item,"orderIndex") ?: 0,
+            )
+            "tool_call" -> (JsonFields.field(item,"step") as? JsonValue.JObject)?.let { step ->
+                com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ToolCallStep(
+                    step = decodeExecutionStep(step),
+                    bodyOffset = JsonFields.int(item,"bodyOffset") ?: 0,
+                    orderIndex = JsonFields.int(item,"orderIndex") ?: 0,
+                )
+            }
+            else -> null
+        } },
+        orderSequence=JsonFields.long(o,"orderSequence"))
     private fun attachment(a: AttachmentDraft) = mapOf("id" to a.id.value,"name" to a.filename,"mediaType" to a.mediaType,
         "size" to a.sizeBytes,"sha256" to a.sha256,"state" to a.state.name)
     private fun decodeAttachment(o: JsonValue.JObject) = AttachmentDraft(AttachmentDraftId(str(o,"id")),str(o,"name"),str(o,"mediaType"),
         JsonFields.long(o,"size") ?: 0L,str(o,"sha256"),AttachmentState.valueOf(str(o,"state")))
+    @Synchronized fun commitNativeEvents(events: List<VerifiedConversationEvent>) {
+        documents.transaction { events.forEach(::apply) }
+        documents.flush()
+    }
+
+    /** 旧 native 工作台以 checkpoint 为列表来源；新权威读取接管后不再允许旧 checkpoint 覆盖。 */
+    @Synchronized fun saveNativeCheckpoint(checkpoint: WorkbenchCheckpoint): Unit = documents.transaction {
+        if (checkpoint.threadsHydrated && read("native-threads-authority") == null) {
+            saveThreads(checkpoint.threads, checkpoint.threadsSnapshotRevision)
+        }
+        save(checkpoint)
+    }
+
+    suspend fun saveNativeConversations(page: ConversationPage, expectedEpoch: Long? = null): Boolean = withContext(ioDispatcher) {
+        check(page.authoritative && page.nextCursor == null) { "NATIVE_HISTORY_INCOMPLETE" }
+        val saved = synchronized(this@EncryptedConversationMirror) {
+            documents.transaction {
+                if (!saveThreads(page.conversations, page.snapshotRevision, expectedEpoch)) return@transaction false
+                documents.write("native-threads-authority", encode(mapOf("version" to 1)))
+                true
+            }
+        }
+        if (saved) documents.flush()
+        saved
+    }
+
     @Synchronized override fun save(checkpoint: WorkbenchCheckpoint): Unit = documents.transaction {
         val hadGlobalHistory=threads() != null
         checkpoint.deletedThreadIds.filterNot(::isConversationDeleted).forEach(::deleteConversation)
@@ -206,13 +312,20 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             "cancellations" to checkpoint.cancellations.map { mapOf("conversationId" to it.conversationId,"generationId" to it.generationId) },
             "messageGenerations" to checkpoint.messageGenerations.map { mapOf("conversationId" to it.conversationId,"messageId" to it.messageId,"generationId" to it.generationId,"revision" to it.revision) },
             "pendingFolderAssignments" to checkpoint.pendingFolderAssignments.map { mapOf("conversationId" to it.conversationId,"folderId" to it.folderId) },
-            "pendingConversationCreation" to checkpoint.pendingConversationCreation?.let { mapOf("clientId" to it.clientId,"folderId" to it.folderId) },
+            "pendingConversationCreation" to checkpoint.pendingConversationCreation?.let {
+                mapOf("clientId" to it.clientId,"folderId" to it.folderId,"mayHaveBeenSent" to it.mayHaveBeenSent) },
             "title" to checkpoint.title,"messages" to checkpoint.messages.filterNot { row ->
                 (row.conversationId?.value ?: checkpoint.threadId)?.let { isTombstoned(it,row.id) } == true
             }.map(::message),"revisions" to checkpoint.revisions,"draft" to checkpoint.draft,
-            "draftRevision" to checkpoint.draftRevision,"attachments" to checkpoint.attachments.map(::attachment),"renamed" to checkpoint.renamedThreads.toList(),
+            "draftRevision" to checkpoint.draftRevision,"draftVersion" to checkpoint.draftVersion,"draftExplicit" to checkpoint.draftExplicit,
+            "composerDrafts" to checkpoint.composerDrafts.map { draft -> mapOf("threadId" to draft.threadId,
+                "text" to draft.text,"revision" to draft.revision,"explicit" to draft.explicit,"attachments" to draft.attachments.map(::attachment)) },
+            "pendingSubmissions" to checkpoint.pendingSubmissions.map { item -> mapOf("text" to item.text,
+                "ids" to item.attachmentIds,"revision" to item.revision,"conversationId" to item.conversationId,"clientMessageId" to item.clientMessageId,"delivery" to item.delivery.wireValue,"generationId" to item.generationId) },
+            "attachments" to checkpoint.attachments.map(::attachment),"renamed" to checkpoint.renamedThreads.toList(),
             "events" to checkpoint.eventIds.toList(),"batches" to checkpoint.batches.map { b -> mapOf("batchId" to b.batchId,"conversationId" to b.conversationId,"sealed" to b.sealed,"members" to b.messages.map { cleanOutgoing(b.conversationId,it) }.map { m -> mapOf("id" to m.clientMessageId.value,"text" to m.text,"attachmentIds" to m.attachmentIds,"command" to m.command?.let { parts(listOf(it)).single() }) }) },"submission" to s?.let { mapOf("text" to it.text,"ids" to it.attachmentIds,"revision" to it.revision,
-                "conversationId" to it.conversationId,"clientMessageId" to it.clientMessageId) })))
+                "conversationId" to it.conversationId,"clientMessageId" to it.clientMessageId,
+                    "delivery" to it.delivery.wireValue,"generationId" to it.generationId) })))
     }
     @Synchronized override fun load(): WorkbenchCheckpoint? = documents.transaction {
         val facts=read("generation-facts")
@@ -229,7 +342,9 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         val organization=organization().takeIf { it.revision >= savedOrganization.revision } ?: savedOrganization
         val r = JsonFields.obj(JsonFields.field(o,"revisions"))?.fields.orEmpty().associate { (k,v) -> k to ((v as? JsonValue.JNumber)?.raw?.toLongOrNull() ?: error("MIRROR_CORRUPTED")) }
         val s = JsonFields.obj(JsonFields.field(o,"submission"))?.let { SavedSubmission(str(it,"text"),JsonFields.strings(it,"ids"),JsonFields.long(it,"revision") ?: 0L,
-            JsonFields.string(it,"conversationId"),str(it,"clientMessageId")) }
+            JsonFields.string(it,"conversationId"),str(it,"clientMessageId"),
+            MessageDeliveryMode.entries.firstOrNull { mode -> mode.wireValue == JsonFields.string(it,"delivery") } ?: MessageDeliveryMode.NORMAL,
+            JsonFields.string(it,"generationId")) }
         val checkpoint=WorkbenchCheckpoint(lastThreads,JsonFields.string(o,"threadId"),str(o,"title"),JsonFields.objects(o,"messages").map(::decodeMessage),r,str(o,"draft"),
             JsonFields.long(o,"draftRevision") ?: 0L,JsonFields.objects(o,"attachments").map(::decodeAttachment),s,JsonFields.strings(o,"renamed").toSet(),JsonFields.strings(o,"events").toSet(),JsonFields.objects(o,"batches").map { b -> SavedBatch(str(b,"batchId"),str(b,"conversationId"),JsonFields.objects(b,"members").map { m ->
                 val command=JsonFields.obj(JsonFields.field(m,"command"))?.let { MessagePart.Command(str(it,"text"),JsonFields.string(it,"catalogVersion")?.let(::CatalogVersion)) }
@@ -241,7 +356,17 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             messageGenerations=(facts?.let(::messageGenerations).orEmpty()+messageGenerations(o))
                 .groupBy { it.conversationId to it.messageId }.values.map { links -> links.maxBy { it.revision } },
             pendingFolderAssignments=JsonFields.objects(o,"pendingFolderAssignments").map { SavedFolderAssignment(str(it,"conversationId"),str(it,"folderId")) },
-            pendingConversationCreation=JsonFields.obj(JsonFields.field(o,"pendingConversationCreation"))?.let { SavedConversationCreation(str(it,"clientId"),JsonFields.string(it,"folderId")) })
+            pendingConversationCreation=JsonFields.obj(JsonFields.field(o,"pendingConversationCreation"))?.let {
+                SavedConversationCreation(str(it,"clientId"),JsonFields.string(it,"folderId"),JsonFields.bool(it,"mayHaveBeenSent") != false) },
+            draftExplicit=JsonFields.bool(o,"draftExplicit") == true,
+            draftVersion=JsonFields.long(o,"draftVersion") ?: JsonFields.long(o,"draftRevision") ?: 0L,
+            composerDrafts=JsonFields.objects(o,"composerDrafts").map { draft -> SavedComposerDraft(
+                JsonFields.string(draft,"threadId"),str(draft,"text"),JsonFields.long(draft,"revision") ?: 0,
+                JsonFields.objects(draft,"attachments").map(::decodeAttachment),JsonFields.bool(draft,"explicit") != false) },
+            pendingSubmissions=JsonFields.objects(o,"pendingSubmissions").map { item -> SavedSubmission(str(item,"text"),
+                JsonFields.strings(item,"ids"),JsonFields.long(item,"revision") ?: 0,JsonFields.string(item,"conversationId"),str(item,"clientMessageId"),
+                MessageDeliveryMode.entries.firstOrNull { mode -> mode.wireValue == JsonFields.string(item,"delivery") } ?: MessageDeliveryMode.NORMAL,
+                JsonFields.string(item,"generationId")) })
         checkpoint.messages.groupBy { it.conversationId?.value ?: checkpoint.threadId }.forEach { (id,rows) ->
             id?.let { rememberSnapshotDeletions(it,TimelinePage(rows,null)) }
         }
@@ -266,14 +391,18 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         "clientMessageId" to a.clientMessageId.value,"parts" to parts(a.parts),"timestamp" to a.timestamp,"messageId" to a.messageId,
         "batchId" to a.batchId,"submissionState" to a.submissionState.name,"status" to a.status?.wireValue,
         "statusRevision" to a.statusRevision,"errorCode" to a.errorCode?.wireValue,"submissionErrorCode" to a.submissionErrorCode,
-        "contentRevision" to a.contentRevision,"tombstoneRevision" to a.tombstoneRevision,"snapshotDeleted" to a.snapshotDeleted)
+        "contentRevision" to a.contentRevision,"tombstoneRevision" to a.tombstoneRevision,"snapshotDeleted" to a.snapshotDeleted,
+        "delivery" to a.delivery.wireValue)
 
     private fun decodeSendAtom(o: JsonValue.JObject) = LocalSendAtom(ConversationId(str(o,"conversationId")),
         ClientMessageId(str(o,"clientMessageId")),decodeParts(o),JsonFields.long(o,"timestamp") ?: 0L,
         JsonFields.string(o,"messageId"),JsonFields.string(o,"batchId"),LocalSubmissionState.valueOf(str(o,"submissionState")),
         decodeStatus(JsonFields.string(o,"status")),JsonFields.long(o,"statusRevision") ?: -1L,
         decodeAgentError(JsonFields.string(o,"errorCode")),JsonFields.string(o,"submissionErrorCode"),
-        JsonFields.long(o,"contentRevision") ?: -1L,JsonFields.long(o,"tombstoneRevision"),JsonFields.bool(o,"snapshotDeleted") == true)
+        JsonFields.long(o,"contentRevision") ?: -1L,JsonFields.long(o,"tombstoneRevision"),JsonFields.bool(o,"snapshotDeleted") == true,
+        JsonFields.string(o,"delivery")?.let { wire ->
+            MessageDeliveryMode.entries.firstOrNull { it.wireValue == wire } ?: error("MIRROR_CORRUPTED")
+        } ?: MessageDeliveryMode.NORMAL)
 
     private fun decodeStatus(value: String?) = value?.let { text -> AgentMessageStatus.entries.firstOrNull { it.wireValue == text }
         ?: error("MIRROR_CORRUPTED") }
@@ -302,7 +431,16 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
     }
 
     private fun mergeAtom(existing: LocalSendAtom,incoming: LocalSendAtom): LocalSendAtom {
-        check(existing.messageId == null || incoming.messageId == null || existing.messageId == incoming.messageId) { "MESSAGE_ID_CONFLICT" }
+        val steering = existing.delivery == MessageDeliveryMode.STEER && incoming.delivery == MessageDeliveryMode.STEER
+        fun provisional(atom: LocalSendAtom) = atom.messageId == atom.clientMessageId.value ||
+            (steering && LocalSendAtom.isLegacySyntheticSteerId(atom.messageId,atom.clientMessageId))
+        val existingProvisional=provisional(existing)
+        val incomingProvisional=provisional(incoming)
+        check(existing.messageId == null || incoming.messageId == null || existing.messageId == incoming.messageId ||
+            existingProvisional || incomingProvisional) { "MESSAGE_ID_CONFLICT" }
+        // 明确客户端占位可以升级；迟到的占位回写不能把已取得的原生身份降回去。
+        val messageId=if (existing.messageId != null && !existingProvisional && incomingProvisional) existing.messageId
+            else incoming.messageId ?: existing.messageId
         val content=if (existing.contentRevision >= 0L && existing.contentRevision >= incoming.contentRevision) existing else incoming
         val status=if (existing.status != null && existing.statusRevision >= incoming.statusRevision) existing else incoming
         val contentRevision=maxOf(existing.contentRevision,incoming.contentRevision)
@@ -310,12 +448,18 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         val snapshotDeleted=existing.snapshotDeleted || incoming.snapshotDeleted
         val submission=if (existing.submissionState == LocalSubmissionState.ACCEPTED) LocalSubmissionState.ACCEPTED else incoming.submissionState
         return incoming.copy(
-            messageId=incoming.messageId ?: existing.messageId,batchId=incoming.batchId ?: existing.batchId,
+            messageId=messageId,batchId=incoming.batchId ?: existing.batchId,
             timestamp=existing.timestamp.takeIf { it > 0L } ?: incoming.timestamp,
             parts=if (snapshotDeleted || tombstone != null) emptyList() else if (content.contentRevision >= 0L) content.parts else content.parts.ifEmpty { existing.parts },
             contentRevision=contentRevision,tombstoneRevision=tombstone,snapshotDeleted=snapshotDeleted,status=status.status,statusRevision=status.statusRevision,
             errorCode=status.errorCode,submissionState=submission,
-            submissionErrorCode=if (submission == LocalSubmissionState.FAILED) incoming.submissionErrorCode else null,
+            // 仅保留本次明确提交的“prompt 未发送、附件结果未知”事实；空值必须消费旧许可。
+            submissionErrorCode=when {
+                submission == LocalSubmissionState.FAILED -> incoming.submissionErrorCode
+                submission == LocalSubmissionState.OUTCOME_UNKNOWN &&
+                    incoming.submissionErrorCode?.startsWith("REMOTE_ATTACHMENT_MESSAGE_NOT_SENT:") == true -> incoming.submissionErrorCode
+                else -> null
+            },
         )
     }
 
@@ -330,7 +474,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         val migrated=linkedMapOf<String,LinkedHashMap<ClientMessageId,LocalSendAtom>>()
         val legacy=linkedMapOf<String,LinkedHashMap<String,TimelineMessage>>()
         fun remember(atom: LocalSendAtom) { migrated.getOrPut(atom.conversationId.value) { linkedMapOf() }.putIfAbsent(atom.clientMessageId,atom) }
-        checkpoint.messages.filter { it.sender == "user" }.forEach { row ->
+        checkpoint.messages.filter { isUserSender(it.sender) }.forEach { row ->
             val conversationId=row.conversationId?.value ?: checkpoint.threadId ?: return@forEach
             val clientId=row.clientMessageId
             if (clientId == null) {
@@ -393,20 +537,38 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         is VerifiedConversationEvent.MessageAccepted -> event.conversationId?.value
         is VerifiedConversationEvent.GenerationCancelled -> event.conversationId?.value
         is VerifiedConversationEvent.ConversationsChanged -> event.conversationId?.value
+        is VerifiedConversationEvent.ApprovalTextFallback -> event.conversationId.value
+        is VerifiedConversationEvent.PendingDeliveryUpdated -> event.delivery.conversationId.value
         else -> null
     }
     @Synchronized fun projectEvent(event: VerifiedConversationEvent): VerifiedConversationEvent? {
         if (event !is VerifiedConversationEvent.ConversationsChanged && eventConversationId(event)?.let(::isConversationDeleted) == true) return null
         return when(event) {
-        is VerifiedConversationEvent.TimelineUpsert -> event.message.conversationId?.value?.let { id ->
-            val known=contentRevision(id,event.message.id)
-            when {
-                known.snapshotDeleted -> event.copy(message=event.message.copy(parts=emptyList(),state="DELETED"))
-                event.revision < known.revision -> null
-                event.revision == known.revision && known.tombstoned -> event.copy(message=event.message.copy(parts=emptyList(),state="DELETED"))
-                else -> event
-            }
-        } ?: if (event.message.conversationId == null) event else null
+        is VerifiedConversationEvent.TimelineUpsert -> {
+            val rawMessage = event.message
+            val projected = ContextInjectionFilter.projectMessage(rawMessage)
+                ?: return if (rawMessage.conversationId == null) null else VerifiedConversationEvent.TimelineTombstoned(
+                    eventId = event.eventId,
+                    occurredAt = event.occurredAt,
+                    messageId = rawMessage.id,
+                    revision = event.revision,
+                    conversationId = rawMessage.conversationId,
+                )
+            val cleanEvent = if (projected == rawMessage) event else event.copy(message = projected)
+            cleanEvent.message.conversationId?.value?.let { id ->
+                val known=contentRevision(id,cleanEvent.message.id)
+                when {
+                    known.snapshotDeleted -> cleanEvent.copy(message=cleanEvent.message.copy(parts=emptyList(),state="DELETED"))
+                    cleanEvent.revision < known.revision -> null
+                    cleanEvent.revision == known.revision && known.tombstoned -> cleanEvent.copy(message=cleanEvent.message.copy(parts=emptyList(),state="DELETED"))
+                    else -> cleanEvent
+                }
+            } ?: if (cleanEvent.message.conversationId == null) cleanEvent else null
+        }
+        is VerifiedConversationEvent.TitleUpdated -> {
+            val cleanTitle = ContextInjectionFilter.sanitizeSummaryText(event.newTitle)
+            if (cleanTitle.isEmpty()) null else event.copy(newTitle = cleanTitle)
+        }
         is VerifiedConversationEvent.TimelineTombstoned -> event.conversationId?.value?.let { id ->
             event.takeIf { it.revision >= contentRevision(id,event.messageId).revision }
         } ?: if (event.conversationId == null) event else null
@@ -538,9 +700,9 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                 (content.deletedAttachmentIds + mediaIds).distinct(),snapshotDeleted=true)
             enqueueMediaTransition(conversationId,messageId,null,content.deletedAttachmentIds + mediaIds,true)
             val clientId=existing?.clientMessageId ?: row?.clientMessageId
-            if ((existing != null || row?.sender == "user") && clientId != null) {
+            if ((existing != null || isUserSender(row?.sender)) && clientId != null) {
                 val deleted=(existing ?: LocalSendAtom(ConversationId(conversationId),clientId,emptyList(),row?.timestamp ?: 0L))
-                    .accepted(messageId,row?.batchId ?: existing?.batchId).copy(parts=emptyList(),snapshotDeleted=true)
+                    .identified(messageId,row?.batchId ?: existing?.batchId).copy(parts=emptyList(),snapshotDeleted=true)
                 saveSendAtoms(conversationId,atoms.filterNot { it.clientMessageId == clientId } + deleted)
             }
             if (legacy.any { it.id == messageId }) saveLegacySent(conversationId,legacy.filterNot { it.id == messageId })
@@ -558,7 +720,9 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         val rows=legacySent(conversationId).associateByTo(linkedMapOf()) { it.id }
         canonical.messages.forEach { rows[it.id]=it }
         val visible=rows.values.filterNot { isTombstoned(conversationId,it.id) }.map { withDurableStatus(conversationId,it) }
-        canonical.copy(messages=mergeLocalSendAtoms(visible,loadSendAtoms(conversationId).map { withDeletionBarrier(conversationId,it) }),
+        val merged = mergeLocalSendAtoms(visible,loadSendAtoms(conversationId).map { withDeletionBarrier(conversationId,it) })
+        // 原始只读镜像完整保留在磁盘，在输出投影出口执行确定性过滤与信封剥离
+        canonical.copy(messages=ContextInjectionFilter.projectTimeline(merged),
             deletedMessageIds=canonical.deletedMessageIds + canonical.messages.filter { it.isDeleted || contentRevision(conversationId,it.id).snapshotDeleted }.map { it.id })
     }
 
@@ -574,14 +738,14 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             val content=contentRevision(id,row.id)
             if (content.snapshotDeleted) return@map row
             val atoms=loadSendAtoms(id)
-            val atom=atoms.firstOrNull { row.sender == "user" && (it.messageId == row.id || (row.clientMessageId != null && it.clientMessageId == row.clientMessageId)) }
+            val atom=atoms.firstOrNull { isUserSender(row.sender) && (it.messageId == row.id || (row.clientMessageId != null && it.clientMessageId == row.clientMessageId)) }
             val known=maxOf(content.revision,atom?.contentRevision ?: -1L)
             if (revision < known || (revision == known && content.tombstoned)) {
                 return@map baseline[row.id] ?: atom?.let { row.copy(parts=it.parts,contentRevision=it.contentRevision) } ?: row
             }
             if (revision > known) {
                 if (atom != null) {
-                    val changed=atom.accepted(row.id,row.batchId ?: atom.batchId).copy(parts=row.parts,
+                    val changed=atom.identified(row.id,row.batchId ?: atom.batchId).copy(parts=row.parts,
                         contentRevision=revision,tombstoneRevision=null)
                     saveSendAtoms(id,atoms.map { if (it.clientMessageId == atom.clientMessageId) changed else it })
                 }
@@ -604,7 +768,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         val original=atoms.firstOrNull { it.clientMessageId == clientMessageId }
         val identified=canonical.copy(conversationId=ConversationId(conversationId),clientMessageId=clientMessageId)
         if (original == null) return@transaction identified
-        val accepted=original.accepted(row.id,row.batchId ?: original.batchId).copy(
+        val accepted=original.identified(row.id,row.batchId ?: original.batchId).copy(
             parts=if (original.contentRevision >= 0L || row.parts.isEmpty()) original.parts else row.parts,
             timestamp=original.timestamp.takeIf { it > 0L } ?: row.timestamp,
         )
@@ -617,6 +781,11 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         if (legacyDirectory.exists()) {
             check(legacyDirectory.renameTo(File(legacyDirectory.parentFile,"$scopeHash-removed-${UUID.randomUUID()}"))) { "MIRROR_ERASE_FAILED" }
             legacyKey.delete()
+        }
+    }
+    override suspend fun loadConversations(): ConversationPage? = withContext(ioDispatcher) {
+        synchronized(this@EncryptedConversationMirror) {
+            threads()?.let { ConversationPage(it, null, threadsSnapshotRevision(), authoritative = false) }
         }
     }
     override suspend fun loadTimeline(conversationId: String): TimelinePage? = withContext(ioDispatcher) {
@@ -642,7 +811,8 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
     override suspend fun saveSendAtomsDurably(conversationId: String, atoms: List<LocalSendAtom>) =
         withContext(ioDispatcher) { saveSendAtoms(conversationId,atoms) }
     override suspend fun flush() = withContext(ioDispatcher) { documents.flush() }
-    override suspend fun closeStore() = withContext(ioDispatcher) { documents.close() }
+    override suspend fun closeStore() = withContext(ioDispatcher) { closeNativeStore() }
+    internal fun closeNativeStore() = documents.close()
     suspend fun saveThreadsDurably(threads: List<ConversationSummary>,revision: Long? = null,expectedEpoch: Long? = null) = withContext(ioDispatcher) { saveThreads(threads,revision,expectedEpoch) }
     suspend fun saveOrganizationDurably(value: ConversationOrganization) = withContext(ioDispatcher) { saveOrganization(value) }
     suspend fun deleteConversationDurably(id: String) = withContext(ioDispatcher) { deleteConversation(id); documents.flush() }
@@ -663,11 +833,13 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
     }
     fun loadCursor(accountId: String): String? {
         require(accountId == scope.accountId) { "MIRROR_SCOPE_MISMATCH" }
-        return read("cursor")?.let { JsonFields.string(it,"value") }
+        return read("cursor")?.let { document -> JsonFields.string(document,"value")?.also {
+            check(validEventCheckpoint(it)) { "MIRROR_CORRUPTED" }
+        } }
     }
     fun saveCursor(accountId: String,cursor: String) {
         require(accountId == scope.accountId) { "MIRROR_SCOPE_MISMATCH" }
-        require(com.openandroidintelligence.gateway.http.GatewayHttpClient.CURSOR_ALPHABET.matches(cursor)) { "SNAPSHOT_BASELINE_INVALID" }
+        require(validEventCheckpoint(cursor)) { "SNAPSHOT_BASELINE_INVALID" }
         documents.transaction { documents.write("cursor",encode(mapOf("value" to cursor))) }
     }
     fun clearCursor(accountId: String) {
@@ -707,7 +879,12 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         true
     }
     @Synchronized fun threadsSnapshotRevision(): Long? = read("threads")?.let { JsonFields.long(it,"snapshotRevision") }
-    @Synchronized fun threads(): List<ConversationSummary>? = read("threads")?.let { JsonFields.objects(it,"threads").map(::decodeThread).filterNot { thread -> isConversationDeleted(thread.id.value) } }
+    @Synchronized fun threads(): List<ConversationSummary>? = read("threads")?.let {
+        JsonFields.objects(it,"threads")
+            .map(::decodeThread)
+            .filterNot { thread -> isConversationDeleted(thread.id.value) }
+            .map { thread -> thread.copy(title = ContextInjectionFilter.sanitizeSummaryText(thread.title)) }
+    }
     /** A durable barrier prevents an in-flight read, old checkpoint or replay from reopening a deleted identity. */
     @Synchronized fun deleteConversation(id: String): Unit = documents.transaction {
         if (isConversationDeleted(id)) return@transaction
@@ -734,7 +911,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         rememberSnapshotDeletions(id,canonical)
         val rows = previous?.messages.orEmpty().associateByTo(linkedMapOf()) { it.id }
         canonical.messages.forEach { rows[it.id] = it }
-        writeTimeline(id,canonical.copy(messages=rows.values.filterNot { it.isDeleted || isTombstoned(id,it.id) }.sortedBy { it.timestamp },
+        writeTimeline(id,canonical.copy(messages=rows.values.filterNot { it.isDeleted || isTombstoned(id,it.id) }.sortedWith(timelineOrderComparator),
             deletedMessageIds=canonical.deletedMessageIds + previous?.deletedMessageIds.orEmpty() + canonical.messages.filter { it.isDeleted }.map { it.id }))
     }
     @Synchronized fun timeline(id: String): TimelinePage? = if (isConversationDeleted(id)) null else read("timeline:$id")?.let { TimelinePage(JsonFields.objects(it,"messages").map(::decodeMessage),null,
@@ -744,20 +921,27 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         when(event) {
             is VerifiedConversationEvent.ConversationsChanged -> if (event.deleted) event.conversationId?.value?.let(::deleteConversation) else Unit
             is VerifiedConversationEvent.TimelineUpsert -> event.message.conversationId?.value?.let { id ->
+                // 原生历史将无修订撤回包装为 revision=0；先按身份保存删除事实，不能被旧正文版本挡住。
+                if (event.message.isDeleted && event.message.contentRevision == null) {
+                    rememberSnapshotDeletions(id,TimelinePage(listOf(event.message),null))
+                    return@let
+                }
                 val revision=contentRevision(id,event.message.id)
                 if (revision.snapshotDeleted) return@let
                 if (event.revision < revision.revision || (event.revision == revision.revision && revision.tombstoned)) return@let
                 val old = timeline(id) ?: TimelinePage(emptyList(),null)
                 val atoms=loadSendAtoms(id)
                 val existing=atoms.firstOrNull { it.messageId == event.message.id || it.clientMessageId == event.message.clientMessageId }
-                check(existing == null || event.message.clientMessageId == null || existing.clientMessageId == event.message.clientMessageId) { "MESSAGE_ID_CONFLICT" }
+                // 身份映射分叉时丢弃这条事件：它不属于本地这个原子，带正确 clientMessageId 的
+                // 后续事件仍会把状态推进；把可恢复的镜像做成硬崩溃没有任何收益。
+                if (existing != null && event.message.clientMessageId != null && existing.clientMessageId != event.message.clientMessageId) return@let
                 if (event.revision < (existing?.contentRevision ?: -1L) ||
                     (event.revision == existing?.tombstoneRevision)) return@let
                 val clientId=existing?.clientMessageId ?: event.message.clientMessageId
-                if (event.message.sender == "user" && clientId != null) {
+                if (isUserSender(event.message.sender) && clientId != null) {
                     val status=statusRevision(id,event.message.id)
                     val atom=(existing ?: LocalSendAtom(ConversationId(id),clientId,event.message.parts,event.message.timestamp))
-                        .accepted(event.message.id,event.message.batchId ?: existing?.batchId).copy(
+                        .identified(event.message.id,event.message.batchId ?: existing?.batchId).copy(
                             parts=event.message.parts,contentRevision=event.revision,tombstoneRevision=null,
                             status=status?.status ?: existing?.status,statusRevision=status?.revision ?: existing?.statusRevision ?: -1L,
                             errorCode=if (status != null) status.errorCode else existing?.errorCode,
@@ -774,8 +958,15 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                 val currentMedia = if (event.message.isDeleted) emptyList() else attachmentIds(event.message.parts)
                 enqueueMediaTransition(id,event.message.id,event.revision,previousMedia - currentMedia.toSet(),true)
                 enqueueMediaTransition(id,event.message.id,event.revision,currentMedia,false)
-                writeTimeline(id,old.copy(messages = (old.messages.filterNot { it.id == event.message.id } +
-                    withDurableStatus(id,event.message.copy(contentRevision=event.revision))).sortedBy { it.timestamp }))
+                val updatedRows = old.messages.associateByTo(linkedMapOf()) { it.id }
+                val previousRow = updatedRows[event.message.id]
+                val incomingMessage = if (event.message.orderSequence == null && previousRow?.orderSequence != null) {
+                    event.message.copy(contentRevision = event.revision, orderSequence = previousRow.orderSequence)
+                } else {
+                    event.message.copy(contentRevision = event.revision)
+                }
+                updatedRows[event.message.id] = withDurableStatus(id, incomingMessage)
+                writeTimeline(id, old.copy(messages = updatedRows.values.sortedWith(timelineOrderComparator)))
                 saveContentRevision(id,event.message.id,event.revision,false)
             }
             is VerifiedConversationEvent.TimelineTombstoned -> event.conversationId?.value?.let { id ->
@@ -804,16 +995,18 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                 if (event.revision < (statusRevision(id,event.messageId)?.revision ?: -1L)) return@transaction
                 val atoms=loadSendAtoms(id)
                 val existing=atoms.firstOrNull { it.clientMessageId == event.clientMessageId || it.messageId == event.messageId }
-                check(existing == null || existing.clientMessageId == event.clientMessageId) { "MESSAGE_ID_CONFLICT" }
+                // 身份映射分叉时丢弃这条事件：它不属于本地这个原子，带正确 clientMessageId 的
+                // 后续事件仍会把状态推进；把可恢复的镜像做成硬崩溃没有任何收益。
+                if (existing != null && existing.clientMessageId != event.clientMessageId) return@transaction
                 if (event.revision < (existing?.statusRevision ?: -1L)) return@transaction
                 event.generationId?.let { generation -> saveGenerationFacts(associations=listOf(event.messageId,event.clientMessageId.value).map {
                     SavedMessageGeneration(id,it,generation,event.revision)
                 }) }
                 val baseline=timeline(id)
-                val knownRow=baseline?.messages?.firstOrNull { it.id == event.messageId && it.sender == "user" }
+                val knownRow=baseline?.messages?.firstOrNull { it.id == event.messageId && isUserSender(it.sender) }
                 if (existing != null || knownRow != null) {
                     val atom=(existing ?: LocalSendAtom(ConversationId(id),event.clientMessageId,knownRow!!.parts,knownRow.timestamp))
-                        .accepted(event.messageId).copy(status=event.status,statusRevision=event.revision,errorCode=event.errorCode)
+                        .identified(event.messageId).copy(status=event.status,statusRevision=event.revision,errorCode=event.errorCode)
                     saveSendAtoms(id,atoms.filterNot { it.clientMessageId == atom.clientMessageId } + atom)
                 }
                 baseline?.let { page -> saveTimeline(id,page.copy(messages=page.messages.map {
@@ -885,17 +1078,36 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
 
 class MirroredConversationRepository(private val delegate: ConversationRepository, private val mirror: EncryptedConversationMirror,private val media:HistoricalMediaPort?=null,
     /** The delegate's shared operation store already commits these receipts while holding its lock. */
-    private val managementCommittedByDelegate: Boolean = false) : ConversationRepository by delegate, GenerationTracker, com.openandroidintelligence.conversation.model.StreamHealthSource, MessageOutcomeQuery {
+    private val managementCommittedByDelegate: Boolean = false,
+    /** 中间流式快照的落盘合并间隔；终态与非流式事件不受影响。 */
+    private val streamingPersistIntervalMillis: Long = 500L,
+    /** 可注入时钟：测试用假时钟验证合并不必真的等待。 */
+    private val clock: () -> Long = { System.nanoTime() },
+) : ConversationRepository by delegate, GenerationTracker, EventCommitBarrier, com.openandroidintelligence.conversation.model.StreamHealthSource, MessageOutcomeQuery {
+    private var lastStreamingPersistAtNanos: Long? = null
+    private val inFlightEventCommits = MutableStateFlow(0)
     override val generationId get()=(delegate as GenerationTracker).generationId
     override val generationState get()=(delegate as GenerationTracker).generationState
+    override val generationSnapshot get()=(delegate as GenerationTracker).generationSnapshot
     override val streamHealth get()=(delegate as com.openandroidintelligence.conversation.model.StreamHealthSource).streamHealth
+    override suspend fun awaitPendingEventCommits() {
+        val delegateBarrier = delegate as? EventCommitBarrier
+        do {
+            delegateBarrier?.awaitPendingEventCommits()
+            inFlightEventCommits.first { it == 0 }
+        } while (inFlightEventCommits.value > 0)
+    }
     override suspend fun queryMessage(conversationId:String,clientMessageId:ClientMessageId):TimelineMessage? =
         (delegate as? MessageOutcomeQuery)?.queryMessage(conversationId,clientMessageId)?.let {
             mirror.reconcileQuery(conversationId,clientMessageId,it).also { if (media != null) mirror.applyPendingMediaTransitions(media) }
         }
     override suspend fun listConversations(scope: ConversationScope, page: PageRequest): ConversationPage = try {
         if (page.cursor == null) refreshCompleteHistory(scope)
-        else delegate.listConversations(scope,page)
+        else delegate.listConversations(scope,page).let { paged ->
+            paged.copy(conversations = paged.conversations.map {
+                it.copy(title = ContextInjectionFilter.sanitizeSummaryText(it.title))
+            })
+        }
     } catch (c: CancellationException) { throw c } catch (e: java.io.IOException) {
         if (page.cursor == null) withContext(Dispatchers.IO) { mirror.threads()?.let { ConversationPage(it,null,mirror.threadsSnapshotRevision(),authoritative=false) } } ?: throw e else throw e
     }
@@ -904,8 +1116,11 @@ class MirroredConversationRepository(private val delegate: ConversationRepositor
             currentCoroutineContext().ensureActive()
             val epoch=withContext(Dispatchers.IO) { mirror.beginHistoryRead() }
             val page=delegate.completeConversations(scope)
-            if (!page.authoritative || page.nextCursor != null) return page
-            if (mirror.saveThreadsDurably(page.conversations,page.snapshotRevision,epoch) || attempt == 1) return page
+            val sanitizedPage = page.copy(conversations = page.conversations.map {
+                it.copy(title = ContextInjectionFilter.sanitizeSummaryText(it.title))
+            })
+            if (!page.authoritative || page.nextCursor != null) return sanitizedPage
+            if (mirror.saveThreadsDurably(page.conversations,page.snapshotRevision,epoch) || attempt == 1) return sanitizedPage
             // Pending native operation recovery can advance the mirror after
             // this read reserved its fence; refetch once from the new baseline.
         }
@@ -930,7 +1145,9 @@ class MirroredConversationRepository(private val delegate: ConversationRepositor
             val baseline=delegate.completeTimeline(conversationId)
             mirror.commitTimeline(conversationId,baseline,media)
         }
-        else delegate.timeline(conversationId,page)
+        else delegate.timeline(conversationId,page).let { paged ->
+            paged.copy(messages = ContextInjectionFilter.projectTimeline(paged.messages))
+        }
     } catch (c: CancellationException) { throw c } catch (e: java.io.IOException) {
         if (page.cursor == null) {
             val baseline=mirror.timeline(conversationId)
@@ -939,11 +1156,33 @@ class MirroredConversationRepository(private val delegate: ConversationRepositor
             else throw e
         } else throw e
     }
-    override fun observeEvents(scope: ConversationScope) = delegate.observeEvents(scope).onStart {
+    override fun observeEvents(scope: ConversationScope) = flow {
         if (media != null) mirror.applyPendingMediaTransitions(media)
-    }.mapNotNull { event ->
-        mirror.applyAndCommit(event)
-        if (media != null) mirror.applyPendingMediaTransitions(media)
-        mirror.projectEvent(event)
+        delegate.observeEvents(scope).collect { event ->
+            inFlightEventCommits.update { it + 1 }
+            try {
+                val streaming = event is VerifiedConversationEvent.TimelineUpsert &&
+                    ContextInjectionFilter.classifySender(event.message.sender) == ContextInjectionFilter.SenderRole.ASSISTANT &&
+                    event.message.state == "STREAMING"
+                val now = clock()
+                val intervalNanos = streamingPersistIntervalMillis * 1_000_000L
+                // 中间流式快照不是最终事实：按间隔合并落盘，避免每帧一次加密事务把上游读流压成背压。
+                // 终态/用户消息/状态事件始终立即落盘，崩溃最多丢一个间隔内的中间文本。
+                val persist = !streaming || lastStreamingPersistAtNanos.let { last -> last == null || now - last >= intervalNanos }
+                if (persist) {
+                    if (streaming) lastStreamingPersistAtNanos = now
+                    mirror.applyAndCommit(event)
+                    if (media != null) mirror.applyPendingMediaTransitions(media)
+                }
+                mirror.projectEvent(event)?.let { emit(it) }
+            } finally {
+                inFlightEventCommits.update { (it - 1).coerceAtLeast(0) }
+            }
+        }
     }
 }
+
+private val timelineOrderComparator = compareBy<TimelineMessage>(
+    { it.timestamp },
+    { it.orderSequence ?: Long.MAX_VALUE },
+)

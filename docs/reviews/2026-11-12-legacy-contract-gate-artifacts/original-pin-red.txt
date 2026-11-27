@@ -1,0 +1,4 @@
+❌ 插件仓锁定的契约与本仓库不一致。
+   插件仓 pin: f0b3f1bd4f6f3301b820e38c9f3241bcac05cd10
+   本仓 HEAD:  cb8abd8393114e79f567f844754482f22f4ab8a4
+   本仓的 gateway-contract/ 相对该提交已发生变化，必须把插件仓的 contract-pin.json 升级并发布，否则手机端将在协商阶段收到 PROTOCOL_INCOMPATIBLE。

@@ -34,7 +34,7 @@ class AttachmentComposerTest {
         var sends = 0
         render(draft(AttachmentState.VERIFIED), onSend = { sends++ })
         compose.onNodeWithText("气泡附件.pdf").assertIsDisplayed()
-        compose.onNodeWithText("已核验，可发送").assertIsDisplayed()
+        compose.onNodeWithText("已就绪，可发送").assertIsDisplayed()
         compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
         assertEquals(1, sends)
     }
@@ -52,7 +52,7 @@ class AttachmentComposerTest {
 
     @Test fun unknownUploadOffersVerificationAndRemoval() {
         render(draft(AttachmentState.OUTCOME_UNKNOWN))
-        compose.onNodeWithText("上传结果未知，请先核实").assertIsDisplayed()
+        compose.onNodeWithText("上传结果未确认，请核实").assertIsDisplayed()
         compose.onNodeWithContentDescription("核实附件上传结果").assertIsDisplayed()
         compose.onNodeWithContentDescription("移除附件").assertIsDisplayed()
     }

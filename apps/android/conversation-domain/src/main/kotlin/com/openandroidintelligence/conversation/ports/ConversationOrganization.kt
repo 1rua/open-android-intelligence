@@ -6,7 +6,7 @@ enum class ConversationSortMode(val wireValue: String) {
 
 data class ConversationFolder(val folderId: String, val name: String)
 
-/** A server-committed account preference shared by every conversation surface. */
+/** Revisioned account preference shared by conversation surfaces; native Agents store it on the phone. */
 data class ConversationOrganization(
     val revision: Long = 0,
     val sortMode: ConversationSortMode = ConversationSortMode.UPDATED_DESC,

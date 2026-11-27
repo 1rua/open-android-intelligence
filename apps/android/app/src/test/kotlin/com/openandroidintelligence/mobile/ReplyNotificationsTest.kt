@@ -9,8 +9,6 @@ import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
 import android.os.Build
 import androidx.test.core.app.ApplicationProvider
-import com.openandroidintelligence.gateway.events.GatewayEvent
-import com.openandroidintelligence.gateway.events.SseParser
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.InMemoryAuditSink
 import com.openandroidintelligence.kernel.InMemoryPairingGrantStore
@@ -296,6 +294,9 @@ class ReplyNotificationsTest {
         val notification = context.getSystemService(NotificationManager::class.java).activeNotifications.single().notification
         val style = android.app.Notification.Builder.recoverBuilder(context, notification).style as android.app.Notification.MessagingStyle
         val shortcut = context.getSystemService(ShortcutManager::class.java).dynamicShortcuts.single { it.id == notification.shortcutId }
+        val defaultTitle = context.getString(com.openandroidintelligence.ui.resources.R.string.notif_conv_default_title)
+        assertEquals(defaultTitle, shortcut.shortLabel.toString())
+        assertEquals(defaultTitle, style.conversationTitle.toString())
         val participants = org.robolectric.util.ReflectionHelpers.callInstanceMethod<Array<android.app.Person>>(shortcut, "getPersons")
         assertEquals(2, participants.size)
         assertTrue("Android excludes only-bot shortcuts from conversation/bubble eligibility", participants.any { !it.isBot && it.key == style.user.key })
@@ -311,41 +312,107 @@ class ReplyNotificationsTest {
         assertNull(ReplyNotificationSettings(context).liveUpdatesSettingsIntent())
     }
 
-    @Test fun authenticatedRuntimeReceivesSseAndPublishesThenTapOpensMatchingConversationOnly() {
-        clock = System.currentTimeMillis()
-        val gateway = LoopbackGatewayStub()
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
-        try {
-            gateway.respond("/open-android-intelligence/v2/negotiate", """{"protocol":"2.1","data":{"protocol":{"major":2,"minor":1},"features":{"auth":["password","refresh"],"messages":"chat-v1","attachments":"staged-sha256-v1","events":"sse-cursor-v1","deviceRequests":"risk-queue-v1","conversationUi":[]},"limits":{"attachmentTtlSeconds":3600,"eventRetentionSeconds":86400,"maxClockSkewSeconds":120},"gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}""")
-            gateway.respond("/open-android-intelligence/v2/sessions/password", """{"data":{"accountId":"account-a","deviceId":"device-a","sessionId":"session-a","accessToken":"token","refreshCredential":"refresh"}}""")
-            gateway.respond("/open-android-intelligence/v2/conversations", """{"protocol":"2.1","data":{"conversations":[{"conversationId":"initial","title":"Initial","lastMessageAt":"2026-10-17T02:00:00Z"}]}}""")
-            gateway.respond("/open-android-intelligence/v2/conversations/initial/messages", """{"protocol":"2.1","data":{"messages":[],"nextCursor":null,"snapshotRevision":1}}""")
-            gateway.respond("/open-android-intelligence/v2/conversations/conv-a/messages", """{"protocol":"2.1","data":{"messages":[],"nextCursor":null,"snapshotRevision":1}}""")
-            val frames = listOf(message("conversation.message.completed"), status("completed")).joinToString("") {
-                "id: ${it.id}\nevent: ${it.event}\ndata: ${it.data}\n\n"
-            }
-            gateway.respond("/open-android-intelligence/v2/events", frames, contentType = "text/event-stream")
-            val runtime = GatewayRuntime(context, scope,
-                PairingGrantStateHolder(InMemoryPairingGrantStore(), AndroidAuditStore(InMemoryAuditSink())),
-                credentialStore = InMemoryCredentialStore(), deviceKeys = InMemoryDeviceKeySource(), localDocumentKeyProvider = TestDocumentKeys)
-            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
-            val manager = context.getSystemService(NotificationManager::class.java)
-            val deadline = System.currentTimeMillis() + 15_000
-            while (shadowOf(manager).allNotifications.isEmpty() && System.currentTimeMillis() < deadline) {
-                shadowOf(android.os.Looper.getMainLooper()).idle()
-                Thread.sleep(20)
-            }
-            assertEquals("Runtime's actual authenticated SSE callback must publish", 1, shadowOf(manager).allNotifications.size)
-            shadowOf(manager).allNotifications.single().contentIntent.send()
-            val target = requireNotNull(ReplyNotificationTarget.from(shadowOf(context).nextStartedActivity))
-            assertFalse(runtime.openReplyNotification(target.copy(accountId = "other-account")))
-            assertFalse(runtime.openReplyNotification(target.copy(profileId = "other-gateway-profile")))
-            assertTrue(runtime.openReplyNotification(target))
-            assertEquals("conv-a", runtime.controller.value!!.state.value.activeThreadId)
-        } finally {
-            scope.cancel()
-            gateway.closed()
-        }
+    @Test
+    fun failingCommitOnTerminalEventsNeverThrows() {
+        val preferences = FailingCommitPreferences(context.getSharedPreferences("completion-test", Context.MODE_PRIVATE))
+        val throwing = ReplyCompletionObserver(preferences, "profile-a", "account-a", { _, _ -> }, { clock })
+
+        // 终态、状态、取消三类事件都必须只是丢弃围栏，不得把异常抛进事件分发栈。
+        throwing.accept(message("conversation.message.completed"))
+        throwing.accept(status("completed"))
+        throwing.accept(status("failed"))
+        throwing.accept(event("conversation.generation.cancelled", """{"conversationId":"conv-a","generationId":"gen-a"}"""))
+    }
+
+    @Test
+    fun failingCommitStillKeepsLaterEventsWorking() {
+        val preferences = FailingCommitPreferences(context.getSharedPreferences("completion-test", Context.MODE_PRIVATE))
+        val posts = mutableListOf<Pair<ReplyNotificationTarget, String>>()
+        val observer = ReplyCompletionObserver(preferences, "profile-a", "account-a", { target, id -> posts += target to id }, { clock })
+
+        observer.accept(status("delivered"))
+        observer.accept(message("conversation.message.completed"))
+        observer.accept(status("completed"))
+
+        // 围栏没落盘时允许补发提醒，但流程必须走完且不崩溃。
+        assertTrue(posts.isNotEmpty())
+    }
+
+    @Test fun `类型化完成等待同轮次正文和终态且持久围栏阻止重放`() {
+        fun reply(generation: String = "generation", completed: Boolean = true) = notificationReply(clock,
+            profile = "profile-a", account = "account-a", generation = generation, completed = completed)
+        fun success(generation: String = "generation") = notificationStatus(clock,
+            profile = "profile-a", account = "account-a", generation = generation)
+        observer().accept(reply(completed = false))
+        observer().accept(success())
+        assertTrue(posts.isEmpty())
+        observer().accept(reply("other"))
+        assertTrue(posts.isEmpty())
+        observer().accept(reply())
+        assertEquals(1, posts.size)
+        observer().accept(reply())
+        observer().accept(success())
+        assertEquals(1, posts.size)
+        assertEquals("endpoint", posts.single().first.agentId)
+        assertEquals("generation", posts.single().second)
+    }
+
+    @Test fun `类型化完成拒绝其他账号与资料身份`() {
+        val observer = observer()
+        observer.accept(notificationReply(clock, profile = "other-profile", account = "account-a"))
+        observer.accept(notificationStatus(clock, profile = "profile-a", account = "account-a"))
+        observer.accept(notificationReply(clock, profile = "profile-a", account = "other-account"))
+        assertTrue(posts.isEmpty())
+        observer.accept(notificationReply(clock, profile = "profile-a", account = "account-a"))
+        assertEquals(1, posts.size)
+    }
+
+    @Test fun legacyAwaitingAndChangedBackendMessageIdWithSameClientIdCompleteWithoutDuplicatePosts() {
+        val observer = observer()
+        // 1. DELIVERED 与 COMPLETED 携带不同的服务端 messageId，但共享 clientMessageId（且均省略 generationId）
+        observer.accept(status("delivered", generation = null, userId = "tmp-u1", clientId = "client-same"))
+        observer.accept(message("conversation.message.completed", id = "r1", generation = null))
+        assertTrue(posts.isEmpty())
+        observer.accept(status("completed", generation = null, userId = "srv-u1", clientId = "client-same"))
+        assertEquals(1, posts.size)
+
+        // 2. 乱序 legacy：DELIVERED(null) -> COMPLETED(null) -> REPLY_COMPLETED(null) -> 重复重放 REPLY_COMPLETED(null)
+        posts.clear()
+        clock += 50
+        observer.accept(status("delivered", generation = null, userId = "u2", clientId = "client-ooo"))
+        observer.accept(status("completed", generation = null, userId = "u2", clientId = "client-ooo"))
+        assertTrue(posts.isEmpty())
+        observer.accept(message("conversation.message.completed", id = "r2", generation = null))
+        assertEquals(1, posts.size)
+        observer.accept(message("conversation.message.completed", id = "r2", generation = null))
+        assertEquals(1, posts.size)
+    }
+
+    @Test fun preUpgradeLegacyFenceAndReplayedDeliveryDuringAwaitingAreHandledSafely() {
+        val prefs = context.getSharedPreferences("completion-test", Context.MODE_PRIVATE)
+        val delivered = requireNotNull(status("delivered", generation = null, userId = "u-upg", clientId = "client-upg"))
+        val identity = delivered.target.identityKey()
+        val oldDigest = replyDigest("legacy\u0000$identity\u0000u-upg\u0000client-upg")
+        prefs.edit().putLong("done.$oldDigest", clock - 1_000L).commit()
+
+        val observer = observer()
+        // 1. 升级前已完成的旧版 legacy 摘要，重放同一轮事件绝不可重复提醒
+        observer.accept(delivered)
+        observer.accept(message("conversation.message.completed", id = "r-upg", generation = null))
+        observer.accept(status("completed", generation = null, userId = "u-upg", clientId = "client-upg"))
+        assertTrue("旧版 done 围栏升级后仍应阻止重复提醒", posts.isEmpty())
+
+        // 2. COMPLETED 先到进入 awaiting 后，若旧 DELIVERED 重放或重复 COMPLETED 到达，仍必须保留 awaiting 等待正文触发提醒
+        clock += 50
+        observer.accept(status("delivered", generation = null, userId = "u-wait", clientId = "client-wait"))
+        observer.accept(status("completed", generation = null, userId = "u-wait", clientId = "client-wait"))
+        // 另一个已完成旧轮次 u-upg 重放 DELIVERED，绝不能误清当前 u-wait 的 awaiting 状态
+        observer.accept(status("delivered", generation = null, userId = "u-upg", clientId = "client-upg"))
+        // 同一等待中轮次再次收到重复 COMPLETED（如修订号更新）也必须保留 awaiting 状态
+        observer.accept(status("completed", generation = null, userId = "u-wait", clientId = "client-wait"))
+        observer.accept(status("delivered", generation = null, userId = "u-wait", clientId = "client-wait"))
+        observer.accept(message("conversation.message.completed", id = "r-wait", generation = null))
+        assertEquals(1, posts.size)
     }
 
     private fun observer(post: (ReplyNotificationTarget, String) -> Unit = { target, generation -> posts += target to generation }) = ReplyCompletionObserver(
@@ -355,18 +422,27 @@ class ReplyNotificationsTest {
     private fun message(type: String, id: String = "reply", sender: String = "assistant", conversation: String = "conv-a", generation: String? = "gen-a", account: String = "account-a") = event(type,
         """{"conversationId":"$conversation","messageId":"$id",${generationField(generation)}"sender":"$sender","text":"Reply","parts":[{"type":"text","text":"Reply"}],"revision":1}""", account)
 
-    private fun status(status: String, conversation: String = "conv-a", generation: String? = "gen-a", userId: String = "user") = event("conversation.message.status",
-        """{"conversationId":"$conversation","messageId":"$userId","clientMessageId":"client-$userId",${generationField(generation)}"status":"$status","revision":2,"errorCode":${if (status == "failed") "\"AGENT_UNAVAILABLE\"" else "null"}}""")
+    private fun status(status: String, conversation: String = "conv-a", generation: String? = "gen-a", userId: String = "user", clientId: String = "client-$userId") = event("conversation.message.status",
+        """{"conversationId":"$conversation","messageId":"$userId","clientMessageId":"$clientId",${generationField(generation)}"status":"$status","revision":2,"errorCode":${if (status == "failed") "\"AGENT_UNAVAILABLE\"" else "null"}}""")
 
     private fun generationField(generation: String?) = generation?.let { "\"generationId\":\"$it\"," }.orEmpty()
 
-    private fun event(type: String, payload: String, account: String = "account-a"): GatewayEvent = SseParser().feed(
-        "id: event-${++eventNumber}\nevent: $type\ndata: {\"accountId\":\"$account\",\"occurredAt\":\"${Instant.ofEpochMilli(clock)}\",\"payload\":$payload}\n\n",
-    ).single()
+    private fun event(type: String, payload: String, account: String = "account-a"): NativeNotificationInput? =
+        notificationFact("profile-a", account, "event-${++eventNumber}", clock, type, payload)
 
     private class CountingPreferences(private val delegate: SharedPreferences) : SharedPreferences by delegate {
         var allReads = 0
         override fun getAll(): Map<String, *> = delegate.all.also { allReads++ }
+    }
+
+    /** commit 恒失败的偏好：模拟终态到达时磁盘 I/O 争用。 */
+    private class FailingCommitPreferences(private val delegate: SharedPreferences) : SharedPreferences by delegate {
+        override fun edit(): SharedPreferences.Editor {
+            val inner = delegate.edit()
+            return object : SharedPreferences.Editor by inner {
+                override fun commit(): Boolean = false
+            }
+        }
     }
 
     /** Robolectric 4.14 does not retain cached shortcuts or implement their removal. */

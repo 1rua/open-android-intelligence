@@ -16,12 +16,23 @@ class EncryptedAttachmentRecovery(context: Context, scope: ConversationScope,key
             fun s(key:String)=JsonFields.string(row,key) ?: error("ATTACHMENT_MAP_INVALID")
             val size=JsonFields.long(row,"size") ?: error("ATTACHMENT_MAP_INVALID")
             RecoveredAttachmentDraft(AttachmentDraft(AttachmentDraftId(s("id")),s("filename"),s("mediaType"),size,s("sha256")),
-                StagedAttachmentContent(s("stagedId"),size,s("sha256")),JsonFields.string(row,"remoteId"),JsonFields.string(row,"clientAttachmentId"))
+                StagedAttachmentContent(s("stagedId"),size,s("sha256")),JsonFields.string(row,"remoteId"),JsonFields.string(row,"clientAttachmentId"),
+                JsonFields.obj(JsonFields.field(row, "remoteUpload"))?.let { upload ->
+                    fun u(key: String) = JsonFields.string(upload, key) ?: error("ATTACHMENT_MAP_INVALID")
+                    RemoteAttachmentUpload(u("authority"), u("conversationId"), u("uploadId"), u("connectionId"),
+                        JsonFields.long(upload, "connectionGeneration") ?: error("ATTACHMENT_MAP_INVALID"),
+                        RemoteAttachmentUploadPhase.valueOf(u("phase")),
+                        JsonFields.long(upload, "sizeBytes") ?: error("ATTACHMENT_MAP_INVALID"), u("sha256Hex"), JsonFields.string(upload, "path"), JsonFields.string(upload, "name"))
+                })
         }
     }
     override fun save(records: List<RecoveredAttachmentDraft>) { documents.write("drafts",Json.canonical(Json.of(mapOf("drafts" to records.map { r ->
         mapOf("id" to r.draft.id.value,"filename" to r.draft.filename,"mediaType" to r.draft.mediaType,"size" to r.content.sizeBytes,
-            "sha256" to r.content.sha256Hex,"stagedId" to r.content.id,"remoteId" to r.remoteId,"clientAttachmentId" to r.clientAttachmentId)
+            "sha256" to r.content.sha256Hex,"stagedId" to r.content.id,"remoteId" to r.remoteId,"clientAttachmentId" to r.clientAttachmentId,
+            "remoteUpload" to r.remoteUpload?.let { upload -> mapOf("authority" to upload.authority,
+                "conversationId" to upload.conversationId, "uploadId" to upload.uploadId,
+                "connectionId" to upload.connectionId, "connectionGeneration" to upload.connectionGeneration,
+                "phase" to upload.phase.name, "sizeBytes" to upload.sizeBytes, "sha256Hex" to upload.sha256Hex, "path" to upload.path, "name" to upload.name) })
     }))).toByteArray()) }
     fun wipe()=documents.erase()
 }

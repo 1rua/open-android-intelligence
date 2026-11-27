@@ -196,7 +196,7 @@ private fun distanceToSegment(point: Offset, start: Offset, end: Offset): Float 
 /**
  * 自由圈选最多保留的采样点。
  *
- * 裁剪端（`cropPngSelection` / 助理裁剪）只接受 3..4096 个点，超出会整体判为无效；
+ * 助理裁剪只接受 3..4096 个点，超出会整体判为无效；
  * 长手势如果不截断，用户画完却提交不了，还会丢掉整帧截图。
  */
 internal const val MAX_FREEHAND_SAMPLES = 4096

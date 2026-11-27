@@ -1,0 +1,19 @@
+[project]
+name = "open-android-intelligence-tooling"
+version = "0.1.0"
+description = "Open Android Intelligence 工具链与自动化门禁脚本"
+requires-python = ">=3.12"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0,<9",
+  "PyYAML==6.0.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tools"]
+addopts = "-q -p no:cacheprovider"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120

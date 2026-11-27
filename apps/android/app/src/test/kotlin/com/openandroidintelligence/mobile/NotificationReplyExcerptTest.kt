@@ -4,6 +4,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NotificationReplyExcerptTest {
+    private val completeReplyHint = "点击查看完整回复"
+
     @Test fun shortRepliesRemainExactInBothPresentations() {
         listOf("", "Short reply", "中文回复 😀🚀").forEach { text ->
             assertEquals(text, notificationReplyExcerpt(text, isRunning = true))
@@ -19,9 +21,9 @@ class NotificationReplyExcerptTest {
         assertTrue(first.startsWith("…"))
         assertTrue(second.endsWith("second update"))
         assertEquals(RUNNING_REPLY_EXCERPT_CODE_POINTS, second.codePointCount(0, second.length))
-        val terminal = notificationReplyExcerpt("Opening line. " + prefix + "Final answer ending.", isRunning = false)
+        val terminal = notificationReplyExcerpt("Opening line. " + prefix + "Final answer ending.", isRunning = false, completeHint = completeReplyHint)
         assertTrue(terminal.startsWith("Opening line. "))
-        assertTrue(terminal.contains("Final answer ending.\n\n$COMPLETE_REPLY_HINT"))
+        assertTrue(terminal.contains("Final answer ending.\n\n$completeReplyHint"))
         assertEquals(TERMINAL_REPLY_EXCERPT_CODE_POINTS, terminal.codePointCount(0, terminal.length))
     }
 
