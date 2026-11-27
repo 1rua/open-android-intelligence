@@ -9,6 +9,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import com.openandroidintelligence.conversation.model.GenerationState
+import com.openandroidintelligence.conversation.model.MessageReasoning
 import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.model.NativeExecutionStep
 import com.openandroidintelligence.conversation.model.TimelineAttachment
@@ -36,6 +37,7 @@ class ExecutionProcessComposeTest {
         streaming: Boolean = false,
         attachments: List<TimelineAttachment> = emptyList(),
         generationId: String? = null,
+        reasoning: List<MessageReasoning> = emptyList(),
         executionSteps: List<NativeExecutionStep> = emptyList(),
         executionGenerationState: GenerationState? = null,
     ) = TimelineEntry(
@@ -49,6 +51,7 @@ class ExecutionProcessComposeTest {
         attachments = attachments,
         isStreaming = streaming,
         generationId = generationId,
+        reasoning = reasoning,
         executionSteps = executionSteps,
         executionGenerationState = executionGenerationState,
     )
@@ -440,5 +443,145 @@ class ExecutionProcessComposeTest {
         }
 
         compose.onNodeWithTag("message-bubble:empty_inactive_stream").assertDoesNotExist()
+    }
+
+    @Test
+    fun streamingTurnTilesStepsThenCollapsesIntoToolCountCardAfterFinalAnswer() {
+        val toolOneRunning = NativeExecutionStep("s1", "ev1", "read_file", """{"path":"a.kt"}""", null, NativeExecutionStatus.RUNNING, 1L)
+        val toolOneDone = toolOneRunning.copy(output = "ok-a", status = NativeExecutionStatus.COMPLETED, revision = 2L)
+        val toolTwoDone = NativeExecutionStep("s2", "ev2", "bash", "ls", "ok-b", NativeExecutionStatus.COMPLETED, 1L)
+
+        var entries by mutableStateOf(
+            listOf(
+                assistantEntry(
+                    key = "turn-1",
+                    text = "",
+                    streaming = true,
+                    generationId = "g-turn",
+                    reasoning = listOf(MessageReasoning("r1", "正在排查配置", 0, complete = false)),
+                    executionSteps = listOf(toolOneRunning),
+                    executionGenerationState = GenerationState.RUNNING,
+                ),
+            ),
+        )
+        var generation by mutableStateOf(GenerationState.RUNNING)
+
+        compose.setContent {
+            MaterialTheme {
+                MessageTimeline(entries, generation = generation)
+            }
+        }
+
+        // 流式执行中保持平铺，不提前折叠为回合大卡；工具卡默认折叠
+        compose.onNodeWithText("次工具调用", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("正在思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("[read_file]").assertIsDisplayed()
+        compose.onNodeWithText("""{"path":"a.kt"}""").assertDoesNotExist()
+
+        // 回合结束并输出最终回答：收拢进默认折叠的「2 次工具调用」大卡
+        compose.runOnIdle {
+            entries = listOf(
+                assistantEntry(
+                    key = "turn-1",
+                    text = "所有问题已定位并处理。",
+                    streaming = false,
+                    generationId = "g-turn",
+                    reasoning = listOf(MessageReasoning("r1", "排查完成", 0, complete = true)),
+                    executionSteps = listOf(toolOneDone, toolTwoDone),
+                    executionGenerationState = GenerationState.COMPLETED,
+                ),
+            )
+            generation = GenerationState.COMPLETED
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithText("2 次工具调用").assertIsDisplayed()
+        compose.onNodeWithText("所有问题已定位并处理。").assertIsDisplayed()
+        compose.onNodeWithText("[read_file]").assertDoesNotExist()
+        compose.onNodeWithText("[bash]").assertDoesNotExist()
+
+        // 点击大卡展开：按原顺序显示思考与全部工具卡，且内部工具卡保持默认折叠
+        compose.onNodeWithText("2 次工具调用").performClick()
+        val thoughtTop = compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot.top
+        val tool1Top = compose.onNodeWithText("[read_file]").assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot.top
+        val tool2Top = compose.onNodeWithText("[bash]").assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot.top
+        val finalTop = compose.onNodeWithText("所有问题已定位并处理。").assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot.top
+        assertTrue(thoughtTop < tool1Top && tool1Top < tool2Top && tool2Top < finalTop)
+        compose.onNodeWithText("ok-a").assertDoesNotExist()
+        compose.onNodeWithText("ok-b").assertDoesNotExist()
+    }
+
+    @Test
+    fun zeroToolMultiThoughtTurnCollapsesIntoThoughtProcessCardWithoutZeroToolLabel() {
+        val entry = assistantEntry(
+            key = "multi-thought",
+            text = "<think>第一段分析</think>\n中间过程说明\n<think>第二段分析</think>\n最终结论。",
+            streaming = false,
+            generationId = "g-thought-only",
+            executionGenerationState = GenerationState.COMPLETED,
+        )
+
+        compose.setContent {
+            MaterialTheme {
+                MessageTimeline(listOf(entry), generation = GenerationState.COMPLETED)
+            }
+        }
+
+        compose.onNodeWithText("0 次工具调用").assertDoesNotExist()
+        compose.onNodeWithText("思考过程").assertIsDisplayed()
+        compose.onNodeWithText("最终结论。").assertIsDisplayed()
+        compose.onNodeWithText("中间过程说明").assertDoesNotExist()
+
+        compose.onNodeWithText("思考过程").performClick()
+        compose.onAllNodesWithText("已思考", substring = true).assertCountEquals(2)
+        compose.onNodeWithText("中间过程说明").assertIsDisplayed()
+    }
+
+    @Test
+    fun splitNativeToolsAndIndependentFinalAnswerCollapseIntoToolCallsCard() {
+        val entries = listOf(
+            assistantEntry(
+                key = "native-fact-1",
+                text = "",
+                generationId = "g-split",
+                executionGenerationState = GenerationState.COMPLETED,
+                executionSteps = listOf(
+                    NativeExecutionStep("s1", "ev1", "read_file", "{}", "res1", NativeExecutionStatus.COMPLETED),
+                ),
+            ),
+            assistantEntry(
+                key = "native-fact-2",
+                text = "",
+                generationId = "g-split",
+                executionGenerationState = GenerationState.COMPLETED,
+                executionSteps = listOf(
+                    NativeExecutionStep("s2", "ev2", "grep_code", "{}", "res2", NativeExecutionStatus.COMPLETED),
+                ),
+            ),
+            assistantEntry(
+                key = "native-final",
+                text = "独立最终回答。",
+                generationId = "g-split",
+                executionGenerationState = GenerationState.COMPLETED,
+            ),
+        )
+
+        compose.setContent {
+            MaterialTheme {
+                MessageTimeline(entries, generation = GenerationState.COMPLETED)
+            }
+        }
+
+        compose.onNodeWithText("2 次工具调用").assertIsDisplayed()
+        compose.onNodeWithText("独立最终回答。").assertIsDisplayed()
+        compose.onNodeWithText("[read_file]").assertDoesNotExist()
+
+        compose.onNodeWithText("2 次工具调用").performClick()
+        compose.onNodeWithText("[read_file]").assertIsDisplayed()
+        compose.onNodeWithText("[grep_code]").assertIsDisplayed()
     }
 }

@@ -1,20 +1,48 @@
 package com.openandroidintelligence.conversation.workbench
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.view.View
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toPixelMap
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.unit.dp
+import com.openandroidintelligence.conversation.model.GenerationState
+import com.openandroidintelligence.conversation.model.NativeExecutionStatus
+import com.openandroidintelligence.conversation.model.NativeExecutionStep
+import com.openandroidintelligence.conversation.model.StreamPresentationOrigin
+import com.openandroidintelligence.conversation.state.StreamPresentationMetadata
+import com.openandroidintelligence.conversation.state.TimelineEntry
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.MotionPolicy
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class ToolCallCardTest {
 
     @get:Rule
@@ -539,7 +567,7 @@ class ToolCallCardTest {
     }
 
     @Test
-    fun runningToolCallDefaultsToExpandedWithLiveStatus() {
+    fun runningToolCallDefaultsToCollapsedWithLiveStatusAndExpandsOnClick() {
         val block = toolCall(command = "dumpsys battery", isRunning = true)
 
         compose.setContent {
@@ -550,10 +578,255 @@ class ToolCallCardTest {
 
         compose.onNodeWithText("执行中").assertIsDisplayed()
         compose.onNodeWithContentDescription("执行中").assertIsDisplayed()
+        // 需求 3：工具卡片即使在运行中也默认折叠，不自动展开命令详情。
+        compose.onNodeWithText("命令").assertDoesNotExist()
+        compose.onNodeWithText("dumpsys battery").assertDoesNotExist()
+
+        compose.onNodeWithText("执行中").performClick()
         compose.onNodeWithText("命令").assertIsDisplayed()
         compose.onNodeWithText("dumpsys battery").assertIsDisplayed()
         // 运行中还没有输出，不显示「无输出」误导用户。
         compose.onNodeWithText("无输出").assertDoesNotExist()
+    }
+
+    @Test
+    fun unknownNativeStatusExplicitlyShowsNoResultLabelInSummaryAndDetails() {
+        val block = TimelineBlock.ToolCallBlock(
+            toolName = "bash",
+            command = "echo hello",
+            output = null,
+            isSuccess = true,
+            isRunning = false,
+            executionStatus = NativeExecutionStatus.UNKNOWN,
+        )
+
+        compose.setContent {
+            MaterialTheme {
+                MarkdownToolCallView(block = block)
+            }
+        }
+
+        compose.onNodeWithText("未返回结果").assertIsDisplayed()
+        compose.onNodeWithContentDescription("未返回结果").assertIsDisplayed()
+        compose.onNodeWithText("结果未知").assertDoesNotExist()
+
+        compose.onNodeWithText("未返回结果").performClick()
+        compose.onAllNodesWithText("未返回结果").assertCountEquals(2)
+        compose.onNodeWithText("未收到工具结果").assertDoesNotExist()
+    }
+
+    @Test
+    fun toolCardRevealTrackerAnimatesFreshCardOnceAndSkipsHistoryRecycleAndUpdates() {
+        val step1 = NativeExecutionStep("s-hist", "ev-1", "read_file", "{}", "ok1", NativeExecutionStatus.COMPLETED, 1L)
+        val step2Running = NativeExecutionStep("s-live", "ev-2", "bash", "ls", null, NativeExecutionStatus.RUNNING, 1L)
+        val step2Done = step2Running.copy(output = "ok2", status = NativeExecutionStatus.COMPLETED, revision = 2L)
+
+        val historyEntries = listOf(
+            TimelineEntry(
+                key = "e-hist",
+                sender = "assistant",
+                text = "",
+                isUser = false,
+                timestamp = 1L,
+                pendingAcceptance = false,
+                batchGroupId = null,
+                generationId = "g-hist",
+                executionSteps = listOf(step1),
+            ),
+        )
+        val liveEntries = historyEntries + TimelineEntry(
+            key = "e-live",
+            sender = "assistant",
+            text = "",
+            isUser = false,
+            timestamp = 2L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            generationId = "g-live",
+            executionGenerationState = GenerationState.RUNNING,
+            executionSteps = listOf(step2Running),
+        )
+        val settledLiveEntries = historyEntries + TimelineEntry(
+            key = "e-live",
+            sender = "assistant",
+            text = "",
+            isUser = false,
+            timestamp = 2L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            generationId = "g-live",
+            executionGenerationState = GenerationState.COMPLETED,
+            executionSteps = listOf(step2Done),
+        )
+
+        val model = TimelineDisplayModel()
+        val tracker = ToolCardRevealTracker()
+
+        // 未就绪时不建立基线
+        tracker.sync(emptyList(), ready = false)
+        // 首次 Ready 建立历史基线：已有工具卡不播入场显现
+        tracker.sync(model.build(historyEntries, GenerationState.COMPLETED), ready = true)
+        assertFalse(tracker.consumeEntranceAnimation("execution:g-hist:s-hist"))
+
+        // 实时流新增 s-live：首次消费返回 true，随后刷新或滚动回收均返回 false
+        tracker.sync(model.build(liveEntries, GenerationState.RUNNING), ready = true)
+        assertTrue(tracker.consumeEntranceAnimation("execution:g-live:s-live"))
+        assertFalse(tracker.consumeEntranceAnimation("execution:g-live:s-live"))
+
+        tracker.sync(model.build(settledLiveEntries, GenerationState.COMPLETED), ready = true)
+        assertFalse(tracker.consumeEntranceAnimation("execution:g-live:s-live"))
+    }
+
+    @Test
+    fun toolCardRevealTrackerSkipsLateSnapshotEntriesAndProvisionalGenerationUpgrade() {
+        val snapshotStep = NativeExecutionStep("s-snap", "ev-snap", "read_file", "{}", "snap-out", NativeExecutionStatus.COMPLETED, 1L)
+        val provisionalStep = NativeExecutionStep("s-upgrade", "ev-up-1", "bash", "pwd", null, NativeExecutionStatus.RUNNING, 1L)
+        val upgradedStep = provisionalStep.copy(output = "/tmp", status = NativeExecutionStatus.COMPLETED, revision = 2L)
+
+        val model = TimelineDisplayModel()
+        val tracker = ToolCardRevealTracker()
+
+        // 即使会话首次 Ready 时为空，后续补拉的 SNAPSHOT 历史条目也不得触发入场动画
+        tracker.sync(emptyList(), ready = true)
+        val snapshotEntries = listOf(
+            TimelineEntry(
+                key = "e-snap",
+                sender = "assistant",
+                text = "",
+                isUser = false,
+                timestamp = 1L,
+                pendingAcceptance = false,
+                batchGroupId = null,
+                generationId = "g-snap",
+                executionSteps = listOf(snapshotStep),
+                presentation = StreamPresentationMetadata(StreamPresentationOrigin.SNAPSHOT, 1L),
+            ),
+        )
+        tracker.sync(model.build(snapshotEntries, GenerationState.COMPLETED), ready = true)
+        assertFalse(tracker.consumeEntranceAnimation("execution:g-snap:s-snap"))
+
+        // 临时 generationId（request:*）下首次出现的实时工具卡播一次入场动画
+        val provisionalEntries = snapshotEntries + TimelineEntry(
+            key = "e-prov",
+            sender = "assistant",
+            text = "",
+            isUser = false,
+            timestamp = 2L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            generationId = "request:c-1",
+            executionGenerationState = GenerationState.RUNNING,
+            executionSteps = listOf(provisionalStep),
+        )
+        tracker.sync(model.build(provisionalEntries, GenerationState.RUNNING), ready = true)
+        assertTrue(tracker.consumeEntranceAnimation("execution:request:c-1:s-upgrade"))
+
+        // 同一工具调用随后升级为服务端权威 generationId 时，不得重播入场动画
+        val upgradedEntries = snapshotEntries + TimelineEntry(
+            key = "e-auth",
+            sender = "assistant",
+            text = "",
+            isUser = false,
+            timestamp = 2L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            generationId = "g-auth-1",
+            executionGenerationState = GenerationState.COMPLETED,
+            executionSteps = listOf(upgradedStep),
+        )
+        tracker.sync(model.build(upgradedEntries, GenerationState.COMPLETED), ready = true)
+        assertFalse(tracker.consumeEntranceAnimation("execution:g-auth-1:s-upgrade"))
+    }
+
+    @Test
+    fun freshToolCardRevealsLeftToRightAndDegradesToNoDisplacementFadeInReduceMotion() {
+        val backdrop = Color(0xFFFF0000)
+        lateinit var rootView: View
+        val block = toolCall(toolName = "read_file", command = "a.kt", output = "ok")
+
+        // 1. 标准模式：animateEntrance=true 早段左露右裁
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = false)) {
+                MaterialTheme {
+                    rootView = LocalView.current
+                    Box(Modifier.width(240.dp).heightIn(min = 56.dp).background(backdrop).testTag("tool-reveal-host")) {
+                        MarkdownToolCallView(
+                            block = block,
+                            revealKey = "fresh-tool-1",
+                            animateEntrance = true,
+                        )
+                    }
+                }
+            }
+        }
+        repeat(4) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+        val bounds = compose.onNodeWithTag("tool-reveal-host").fetchSemanticsNode().boundsInRoot
+        val earlyMap = compose.runOnIdle {
+            val bitmap = Bitmap.createBitmap(bounds.width.toInt().coerceAtLeast(1), bounds.height.toInt().coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            canvas.translate(-bounds.left, -bounds.top)
+            rootView.draw(canvas)
+            bitmap.asImageBitmap()
+        }.toPixelMap()
+        val leftPixel = earlyMap[(earlyMap.width * 0.1f).toInt(), earlyMap.height / 2]
+        val rightPixel = earlyMap[(earlyMap.width * 0.9f).toInt(), earlyMap.height / 2]
+        assertTrue(leftPixel.red < 0.95f || leftPixel.green > 0.05f || leftPixel.blue > 0.05f, "标准模式早段左侧应已显露出卡片而非纯红背景: left=$leftPixel")
+        assertTrue(rightPixel.red > 0.95f && rightPixel.blue < 0.05f, "标准模式早段右侧应仍被水平裁切保留红色底板: right=$rightPixel")
+
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        // 卡片默认折叠，点击后仍可正常展开
+        compose.onNodeWithText("a.kt").assertDoesNotExist()
+        compose.onNodeWithText("[read_file]").performClick()
+        compose.onNodeWithText("a.kt").assertIsDisplayed()
+    }
+
+    @Test
+    fun freshToolCardDegradesToNoDisplacementLinearFadeInReduceMotion() {
+        val backdrop = Color(0xFFFF0000)
+        lateinit var rootView: View
+        val block = toolCall(toolName = "read_file", command = "a.kt", output = "ok")
+
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = true)) {
+                MaterialTheme {
+                    rootView = LocalView.current
+                    Box(Modifier.size(width = 240.dp, height = 56.dp).background(backdrop).testTag("tool-reveal-reduced-host")) {
+                        MarkdownToolCallView(
+                            block = block,
+                            revealKey = "fresh-tool-reduced",
+                            animateEntrance = true,
+                        )
+                    }
+                }
+            }
+        }
+        repeat(5) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+        val bounds = compose.onNodeWithTag("tool-reveal-reduced-host").fetchSemanticsNode().boundsInRoot
+        val midMap = compose.runOnIdle {
+            val bitmap = Bitmap.createBitmap(bounds.width.toInt().coerceAtLeast(1), bounds.height.toInt().coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            canvas.translate(-bounds.left, -bounds.top)
+            rootView.draw(canvas)
+            bitmap.asImageBitmap()
+        }.toPixelMap()
+        // 采样上下卡片底色区（避开文字区域）验证左右两端同步半透明淡入、无水平裁切差值
+        val leftBg = midMap[(midMap.width * 0.08f).toInt(), (midMap.height * 0.15f).toInt()]
+        val rightBg = midMap[(midMap.width * 0.92f).toInt(), (midMap.height * 0.15f).toInt()]
+        assertTrue(leftBg.red < 0.98f || leftBg.green > 0.05f || leftBg.blue > 0.05f, "减少动态中段左侧应处于半透明淡入而非纯红: left=$leftBg")
+        assertTrue(rightBg.red < 0.98f || rightBg.green > 0.05f || rightBg.blue > 0.05f, "减少动态中段右侧应同样处于半透明淡入而非被水平裁切: right=$rightBg")
+        assertEquals(leftBg.red, rightBg.red, 0.05f)
+        assertEquals(leftBg.blue, rightBg.blue, 0.05f)
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
     }
 
     @Test

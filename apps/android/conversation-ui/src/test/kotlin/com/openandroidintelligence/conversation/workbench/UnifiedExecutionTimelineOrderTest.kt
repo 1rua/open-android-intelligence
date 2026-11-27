@@ -228,6 +228,7 @@ class UnifiedExecutionTimelineOrderTest {
                 }
             }
 
+            compose.onNodeWithText("2 次工具调用").assertIsDisplayed().performClick()
             val thoughts = compose.onAllNodesWithText("已思考", substring = true).fetchSemanticsNodes()
             assertEquals(2, thoughts.size)
             val thought1Top = thoughts[0].positionInRoot.y
@@ -281,6 +282,7 @@ class UnifiedExecutionTimelineOrderTest {
             }
         }
 
+        compose.onNodeWithText("2 次工具调用").assertIsDisplayed().performClick()
         val narrativeTop = compose.onNodeWithText("先说明背景。").fetchSemanticsNode().positionInRoot.y
         val thoughts = compose.onAllNodesWithText("已思考", substring = true).fetchSemanticsNodes()
         assertEquals(2, thoughts.size)
@@ -333,6 +335,7 @@ class UnifiedExecutionTimelineOrderTest {
             }
         }
 
+        compose.onNodeWithText("2 次工具调用").assertIsDisplayed().performClick()
         val prefixTop = compose.onNodeWithText("准备开始排查。").fetchSemanticsNode().positionInRoot.y
         val thoughts = compose.onAllNodesWithText("已思考", substring = true).fetchSemanticsNodes()
         assertEquals(2, thoughts.size)
@@ -371,6 +374,7 @@ class UnifiedExecutionTimelineOrderTest {
             }
         }
 
+        compose.onNodeWithText("1 次工具调用").assertIsDisplayed().performClick()
         compose.onAllNodesWithText("[read_file]").assertCountEquals(1)
         val prefixTop = compose.onNodeWithText("我先读取配置文件。").fetchSemanticsNode().positionInRoot.y
         val toolTop = compose.onNodeWithText("[read_file]").fetchSemanticsNode().positionInRoot.y
@@ -436,6 +440,7 @@ class UnifiedExecutionTimelineOrderTest {
         generation = GenerationState.COMPLETED
         compose.waitForIdle()
 
+        compose.onNodeWithText("1 次工具调用").assertIsDisplayed().performClick()
         val thoughts = compose.onAllNodesWithText("已思考", substring = true).fetchSemanticsNodes()
         assertEquals(2, thoughts.size)
         val t1Top = thoughts[0].positionInRoot.y
@@ -529,6 +534,7 @@ class UnifiedExecutionTimelineOrderTest {
             }
         }
 
+        compose.onNodeWithText("2 次工具调用").assertIsDisplayed().performClick()
         val thoughts = compose.onAllNodesWithText("已思考", substring = true).fetchSemanticsNodes()
         assertEquals(2, thoughts.size)
         val t1Top = thoughts[0].positionInRoot.y

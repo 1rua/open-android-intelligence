@@ -407,6 +407,12 @@ class AssistantTimelineViewTest {
 
         setTimeline(entries = listOf(userEntry("u1", "查一下状态"), turn), generation = GenerationState.COMPLETED)
 
+        val summaryTop = compose.onNodeWithText("2 次工具调用").assertIsDisplayed()
+            .fetchSemanticsNode().positionInRoot.y
+        val finalTopCollapsed = compose.onNodeWithText("浮窗最终回复。").fetchSemanticsNode().positionInRoot.y
+        assertTrue("浮窗折叠大卡($summaryTop) < 最终回复($finalTopCollapsed)", summaryTop < finalTopCollapsed)
+
+        compose.onNodeWithText("2 次工具调用").performClick()
         val thoughts = compose.onAllNodesWithText("已思考", substring = true).fetchSemanticsNodes()
         assertEquals(2, thoughts.size)
         val t1Top = thoughts[0].positionInRoot.y
@@ -416,5 +422,44 @@ class AssistantTimelineViewTest {
         val finalTop = compose.onNodeWithText("浮窗最终回复。").fetchSemanticsNode().positionInRoot.y
         assertTrue("浮窗思考1($t1Top) < 工具A($toolATop) < 思考2($t2Top) < 工具B($toolBTop) < 最终回复($finalTop)",
             t1Top < toolATop && toolATop < t2Top && t2Top < toolBTop && toolBTop < finalTop)
+    }
+
+    @Test
+    fun assistantTimelineRespectsDurationScaleZeroReduceMotionAndToolCardCollapse() {
+        val tool = NativeExecutionStep("t-rm", "e-rm", "bash", "echo hi", null, NativeExecutionStatus.RUNNING, 1L)
+        var entries by mutableStateOf(listOf(userEntry("u1", "执行命令")))
+        compose.setContent {
+            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = false, durationScale = 0f)) {
+                MaterialTheme {
+                    AssistantTimelineView(
+                        entries = entries,
+                        previews = AssistantLocalPreviews(),
+                        threadId = "thread_rm",
+                        generation = GenerationState.RUNNING,
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            entries = entries + TimelineEntry(
+                key = "a-tool",
+                sender = "assistant",
+                text = "",
+                isUser = false,
+                timestamp = 2L,
+                pendingAcceptance = false,
+                batchGroupId = null,
+                isStreaming = true,
+                generationId = "g-rm",
+                executionGenerationState = GenerationState.RUNNING,
+                executionSteps = listOf(tool),
+            )
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("[bash]").assertIsDisplayed()
+        compose.onNodeWithText("echo hi").assertDoesNotExist()
+        compose.onNodeWithText("[bash]").performClick()
+        compose.onNodeWithText("echo hi").assertIsDisplayed()
     }
 }

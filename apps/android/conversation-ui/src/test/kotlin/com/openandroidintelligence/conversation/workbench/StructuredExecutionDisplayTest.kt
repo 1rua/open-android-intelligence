@@ -270,4 +270,152 @@ class StructuredExecutionDisplayTest {
         assertEquals("final", final.text)
     }
 
+    @Test
+    fun completedNativeRunFollowedBySameTurnFinalAnswerMarksHasCompletedFinalAnswer() {
+        val model = TimelineDisplayModel()
+        val runningFinal = model.build(
+            listOf(
+                entry("call-1", "g-one", steps = listOf(step("s1"))),
+                entry("final", "g-one", "正在输出最终回答").copy(isStreaming = true),
+            ),
+            generation = GenerationState.RUNNING,
+        )
+        assertFalse((runningFinal[0] as TimelineDisplayItem.Execution).run.hasCompletedFinalAnswer)
+
+        val completed = model.build(
+            listOf(
+                entry("call-1", "g-one", steps = listOf(step("s1"))),
+                entry("final", "g-one", "完整最终回答"),
+            ),
+            generation = GenerationState.COMPLETED,
+        )
+        assertEquals(2, completed.size)
+        val run = (completed[0] as TimelineDisplayItem.Execution).run
+        assertFalse(run.hasFinalAnswer, "兼容既有 [Execution, Single(final)] 拆分契约")
+        assertTrue(run.hasCompletedFinalAnswer, "紧随同回合已完成独立回答时应允许回合折叠")
+    }
+
+    @Test
+    fun sameGenerationInterleavedNarrativeAndMultipleToolsAggregateIntoOneRun() {
+        val items = TimelineDisplayModel().build(
+            listOf(
+                entry("fact-1", "g-multi", steps = listOf(step("s1"))).copy(executionFact = true),
+                entry("mid-note", "g-multi", "先读取配置，继续执行第二项检查。"),
+                entry("fact-2", "g-multi", steps = listOf(step("s2"))).copy(executionFact = true),
+                entry("final-note", "g-multi", "全部检查完毕。"),
+            ),
+            generation = GenerationState.COMPLETED,
+        )
+        assertEquals(1, items.size, "同一回合穿插中间正文与多次工具调用必须聚合为唯一执行段")
+        val run = (items.single() as TimelineDisplayItem.Execution).run
+        assertTrue(run.hasFinalAnswer)
+        assertTrue(run.hasCompletedFinalAnswer)
+        assertEquals(
+            listOf("s1", "s2"),
+            run.steps.filterIsInstance<ExecutionStep.ToolCall>().map { it.nativeStepId },
+        )
+        assertTrue(run.steps.any { it is ExecutionStep.Narrative })
+    }
+
+    @Test
+    fun duplicateStepIdAcrossEphemeralGenerationMergesNonDestructivelyWithoutDuplicatingCard() {
+        val initial = NativeExecutionStep(
+            stepId = "  call_abc  ",
+            eventId = "ev-1",
+            toolName = "read_file",
+            arguments = """{"path":"README.md"}""",
+            output = null,
+            status = NativeExecutionStatus.RUNNING,
+            revision = 1L,
+        )
+        val degradedLater = NativeExecutionStep(
+            stepId = "call_abc",
+            eventId = "ev-2",
+            toolName = "tool",
+            arguments = "",
+            output = "README content",
+            status = NativeExecutionStatus.COMPLETED,
+            revision = 2L,
+        )
+        val degradedBlankOutput = NativeExecutionStep(
+            stepId = "call_abc",
+            eventId = "ev-3",
+            toolName = "",
+            arguments = "",
+            output = null,
+            status = NativeExecutionStatus.UNKNOWN,
+            revision = 3L,
+        )
+        val items = TimelineDisplayModel().build(
+            listOf(
+                entry("live-exec", "remote-execution:tmp-1", steps = listOf(initial)).copy(executionFact = true),
+                entry("hist-exec", "g-authoritative", text = "读取结果如上。", steps = listOf(degradedLater)),
+                entry("late-noise", "history-turn:tmp-2", steps = listOf(degradedBlankOutput)).copy(executionFact = true),
+            ),
+            generation = GenerationState.COMPLETED,
+        )
+        val runs = items.filterIsInstance<TimelineDisplayItem.Execution>().map { it.run }
+        assertEquals(1, runs.size, "跨临时 generationId 别名不得拆出第二张执行卡")
+        val tools = runs.single().steps.filterIsInstance<ExecutionStep.ToolCall>()
+        assertEquals(1, tools.size, "同 stepId 去空白后必须归并为唯一工具卡")
+        val merged = tools.single().block
+        assertEquals("read_file", merged.toolName, "不得以占位名 tool 或空白覆盖有效工具名")
+        assertEquals("""{"path":"README.md"}""", merged.command, "不得以空白覆盖已有入参")
+        assertEquals("README content", merged.output, "不得以 null 覆盖已有工具输出")
+        assertEquals(NativeExecutionStatus.COMPLETED, merged.executionStatus, "已终态不得退化为 UNKNOWN")
+        assertTrue(runs.single().hasCompletedFinalAnswer)
+    }
+
+    @Test
+    fun acpProvisionalGenerationMergesWithToolCallPairingAndMarksSplitFinalAnswerCompleted() {
+        val callStep = NativeExecutionStep(
+            stepId = "call_acp_1",
+            eventId = "ev-acp-1",
+            toolName = "shell_exec",
+            arguments = """{"cmd":"uname -a"}""",
+            output = null,
+            status = NativeExecutionStatus.RUNNING,
+            revision = 1L,
+        )
+        val resultWithWrapperNameAndEmptyJsonArgs = NativeExecutionStep(
+            stepId = " call_acp_1 ",
+            eventId = "ev-acp-2",
+            toolName = "tool_result",
+            arguments = "{}",
+            output = "Linux android",
+            status = NativeExecutionStatus.COMPLETED,
+            revision = 2L,
+        )
+        val items = TimelineDisplayModel().build(
+            listOf(
+                entry("acp-exec", "acp-turn:7", steps = listOf(callStep)).copy(executionFact = true),
+                entry("acp-result", "g-acp-auth", steps = listOf(resultWithWrapperNameAndEmptyJsonArgs)).copy(executionFact = true),
+                entry("acp-final", "g-acp-auth", text = "系统版本已确认。"),
+            ),
+            generation = GenerationState.COMPLETED,
+        )
+        assertEquals(2, items.size)
+        val run = (items[0] as TimelineDisplayItem.Execution).run
+        val tools = run.steps.filterIsInstance<ExecutionStep.ToolCall>()
+        assertEquals(1, tools.size, "acp-turn 临时 generation 与权威 generation 的同 stepId 必须归并")
+        assertEquals("shell_exec", tools.single().block.toolName, "不得以 ToolCallPairing 占位名 tool_result 覆盖真实工具名")
+        assertEquals("""{"cmd":"uname -a"}""", tools.single().block.command, "不得以退化空对象 {} 覆盖已有有效入参")
+        assertEquals("Linux android", tools.single().block.output)
+        assertTrue(run.hasCompletedFinalAnswer, "拆分独立最终回答到达后应允许回合折叠")
+    }
+
+    @Test
+    fun provisionalNativeExecutionFollowedByAuthoritativeSingleFinalAnswerCollapses() {
+        val items = TimelineDisplayModel().build(
+            listOf(
+                entry("fact-tmp", "remote-execution:s1", steps = listOf(step("s-only"))).copy(executionFact = true),
+                entry("final-auth", "g-server-42", text = "最终回答。"),
+            ),
+            generation = GenerationState.COMPLETED,
+        )
+        assertEquals(2, items.size)
+        val run = (items[0] as TimelineDisplayItem.Execution).run
+        assertTrue(run.hasCompletedFinalAnswer, "临时 generation 的纯工具段紧随权威 generation 最终回答也应折叠")
+    }
+
 }

@@ -6,6 +6,8 @@ import com.openandroidintelligence.conversation.model.ExecutionTimelineStep
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.model.NativeExecutionStep
+import com.openandroidintelligence.conversation.model.StreamPresentationOrigin
+import com.openandroidintelligence.conversation.model.ToolCallPairing
 import com.openandroidintelligence.conversation.state.TimelineEntry
 
 /**
@@ -64,6 +66,13 @@ data class AssistantExecutionRun(
     /** 只有最终回答所在消息仍在流式时，才在最终正文末尾画光标。 */
     val finalEntryIsStreaming: Boolean,
     val hasFinalAnswer: Boolean,
+    /**
+     * 本回合是否已结束且输出了最终回答（用于决定是否收拢中间过程大卡片）：
+     * 当 `!isStreaming` 且满足以下任一条件时为 `true`：
+     * 1. 本执行段内部已包含最终回答（`hasFinalAnswer == true`）；
+     * 2. 纯原生工具执行段紧随同回合已完成的独立最终助手回答（兼容 `[Execution, Single(final)]` 拆分契约）。
+     */
+    val hasCompletedFinalAnswer: Boolean = !isStreaming && hasFinalAnswer,
     /** 宿主明确提供的任务身份，与连续展示段的身份分开保存。 */
     val generationId: String? = null,
 )
@@ -96,6 +105,7 @@ sealed interface ExecutionStep {
         val blockIndex: Int,
         val entryIsStreaming: Boolean,
         val nativeStepId: String? = null,
+        val isSnapshot: Boolean = false,
     ) : ExecutionStep {
         override val stepKey: String get() = nativeStepId?.let { "$entryKey:$it" } ?: "$entryKey#$blockIndex"
     }
@@ -185,22 +195,68 @@ class TimelineDisplayModel(
             return emptyList()
         }
 
-        // 同任务同一步的后续快照只更新首次来源位置，不能跨引导复制卡片。
+        // 同任务同一步的后续快照只更新首次来源位置，不能跨引导复制卡片；
+        // 以去空白后的 stepId 为核心键，兼容跨临时 generationId 别名合并，并采用非破坏性字段保留。
         val latestNativeSteps = linkedMapOf<Pair<String, String>, NativeExecutionStep>()
         val nativeStepSources = mutableMapOf<Pair<String, String>, Int>()
+        val identityAliases = mutableMapOf<Pair<String, String>, Pair<String, String>>()
+        val canonicalKeysByStepId = mutableMapOf<String, MutableList<Pair<String, String>>>()
+        val ephemeralToAuthoritativeGeneration = mutableMapOf<String, String>()
+
+        fun hasTurnBreakBetween(fromIndex: Int, toIndex: Int): Boolean {
+            for (idx in (fromIndex + 1) until toIndex) {
+                if (!isExecutionEligible(entries[idx])) return true
+            }
+            return false
+        }
+
         entries.forEachIndexed { index, entry ->
             val generationId = entry.generationId?.takeIf { it.isNotBlank() }
             if (!isExecutionEligible(entry) || generationId == null) return@forEachIndexed
-            entry.allNativeSteps().forEach { step ->
-                val identity = generationId to step.stepId
-                val previous = latestNativeSteps[identity]
+            entry.allNativeSteps().forEach { rawStep ->
+                val cleanStepId = normalizeNativeStepId(rawStep.stepId)
+                val step = if (rawStep.stepId == cleanStepId) rawStep else rawStep.copy(stepId = cleanStepId)
+                val rawIdentity = generationId to cleanStepId
+                val canonical = identityAliases[rawIdentity] ?: run {
+                    val existingMatch = canonicalKeysByStepId[cleanStepId]
+                        ?.lastOrNull { existingKey ->
+                            val existingGen = existingKey.first
+                            val existingIndex = nativeStepSources[existingKey] ?: return@lastOrNull false
+                            (ToolCallPairing.isProvisionalGenerationId(generationId) ||
+                                ToolCallPairing.isProvisionalGenerationId(existingGen)) &&
+                                !hasTurnBreakBetween(existingIndex, index)
+                        }
+                    if (existingMatch != null) {
+                        val existingGen = existingMatch.first
+                        if (ToolCallPairing.isProvisionalGenerationId(existingGen) &&
+                            !ToolCallPairing.isProvisionalGenerationId(generationId)
+                        ) {
+                            ephemeralToAuthoritativeGeneration[existingGen] = generationId
+                        } else if (!ToolCallPairing.isProvisionalGenerationId(existingGen) &&
+                            ToolCallPairing.isProvisionalGenerationId(generationId)
+                        ) {
+                            ephemeralToAuthoritativeGeneration[generationId] = existingGen
+                        }
+                        existingMatch
+                    } else {
+                        rawIdentity
+                    }
+                }
+                identityAliases[rawIdentity] = canonical
+                val previous = latestNativeSteps[canonical]
                 if (previous == null) {
-                    nativeStepSources[identity] = index
-                    latestNativeSteps[identity] = step
+                    nativeStepSources[canonical] = index
+                    latestNativeSteps[canonical] = step
+                    canonicalKeysByStepId.getOrPut(cleanStepId) { mutableListOf() }.add(canonical)
                 } else {
-                    latestNativeSteps[identity] = previous.applyNewerSnapshot(step)
+                    latestNativeSteps[canonical] = previous.mergeDisplaySnapshot(step)
                 }
             }
+        }
+
+        fun effectiveGenerationId(rawGenerationId: String?): String? {
+            val clean = rawGenerationId?.takeIf { it.isNotBlank() } ?: return null
+            return ephemeralToAuthoritativeGeneration[clean] ?: clean
         }
 
         val items = mutableListOf<TimelineDisplayItem>()
@@ -212,53 +268,65 @@ class TimelineDisplayModel(
             turnSegment.clear()
         }
 
-        fun hasTrailingExecutionInSameGeneration(fromIndex: Int, generationId: String?): Boolean {
-            if (generationId.isNullOrBlank()) return false
+        fun hasTrailingExecutionInSameGeneration(fromIndex: Int, resolvedGenerationId: String?): Boolean {
+            if (resolvedGenerationId.isNullOrBlank()) return false
             for (nextIdx in (fromIndex + 1) until entries.size) {
                 val next = entries[nextIdx]
-                if (!isExecutionEligible(next) || next.generationId != generationId) return false
-                val nextIsPureExecutionWithoutText = next.executionFact ||
-                    ((next.allNativeSteps().isNotEmpty() || next.hasReasoningSteps) &&
-                        next.text.isBlank() &&
-                        next.attachments.isEmpty())
-                return nextIsPureExecutionWithoutText
+                if (!isExecutionEligible(next) || effectiveGenerationId(next.generationId) != resolvedGenerationId) {
+                    return false
+                }
+                val hasExecutionPayload = next.executionFact ||
+                    next.allNativeSteps().isNotEmpty() ||
+                    next.hasReasoningSteps ||
+                    mayContainExecutionMarkup(next.text)
+                if (hasExecutionPayload) return true
             }
             return false
         }
 
-        entries.forEachIndexed { index, entry ->
-            if (!isExecutionEligible(entry)) {
+        entries.forEachIndexed { index, rawEntry ->
+            if (!isExecutionEligible(rawEntry)) {
                 flushTurnSegment()
-                items += TimelineDisplayItem.Single(entry)
+                items += TimelineDisplayItem.Single(rawEntry)
                 return@forEachIndexed
+            }
+
+            val rawGenerationId = rawEntry.generationId?.takeIf { it.isNotBlank() }
+            val resolvedGenerationId = effectiveGenerationId(rawGenerationId)
+            val entry = if (rawGenerationId != null && resolvedGenerationId != null && resolvedGenerationId != rawGenerationId) {
+                rawEntry.copy(generationId = resolvedGenerationId)
+            } else {
+                rawEntry
             }
 
             if (turnSegment.isNotEmpty() && turnSegment.last().entry.generationId != entry.generationId) {
                 flushTurnSegment()
             }
 
-            val generationId = entry.generationId?.takeIf { it.isNotBlank() }
-            val allEntryNative = if (generationId != null) entry.allNativeSteps() else emptyList()
-            val sourceSteps = if (generationId != null && allEntryNative.isNotEmpty()) {
-                allEntryNative.distinctBy { it.stepId }.mapNotNull { step ->
-                    val identity = generationId to step.stepId
-                    if (nativeStepSources[identity] == index) latestNativeSteps[identity] else null
-                }
+            val allEntryNative = if (rawGenerationId != null) rawEntry.allNativeSteps() else emptyList()
+            val sourceSteps = if (rawGenerationId != null && allEntryNative.isNotEmpty()) {
+                allEntryNative
+                    .distinctBy { normalizeNativeStepId(it.stepId) }
+                    .mapNotNull { step ->
+                        val cleanStepId = normalizeNativeStepId(step.stepId)
+                        val canonical = identityAliases[rawGenerationId to cleanStepId] ?: (rawGenerationId to cleanStepId)
+                        if (nativeStepSources[canonical] == index) latestNativeSteps[canonical] else null
+                    }
             } else {
                 emptyList()
             }
-            val sourceStepById = sourceSteps.associateBy { it.stepId }
+            val sourceStepById = sourceSteps.associateBy { normalizeNativeStepId(it.stepId) }
             val hasOwnThinking = entry.hasReasoningSteps
             val hasMarkup = mayContainExecutionMarkup(entry.text)
             val hasTimelineSteps = entry.timelineSteps.isNotEmpty()
             val hasInterleavedToolOffset = entry.timelineSteps.any { it.bodyOffset > 0 }
 
-            if (generationId != null && allEntryNative.isNotEmpty() && !hasOwnThinking && !hasMarkup && !hasInterleavedToolOffset) {
+            if (resolvedGenerationId != null && allEntryNative.isNotEmpty() && !hasOwnThinking && !hasMarkup && !hasInterleavedToolOffset) {
                 // 纯原生工具条目：如果带重复步骤（已在前序渲染），跳过工具卡但保留合法正文/附件。
                 if (sourceSteps.isNotEmpty()) {
                     val toolTimelineSteps = entry.timelineSteps.mapNotNull { step ->
                         if (step is ExecutionTimelineStep.ToolCallStep) {
-                            sourceStepById[step.stepId]?.let { updated -> step.copy(step = updated) }
+                            sourceStepById[normalizeNativeStepId(step.stepId)]?.let { updated -> step.copy(step = updated) }
                         } else null
                     }
                     val toolOnlyEntry = entry.copy(
@@ -277,7 +345,7 @@ class TimelineDisplayModel(
                 if (entry.text.isNotBlank() || entry.attachments.isNotEmpty()) {
                     val stripped = entry.copy(executionSteps = emptyList(), timelineSteps = emptyList())
                     if (turnSegment.isNotEmpty() && turnSegment.all { it.nativeOnly } &&
-                        !hasTrailingExecutionInSameGeneration(index, generationId)
+                        !hasTrailingExecutionInSameGeneration(index, resolvedGenerationId)
                     ) {
                         // 纯原生工具段后的独立正文保持单条气泡（兼容既有一体化源消息与原生步骤契约）。
                         flushTurnSegment()
@@ -287,7 +355,7 @@ class TimelineDisplayModel(
                         turnSegment += TurnSegmentItem(stripped, emptyList(), nativeOnly = false, analysis = analysis)
                         if ((!stripped.isStreaming || generation?.isTerminal() == true || stripped.executionGenerationState?.isTerminal() == true) &&
                             analysis.finalVisible &&
-                            !hasTrailingExecutionInSameGeneration(index, generationId)
+                            !hasTrailingExecutionInSameGeneration(index, resolvedGenerationId)
                         ) {
                             flushTurnSegment()
                         }
@@ -299,12 +367,12 @@ class TimelineDisplayModel(
             // 含思考 / 异构 timelineSteps / 标记工具 / 普通正文
             val filteredTimelineSteps = if (!hasTimelineSteps) {
                 emptyList()
-            } else if (generationId != null) {
+            } else if (resolvedGenerationId != null) {
                 entry.timelineSteps.mapNotNull { step ->
                     when (step) {
                         is ExecutionTimelineStep.ThinkingStep -> step
                         is ExecutionTimelineStep.ToolCallStep ->
-                            sourceStepById[step.stepId]?.let { updated -> step.copy(step = updated) }
+                            sourceStepById[normalizeNativeStepId(step.stepId)]?.let { updated -> step.copy(step = updated) }
                     }
                 }
             } else {
@@ -319,7 +387,11 @@ class TimelineDisplayModel(
                 sourceSteps.isEmpty() &&
                 filteredTimelineSteps.isEmpty()
 
-            if (isPlainAnswerWithoutExecution && turnSegment.isNotEmpty() && turnSegment.all { it.nativeOnly }) {
+            if (isPlainAnswerWithoutExecution &&
+                turnSegment.isNotEmpty() &&
+                turnSegment.all { it.nativeOnly } &&
+                !hasTrailingExecutionInSameGeneration(index, resolvedGenerationId)
+            ) {
                 // 纯工具段（无任何思考/标记）紧接纯最终答案时，保持工具段与最终答案独立（既有契约）。
                 flushTurnSegment()
             }
@@ -331,17 +403,71 @@ class TimelineDisplayModel(
                 nativeOnly = false,
                 analysis = analysis,
             )
-            // 已完成且有正常正文的消息在其后不存在同回合纯执行事实时才作为回答边界收口，
-            // 防止排在后方的同回合 execution-fact 工具行在流结束瞬间掉到最终回答下方。
+            // 已完成且有正常正文的消息在其后不存在同回合执行事实时才作为回答边界收口，
+            // 防止同回合多段工具与中间叙述被拆成多张折叠卡片或排到最终回答下方。
             val entryTerminal = !cleanedEntry.isStreaming ||
                 generation?.isTerminal() == true ||
                 cleanedEntry.executionGenerationState?.isTerminal() == true
-            if (entryTerminal && analysis.finalVisible && !hasTrailingExecutionInSameGeneration(index, generationId)) {
+            if (entryTerminal && analysis.finalVisible && !hasTrailingExecutionInSameGeneration(index, resolvedGenerationId)) {
                 flushTurnSegment()
             }
         }
         flushTurnSegment()
-        return retainUserItemKeys(items)
+        val withCompletionFlags = markCompletedFinalAnswers(items, generation)
+        return retainUserItemKeys(withCompletionFlags)
+    }
+
+    /**
+     * 为执行段补齐 [AssistantExecutionRun.hasCompletedFinalAnswer]：
+     * 既覆盖段内自带最终正文，也覆盖纯原生工具段紧随同回合独立最终助手气泡（`[Execution, Single(final)]`）的契约。
+     */
+    private fun markCompletedFinalAnswers(
+        items: List<TimelineDisplayItem>,
+        generation: GenerationState?,
+    ): List<TimelineDisplayItem> {
+        val activeTopGeneration = generation == GenerationState.RUNNING ||
+            generation == GenerationState.QUEUED ||
+            generation == GenerationState.CANCEL_REQUESTED
+        return items.mapIndexed { index, item ->
+            if (item !is TimelineDisplayItem.Execution) return@mapIndexed item
+            val run = item.run
+            if (run.isStreaming) {
+                return@mapIndexed if (run.hasCompletedFinalAnswer) {
+                    item.copy(run = run.copy(hasCompletedFinalAnswer = false))
+                } else {
+                    item
+                }
+            }
+            if (run.hasFinalAnswer) {
+                return@mapIndexed if (run.hasCompletedFinalAnswer) {
+                    item
+                } else {
+                    item.copy(run = run.copy(hasCompletedFinalAnswer = true))
+                }
+            }
+            val nextSingle = items.getOrNull(index + 1) as? TimelineDisplayItem.Single
+            val nextEntry = nextSingle?.entry
+            val sameTurnGeneration = when {
+                nextEntry == null -> false
+                run.generationId != null && nextEntry.generationId != null ->
+                    nextEntry.generationId == run.generationId ||
+                        ToolCallPairing.isProvisionalGenerationId(run.generationId) ||
+                        ToolCallPairing.isProvisionalGenerationId(nextEntry.generationId)
+                else -> true
+            }
+            val followedByCompletedSameTurnAnswer = nextEntry != null &&
+                isExecutionEligible(nextEntry) &&
+                sameTurnGeneration &&
+                nextEntry.text.isNotBlank() &&
+                !nextEntry.isStreaming &&
+                (nextEntry.executionGenerationState == null || nextEntry.executionGenerationState.isTerminal()) &&
+                !(activeTopGeneration && index + 1 == items.lastIndex && nextEntry.executionGenerationState?.isTerminal() != true)
+            if (followedByCompletedSameTurnAnswer == run.hasCompletedFinalAnswer) {
+                item
+            } else {
+                item.copy(run = run.copy(hasCompletedFinalAnswer = followedByCompletedSameTurnAnswer))
+            }
+        }
     }
 
     private fun retainUserItemKeys(items: List<TimelineDisplayItem>): List<TimelineDisplayItem> {
@@ -468,6 +594,7 @@ class TimelineDisplayModel(
                         blockIndex = nativeToolOrdinal++,
                         entryIsStreaming = streamActive && status == NativeExecutionStatus.RUNNING,
                         nativeStepId = step.stepId,
+                        isSnapshot = entry.presentation?.origin == StreamPresentationOrigin.SNAPSHOT,
                     )
                 }
                 return@forEach
@@ -508,6 +635,7 @@ class TimelineDisplayModel(
                                 entry.isStreaming && streamActive
                             },
                             nativeStepId = ordered.nativeStepId,
+                            isSnapshot = entry.presentation?.origin == StreamPresentationOrigin.SNAPSHOT,
                         )
                     }
 
@@ -677,19 +805,68 @@ class TimelineDisplayModel(
     }
 }
 
+private fun normalizeNativeStepId(stepId: String): String =
+    ToolCallPairing.normalizeCallId(stepId) ?: stepId
+
+/**
+ * UI 层非破坏性合并同一步骤的前后快照，统一委托给领域层唯一权威实现
+ * [ToolCallPairing.mergeSteps] 与 [NativeExecutionStep.applyNewerSnapshot]：
+ * - 高修订号优先，且已终态绝不被非终态倒退；
+ * - 低修订号或同修订号晚到快照仍非破坏性补全有效工具名、入参与输出，并保留首次调用顺序与来源升级。
+ */
+private fun NativeExecutionStep.mergeDisplaySnapshot(incoming: NativeExecutionStep): NativeExecutionStep {
+    val existingTerminal = ToolCallPairing.isTerminalStatus(status)
+    val incomingTerminal = ToolCallPairing.isTerminalStatus(incoming.status)
+    if (incoming.revision > revision) {
+        return if (existingTerminal && !incomingTerminal) {
+            ToolCallPairing.mergeSteps(this, incoming)
+        } else {
+            applyNewerSnapshot(incoming)
+        }
+    }
+    val preferIncoming = when {
+        existingTerminal && !incomingTerminal -> false
+        incoming.revision < revision -> false
+        !existingTerminal && incomingTerminal -> true
+        status == NativeExecutionStatus.UNKNOWN && incoming.status == NativeExecutionStatus.RUNNING -> true
+        output.isNullOrBlank() && !incoming.output.isNullOrBlank() -> true
+        else -> false
+    }
+    if (preferIncoming) {
+        return ToolCallPairing.mergeSteps(this, incoming)
+    }
+    return ToolCallPairing.mergeSteps(existing = incoming, incoming = this).copy(
+        sourceMessageId = NativeExecutionStep.resolveSourceMessageId(sourceMessageId, incoming.sourceMessageId),
+        occurredAt = occurredAt?.takeIf { it > 0L } ?: incoming.occurredAt,
+        orderSequence = orderSequence ?: incoming.orderSequence,
+    )
+}
+
 private fun TimelineEntry.allNativeSteps(): List<NativeExecutionStep> {
-    if (timelineSteps.isEmpty()) return executionSteps
+    if (timelineSteps.isEmpty()) {
+        val combined = linkedMapOf<String, NativeExecutionStep>()
+        executionSteps.forEach { rawStep ->
+            val cleanId = normalizeNativeStepId(rawStep.stepId)
+            val step = if (rawStep.stepId == cleanId) rawStep else rawStep.copy(stepId = cleanId)
+            val existing = combined[cleanId]
+            combined[cleanId] = existing?.mergeDisplaySnapshot(step) ?: step
+        }
+        return combined.values.toList()
+    }
     val combined = linkedMapOf<String, NativeExecutionStep>()
     timelineSteps.forEach { step ->
         if (step is ExecutionTimelineStep.ToolCallStep) {
-            combined[step.step.stepId] = step.step
+            val cleanId = normalizeNativeStepId(step.step.stepId)
+            val normalized = if (step.step.stepId == cleanId) step.step else step.step.copy(stepId = cleanId)
+            val existing = combined[cleanId]
+            combined[cleanId] = existing?.mergeDisplaySnapshot(normalized) ?: normalized
         }
     }
-    executionSteps.forEach { step ->
-        val existing = combined[step.stepId]
-        if (existing == null || step.revision > existing.revision) {
-            combined[step.stepId] = step
-        }
+    executionSteps.forEach { rawStep ->
+        val cleanId = normalizeNativeStepId(rawStep.stepId)
+        val step = if (rawStep.stepId == cleanId) rawStep else rawStep.copy(stepId = cleanId)
+        val existing = combined[cleanId]
+        combined[cleanId] = existing?.mergeDisplaySnapshot(step) ?: step
     }
     return combined.values.toList()
 }
@@ -727,7 +904,7 @@ internal fun buildOrderedEntryBlocks(
     streamActive: Boolean = entry.isStreaming && !terminalGeneration,
     parse: (String) -> List<TimelineBlock> = MarkdownParser::parse,
 ): List<OrderedTimelineBlock> {
-    val nativeById = nativeSteps.associateBy { it.stepId }
+    val nativeById = nativeSteps.associateBy { normalizeNativeStepId(it.stepId) }
     val unifiedSteps: List<ExecutionTimelineStep> = when {
         entry.timelineSteps.isNotEmpty() -> {
             val baseSteps = if (entry.timelineSteps.none { it is ExecutionTimelineStep.ThinkingStep } && entry.reasoning.isNotEmpty()) {
@@ -751,8 +928,8 @@ internal fun buildOrderedEntryBlocks(
                 entry.timelineSteps
             }
             val existingToolIds = baseSteps.filterIsInstance<ExecutionTimelineStep.ToolCallStep>()
-                .mapTo(hashSetOf()) { it.stepId }
-            val extraNative = nativeSteps.filterNot { it.stepId in existingToolIds }
+                .mapTo(hashSetOf()) { normalizeNativeStepId(it.stepId) }
+            val extraNative = nativeSteps.filterNot { normalizeNativeStepId(it.stepId) in existingToolIds }
             if (extraNative.isEmpty()) {
                 baseSteps
             } else {
@@ -813,8 +990,8 @@ internal fun buildOrderedEntryBlocks(
             }
 
             is ExecutionTimelineStep.ToolCallStep -> {
-                val resolvedStep = nativeById[step.stepId]?.let { latest ->
-                    if (latest.revision >= step.step.revision) latest else step.step
+                val resolvedStep = nativeById[normalizeNativeStepId(step.stepId)]?.let { latest ->
+                    step.step.mergeDisplaySnapshot(latest)
                 } ?: step.step
                 val effectiveStatus = if (terminalGeneration && resolvedStep.status == NativeExecutionStatus.RUNNING) {
                     NativeExecutionStatus.UNKNOWN

@@ -333,6 +333,7 @@
     <string name="conv_tool_status_running">执行中</string>
     <string name="conv_tool_status_interrupted">执行已中断</string>
     <string name="conv_tool_status_unknown">结果未知</string>
+    <string name="conv_tool_status_no_result">未返回结果</string>
     <string name="conv_tool_status_failed">执行失败</string>
     <string name="conv_tool_status_invocation_only">已调用</string>
     <string name="conv_tool_status_completed">已完成</string>
@@ -341,6 +342,8 @@
     <string name="conv_tool_action_expand_label">展开工具详情</string>
     <string name="conv_tool_call_tag">[执行命令]</string>
     <string name="conv_tool_section_command">命令</string>
+    <string name="conv_tool_section_arguments">参数</string>
+    <string name="conv_tool_params_truncated">参数可能已被截断</string>
     <string name="conv_tool_hermes_no_params">Hermes 在消息中未提供命令参数</string>
     <string name="conv_tool_hermes_params_truncated">参数来自 Hermes 预览，可能已被截断</string>
     <string name="conv_tool_section_output">输出</string>
@@ -353,6 +356,12 @@
     <string name="conv_tool_toast_copied">已复制到剪贴板</string>
     <string name="conv_tool_btn_copied">已复制</string>
     <string name="conv_tool_btn_copy">复制</string>
+    <string name="conv_turn_process_tool_calls">%1$d 次工具调用</string>
+    <string name="conv_turn_process_thought_only">思考过程</string>
+    <string name="conv_turn_process_expand_label">展开过程详情</string>
+    <string name="conv_turn_process_collapse_label">收起过程详情</string>
+    <string name="conv_turn_process_state_expanded">已展开</string>
+    <string name="conv_turn_process_state_collapsed">已收起</string>
     <string name="conv_md_task_completed">已完成</string>
     <string name="conv_md_task_incomplete">未完成</string>
     <string name="conv_md_action_copy_code_cd">复制代码</string>

@@ -282,6 +282,11 @@ fun WorkbenchScreen(
         threadId = state.activeThreadId,
         keys = displayKeyList,
     )
+    val toolCardRevealTracker = rememberToolCardRevealTracker(
+        threadId = state.activeThreadId,
+        displayItems = displayItems,
+        ready = timelineReady,
+    )
 
     LaunchedEffect(state.notice) {
         state.notice?.let { notice ->
@@ -691,6 +696,7 @@ fun WorkbenchScreen(
                                                             TimelineDisplayRow(
                                                                 item = item,
                                                                 presentations = presentations,
+                                                                toolCardRevealTracker = toolCardRevealTracker,
                                                                 evidenceOwner = controller to state.activeThreadId,
                                                                 onDecide = controller::decideApproval,
                                                                 timing = executionTiming,
