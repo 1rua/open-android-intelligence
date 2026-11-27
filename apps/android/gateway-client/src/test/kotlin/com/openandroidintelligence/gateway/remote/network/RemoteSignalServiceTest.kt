@@ -342,6 +342,18 @@ class RemoteSignalServiceTest {
     }
 
     @Test fun Host等待本机DataChannel打开后仅通告一次LAN再回复Noise() = runBlocking {
+        assertHostRtcAnnouncement(openFirst = false, measuredPath = "lan", clientPath = "lan")
+    }
+
+    @Test fun Host在发起方选路前通告本机实际路径() = runBlocking {
+        assertHostRtcAnnouncement(openFirst = true, measuredPath = "p2p", clientPath = "lan")
+    }
+
+    @Test fun Host本机路径未知时等待发起方选路() = runBlocking {
+        assertHostRtcAnnouncement(openFirst = true, measuredPath = null, clientPath = "p2p")
+    }
+
+    private suspend fun assertHostRtcAnnouncement(openFirst: Boolean, measuredPath: String?, clientPath: String) = coroutineScope {
         val host = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
         val client = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
         val binding = RemoteConnectionBinding("connection-lan", host.deviceId.value, client.deviceId.value)
@@ -351,6 +363,7 @@ class RemoteSignalServiceTest {
         val socket = CompletableDeferred<WebSocket>()
         val outgoing = Channel<RemoteControlFrame>(Channel.UNLIMITED)
         val openObserved = CompletableDeferred<() -> Unit>()
+        val statsRequested = CompletableDeferred<Unit>()
         val authenticated = CompletableDeferred<AuthenticatedRemotePeer>()
         val server = MockWebServer()
         server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
@@ -358,13 +371,13 @@ class RemoteSignalServiceTest {
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val frame = RemoteControlCodec.decode(text.encodeToByteArray())
                 if (frame.type == "hello") {
-                    webSocket.send(text(ack(listOf("transport.lan", "transport.relay"), webRtcEnabled = true)))
+                    webSocket.send(text(ack(listOf("transport.lan", "transport.p2p", "transport.relay"), webRtcEnabled = true)))
                     webSocket.send(text(control("connect.incoming", obj(
                         "connectionId" to binding.connectionId,
                         "clientDeviceId" to binding.clientDeviceId,
                         "clientIdentityKey" to RemoteBase64Url.encode(client.publicKey),
                         "authorization" to "account",
-                        "preferredTransports" to listOf("lan", "relay"),
+                        "preferredTransports" to listOf("lan", "p2p", "relay"),
                     ))))
                 } else {
                     outgoing.trySend(frame)
@@ -391,7 +404,10 @@ class RemoteSignalServiceTest {
                     override suspend fun acceptOffer(sdp: String) { signal("signal.answer", obj("sdp" to "v=0\r\n")) }
                     override suspend fun acceptAnswer(sdp: String) = error("Host 正在等待本机通道打开")
                     override fun acceptIce(value: JsonValue.JObject) = Unit
-                    override suspend fun selectedTransport() = "lan"
+                    override suspend fun selectedTransport(): String {
+                        statsRequested.complete(Unit)
+                        return measuredPath ?: throw RemoteRpcException("RTC_SELECTED_PAIR_UNAVAILABLE")
+                    }
                     override suspend fun awaitOpen(): RtcDataChannelTransport {
                         openObserved.complete(port::open)
                         carrier.awaitOpen()
@@ -422,19 +438,29 @@ class RemoteSignalServiceTest {
                 "Host 应在收到客户端选路前开始观察本机通道"
             }
 
-            assertTrue(ws.send(text(control("transport.selected", toHost("transport" to "lan")))))
+            suspend fun expectAnnouncement(expected: String) {
+                val announcement = nextFrame()
+                assertEquals("transport.selected", announcement.type)
+                assertEquals(binding.connectionId, announcement.payload.requiredText("connectionId"))
+                assertEquals(binding.clientDeviceId, announcement.payload.requiredText("targetDeviceId"))
+                assertEquals(expected, announcement.payload.requiredText("transport"))
+            }
+            if (openFirst) {
+                open()
+                withTimeout(5_000) { statsRequested.await() }
+                if (measuredPath != null) expectAnnouncement(measuredPath) else expectPong("path-not-yet-known")
+                assertFalse("只有本机选路通告时应保持未认证", authenticated.isCompleted)
+            }
+            assertTrue(ws.send(text(control("transport.selected", toHost("transport" to clientPath)))))
             assertTrue(ws.send(text(secure.writeHandshakeFrame(UUID.randomUUID().toString(), System.currentTimeMillis()))))
-            // 首次往返确认客户端帧已投递，第二次检查挂起期间的 Host 输出。
-            expectPong("client-frames-received")
-            expectPong("data-channel-still-connecting")
-            assertFalse("通道打开前应保持未认证", authenticated.isCompleted)
-
-            open()
-            val announcement = nextFrame()
-            assertEquals("Host 应先通告本机选路", "transport.selected", announcement.type)
-            assertEquals(binding.connectionId, announcement.payload.requiredText("connectionId"))
-            assertEquals(binding.clientDeviceId, announcement.payload.requiredText("targetDeviceId"))
-            assertEquals("lan", announcement.payload.requiredText("transport"))
+            if (!openFirst) {
+                // 首次往返确认客户端帧已投递，第二次检查挂起期间的 Host 输出。
+                expectPong("client-frames-received")
+                expectPong("data-channel-still-connecting")
+                assertFalse("通道打开前应保持未认证", authenticated.isCompleted)
+                open()
+            }
+            if (!openFirst || measuredPath == null) expectAnnouncement(measuredPath ?: clientPath)
             val reply = nextFrame()
             assertEquals("secure.handshake", reply.type)
             // 客户端只用连接及双方设备 ID 和静态公钥验证 Noise。

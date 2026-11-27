@@ -292,6 +292,8 @@ internal class RemoteSignalService(
         private val messages = linkedSetOf<(ByteArray) -> Unit>(); private val closures = linkedSetOf<(String) -> Unit>()
         private val carrierReady = CompletableDeferred<Unit>()
         private val hostRtcReady = CompletableDeferred<Pair<RemoteRtcPeerSession, RtcDataChannelTransport>>()
+        private val hostRtcNotice = Mutex()
+        private var hostRtcAnnounced = false
         @Volatile private var rtcDisabled = false
         private var rtcGeneration = 0L
         private var rtcPeer: RemoteRtcPeerSession? = null
@@ -356,9 +358,11 @@ internal class RemoteSignalService(
             sendControl("transport.selected", obj("connectionId" to id, "targetDeviceId" to peer.device.deviceId, "transport" to selected))
         }
         private suspend fun selectRelay() {
-            synchronized(rtcStateLock) {
-                requireCurrentSelection()
-                selected = "relay"
+            hostRtcNotice.withLock {
+                synchronized(rtcStateLock) {
+                    requireCurrentSelection()
+                    selected = "relay"
+                }
             }
             // 先让旧协商失效。即使 TURN 或原生构造仍未结束，中继也可以独立就绪。
             val (closingRtc, cancellingInit) = invalidateRtc()
@@ -394,6 +398,10 @@ internal class RemoteSignalService(
                 rtc = opened
             }
             opened.onMessage(::receiveCiphertext); opened.onClose { fail(it) }
+            hostRtcNotice.withLock {
+                requireCurrentSelection()
+                if (!hostRtcAnnounced) announceHostTransport(transport)
+            }
             carrierReady.complete(Unit)
         }
         private fun preferredTransports(): List<String> =
@@ -411,23 +419,28 @@ internal class RemoteSignalService(
                 val announced = when {
                     path != null && "transport.$path" in negotiated -> path
                     path == "lan" && "transport.p2p" in negotiated -> "p2p"
-                    else -> selected?.takeIf { it != "relay" }
-                        ?: preferredTransports().firstOrNull { it != "relay" && "transport.$it" in negotiated }
-                        ?: throw RemoteRpcException("TRANSPORT_NOT_NEGOTIATED")
+                    else -> null
                 }
-                if (!isRtcGenerationActive(epoch)) return
-                requireCurrentSelection()
-                if (!carrier.stats().connected) throw RemoteRpcException("RTC_CLOSED")
-                // 上游 Host 在自己的 DataChannel 打开后通告。绑定数据面仍以发起方选择为准。
-                sendControl("transport.selected", obj("connectionId" to id, "targetDeviceId" to peer.device.deviceId,
-                    "transport" to announced))
-                hostRtcReady.complete(peerRtc to carrier)
+                hostRtcNotice.withLock {
+                    if (!isRtcGenerationActive(epoch)) return
+                    requireCurrentSelection()
+                    if (!carrier.stats().connected) throw RemoteRpcException("RTC_CLOSED")
+                    // 优先上报本机统计确认的路径。统计缺失时由接入方确认发起方的选择。
+                    if (announced != null) announceHostTransport(announced)
+                    hostRtcReady.complete(peerRtc to carrier)
+                }
             } catch (cancelled: CancellationException) {
                 hostRtcReady.completeExceptionally(cancelled)
                 throw cancelled
             } catch (failure: Exception) {
                 hostRtcReady.completeExceptionally(failure)
             }
+        }
+
+        private fun announceHostTransport(transport: String) {
+            sendControl("transport.selected", obj("connectionId" to id, "targetDeviceId" to peer.device.deviceId,
+                "transport" to transport))
+            hostRtcAnnounced = true
         }
 
         private suspend fun createRtc(turnOnly: Boolean, expectedGeneration: Long): RemoteRtcPeerSession? {

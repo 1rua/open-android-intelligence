@@ -4,8 +4,9 @@ import org.junit.Assert.*
 import org.junit.Test
 import java.nio.ByteBuffer
 import java.util.concurrent.Executor
-import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 class NativeDataChannelPortTest {
@@ -92,11 +93,15 @@ class NativeDataChannelPortTest {
 
     @Test
     fun Peer清理要等到原生DataChannel实际释放() {
-        val queued = LinkedBlockingQueue<Runnable>()
+        val queued = CountDownLatch(1)
+        val pending = AtomicReference<Runnable>()
         val handle = Handle()
-        val port = NativeDataChannelPort(handle, FakeRtcPort().identity, Executor { queued.add(it) })
+        val port = NativeDataChannelPort(handle, FakeRtcPort().identity, Executor { task ->
+            check(pending.compareAndSet(null, task))
+            queued.countDown()
+        })
         val peerCleanup = thread(isDaemon = true) { port.closeAndAwaitRelease() }
-        val task = requireNotNull(queued.poll(2, TimeUnit.SECONDS))
+        assertTrue(queued.await(2, TimeUnit.SECONDS))
         try {
             assertEquals(RtcChannelState.CLOSED, port.state)
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
@@ -105,12 +110,11 @@ class NativeDataChannelPortTest {
             }
             assertEquals(Thread.State.WAITING, peerCleanup.state)
         } finally {
-            task.run()
+            pending.get().run()
             peerCleanup.join(2_000)
         }
         assertFalse(peerCleanup.isAlive)
         assertEquals(listOf("unregister", "close", "dispose"), handle.steps)
-        assertTrue(queued.isEmpty())
     }
 
     @Test
