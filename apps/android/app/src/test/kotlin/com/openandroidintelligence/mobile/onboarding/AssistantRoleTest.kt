@@ -45,7 +45,7 @@ class AssistantRoleTest {
     @Test
     fun unsupportedWhenSystemDoesNotExposeTheRole() {
         assertFalse(AssistantRole.isAssistantRoleSupported(context))
-        assertFalse(AssistantRole.isAssistantRoleHeld(context))
+        assertEquals(false, AssistantRole.isAssistantRoleHeld(context))
     }
 
     /** 系统提供该角色但未授予：支持、未持有。 */
@@ -54,7 +54,7 @@ class AssistantRoleTest {
         shadowOf(roleManager).addAvailableRole(RoleManager.ROLE_ASSISTANT)
 
         assertTrue(AssistantRole.isAssistantRoleSupported(context))
-        assertFalse(AssistantRole.isAssistantRoleHeld(context))
+        assertEquals(false, AssistantRole.isAssistantRoleHeld(context))
     }
 
     /** 角色已授予：支持且持有。 */
@@ -63,17 +63,17 @@ class AssistantRoleTest {
         shadowOf(roleManager).addHeldRole(RoleManager.ROLE_ASSISTANT)
 
         assertTrue(AssistantRole.isAssistantRoleSupported(context))
-        assertTrue(AssistantRole.isAssistantRoleHeld(context))
+        assertEquals(true, AssistantRole.isAssistantRoleHeld(context))
     }
 
     /** 撤销后必须立刻变成「未持有」：不允许任何本地缓存把状态粘住。 */
     @Test
     fun revocationIsReflectedImmediately() {
         shadowOf(roleManager).addHeldRole(RoleManager.ROLE_ASSISTANT)
-        assertTrue(AssistantRole.isAssistantRoleHeld(context))
+        assertEquals(true, AssistantRole.isAssistantRoleHeld(context))
 
         shadowOf(roleManager).removeHeldRole(RoleManager.ROLE_ASSISTANT)
-        assertFalse(AssistantRole.isAssistantRoleHeld(context))
+        assertEquals(false, AssistantRole.isAssistantRoleHeld(context))
     }
 
     @Test
@@ -136,10 +136,13 @@ class AssistantRoleTest {
     @Config(sdk = [34])
     fun settingsRemainsActionableWhenTheRoleQueryIsUnavailable() {
         val entry = buildVisiblePermissions(34, emptySet()).first { it.id == "assistant_role" }
-        registerSettingsActions(Settings.ACTION_VOICE_INPUT_SETTINGS)
+        registerSettingsActions(Settings.ACTION_SETTINGS)
+        val starter = SettingsStarter(context)
 
         assertFalse(AssistantRole.isAssistantRoleSupported(context))
         assertEquals(PermissionStatus.DENIED, resolvePermissionStatus(context, entry))
+        assertTrue(AssistantRole.openSettings(starter))
+        assertEquals(listOf(Settings.ACTION_SETTINGS), starter.attempts)
     }
 
     /** 状态映射：不支持 → UNSUPPORTED，支持未持有 → DENIED，已持有 → GRANTED。 */

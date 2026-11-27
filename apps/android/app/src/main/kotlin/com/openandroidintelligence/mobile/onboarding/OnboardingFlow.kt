@@ -123,7 +123,7 @@ fun OnboardingFlow(
                     refreshPermissions()
                     if (assistantSettingsVisit == AssistantSettingsVisit.PAUSED) {
                         assistantSettingsVisit = AssistantSettingsVisit.IDLE
-                        if (statuses["assistant_role"] != PermissionStatus.GRANTED) {
+                        if (statuses["assistant_role"] == PermissionStatus.DENIED) {
                             showSettingsNotice(UiR.string.perm_role_assistant_not_set_hint)
                         }
                     }

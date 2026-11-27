@@ -28,6 +28,7 @@ object AssistantRole {
     private val assistantSettingsActions = listOf(
         Settings.ACTION_VOICE_INPUT_SETTINGS,
         Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS,
+        Settings.ACTION_SETTINGS,
     )
 
     /**
@@ -44,24 +45,21 @@ object AssistantRole {
     }
 
     /**
-     * 本应用当前是否**真实持有**「默认数字助理」角色。
+     * 本应用当前是否持有「默认数字助理」角色。查询不可用时返回 null。
      *
      * 只信 [RoleManager.isRoleHeld] 的返回值，不看本地缓存：
      * 用户去系统设置改过之后，这里必须立刻反映新状态。
      */
-    fun isAssistantRoleHeld(context: Context): Boolean = try {
-        val manager = context.getSystemService(RoleManager::class.java)
-        manager != null && manager.isRoleHeld(RoleManager.ROLE_ASSISTANT)
-    } catch (_: RuntimeException) {
-        false
-    }
+    fun isAssistantRoleHeld(context: Context): Boolean? = runCatching {
+        context.getSystemService(RoleManager::class.java)?.isRoleHeld(RoleManager.ROLE_ASSISTANT)
+    }.getOrNull()
 
-    /** 角色查询不可用时，厂商的助理或默认应用设置仍可能存在。 */
+    /** 系统设置首页也可用作手动查找助理设置的入口。 */
     internal fun hasSettingsEntry(context: Context): Boolean =
         assistantSettingsActions.any { Intent(it).canOpenOnboardingSettings(context) }
 
     internal fun openSettings(context: Context): Boolean = openFirstOnboardingSettings(
         context,
-        (assistantSettingsActions + Settings.ACTION_SETTINGS).map { Intent(it) },
+        assistantSettingsActions.map { Intent(it) },
     )
 }

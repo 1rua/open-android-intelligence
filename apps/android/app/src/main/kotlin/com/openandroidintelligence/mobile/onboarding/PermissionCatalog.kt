@@ -279,11 +279,15 @@ private fun shouldShowRationale(context: Context, permission: String): Boolean {
  * 优先显示系统报告的持有状态。角色查询不可用时，仍可使用厂商提供的设置入口。
  */
 private fun resolveSystemRoleStatus(context: Context, role: SystemRole): PermissionStatus = when (role) {
-    SystemRole.ASSISTANT -> when {
-        AssistantRole.isAssistantRoleHeld(context) -> PermissionStatus.GRANTED
-        AssistantRole.isAssistantRoleSupported(context) || AssistantRole.hasSettingsEntry(context) ->
-            PermissionStatus.DENIED
-        else -> PermissionStatus.UNSUPPORTED
+    SystemRole.ASSISTANT -> {
+        val held = AssistantRole.isAssistantRoleHeld(context)
+        when {
+            held == true -> PermissionStatus.GRANTED
+            !AssistantRole.isAssistantRoleSupported(context) && !AssistantRole.hasSettingsEntry(context) ->
+                PermissionStatus.UNSUPPORTED
+            held == null -> PermissionStatus.UNKNOWN
+            else -> PermissionStatus.DENIED
+        }
     }
 }
 

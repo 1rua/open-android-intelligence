@@ -311,7 +311,10 @@ private fun PermissionCard(
             action = {}
         }
         isRoleCard -> {
-            statusText = stringResource(UiR.string.perm_status_role_not_set)
+            statusText = stringResource(
+                if (status == PermissionStatus.UNKNOWN) UiR.string.common_status_unknown
+                else UiR.string.perm_status_role_not_set,
+            )
             actionText = stringResource(UiR.string.perm_action_settings)
             action = onRequest
         }

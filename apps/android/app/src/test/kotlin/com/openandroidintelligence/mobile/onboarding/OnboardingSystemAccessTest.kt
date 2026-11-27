@@ -221,6 +221,22 @@ class OnboardingSystemAccessTest {
     }
 
     @Test
+    fun assistantRoleQueryFailureOnReturnKeepsSettingsActionWithoutNotSetNotice() {
+        registerSystemSettings(Settings.ACTION_VOICE_INPUT_SETTINGS)
+        var denyRoleQuery = false
+        showPermissions(roleQueryUnavailable = { denyRoleQuery })
+        cardButton("assistant_role", UiR.string.perm_action_settings).performScrollTo().performClick()
+
+        pauseActivity()
+        denyRoleQuery = true
+        resumeActivity()
+
+        cardText("assistant_role", UiR.string.common_status_unknown).assertExists()
+        cardButton("assistant_role", UiR.string.perm_action_settings).assertExists()
+        assertEquals(0, ShadowToast.shownToastCount())
+    }
+
+    @Test
     fun assistantResumeWithoutAnInterveningPauseDoesNotPretendSettingsReturned() {
         registerSystemSettings(Settings.ACTION_VOICE_INPUT_SETTINGS)
         val firstOwner = ResumedOwner()
@@ -279,21 +295,27 @@ class OnboardingSystemAccessTest {
 
     @Test
     @GraphicsMode(GraphicsMode.Mode.NATIVE)
-    fun assistantStatusAndSettingsButtonDoNotOverlapOnNarrowLargeTextLayout() {
+    fun optionalStatusAndSettingsButtonDoNotOverlapOnNarrowLargeTextLayout() {
         registerSystemSettings(Settings.ACTION_VOICE_INPUT_SETTINGS)
         showPermissions(narrowLargeText = true)
 
-        val button = cardButton("assistant_role", UiR.string.perm_action_settings)
-            .performScrollTo().fetchSemanticsNode().boundsInRoot
-        val statusNode = cardText("assistant_role", UiR.string.perm_status_role_not_set).assertIsDisplayed()
-        val status = statusNode.fetchSemanticsNode().boundsInRoot
-        val layouts = mutableListOf<TextLayoutResult>()
-        statusNode.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        val cards = mapOf(
+            "screen_capture" to UiR.string.perm_status_screen_accessibility_off,
+            "assistant_role" to UiR.string.perm_status_role_not_set,
+        )
+        cards.forEach { (card, statusRes) ->
+            val button = cardButton(card, UiR.string.perm_action_settings)
+                .performScrollTo().fetchSemanticsNode().boundsInRoot
+            val statusNode = cardText(card, statusRes).assertIsDisplayed()
+            val status = statusNode.fetchSemanticsNode().boundsInRoot
+            val label = cardText(card, UiR.string.perm_action_settings).assertIsDisplayed()
 
-        assertTrue("状态文字应占有可见空间", status.width > 0f && status.height > 0f)
-        assertTrue("设置按钮应占有可见空间", button.width > 0f && button.height > 0f)
-        assertTrue("大字体下状态文字不能与设置按钮重叠：状态=$status，按钮=$button", !overlap(status, button))
-        assertFalse("状态文案应能换行完整显示", layouts.single().hasVisualOverflow)
+            assertTrue("状态文字应占有可见空间", status.width > 0f && status.height > 0f)
+            assertTrue("设置按钮应占有可见空间", button.width > 0f && button.height > 0f)
+            assertTrue("大字体下状态文字不能与设置按钮重叠：状态=$status，按钮=$button", !overlap(status, button))
+            assertFalse("状态文案应能换行完整显示", textLayout(statusNode).hasVisualOverflow)
+            assertFalse("设置按钮应完整显示文案", textLayout(label).hasVisualOverflow)
+        }
     }
 
     @Test
@@ -312,10 +334,16 @@ class OnboardingSystemAccessTest {
         lifecycleOwner: (() -> LifecycleOwner)? = null,
         onStageChange: (OnboardingStage) -> Unit = {},
         rejectedActions: Set<String> = emptySet(),
+        roleQueryUnavailable: () -> Boolean = { false },
     ) {
         val preferences = AppearancePreferences(activity)
         // 只在 Android 系统边界记录真实发起的操作，所有业务与界面仍使用生产代码。
         val recordingContext = object : ContextWrapper(activity) {
+            override fun getSystemService(name: String): Any? {
+                if (name == Context.ROLE_SERVICE && roleQueryUnavailable()) return null
+                return super.getSystemService(name)
+            }
+
             override fun startActivity(intent: Intent) {
                 attempts.add(intent.action)
                 if (intent.action in rejectedActions) throw ActivityNotFoundException(intent.action)
@@ -396,6 +424,12 @@ class OnboardingSystemAccessTest {
     private fun overlap(first: Rect, second: Rect): Boolean =
         first.left < second.right && second.left < first.right &&
             first.top < second.bottom && second.top < first.bottom
+
+    private fun textLayout(node: SemanticsNodeInteraction): TextLayoutResult {
+        val layouts = mutableListOf<TextLayoutResult>()
+        node.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+        return layouts.single()
+    }
 
     private class ResumedOwner : LifecycleOwner {
         val registry = LifecycleRegistry(this).apply { currentState = Lifecycle.State.RESUMED }

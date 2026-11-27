@@ -15,7 +15,7 @@ package com.openandroidintelligence.mobile.onboarding
  * 对系统设置项，[GRANTED] 和 [DENIED] 分别表示系统已开启和未开启。
  */
 enum class PermissionStatus {
-    /** 尚未查询到结果（页面刚进入、状态未回填时）。 */
+    /** 尚未查询到结果，或系统状态暂时无法读取。 */
     UNKNOWN,
 
     /** 已授权，或对应系统设置已开启。 */
