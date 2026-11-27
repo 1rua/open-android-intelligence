@@ -2,7 +2,9 @@ package com.openandroidintelligence.mobile.onboarding
 
 import android.app.Application
 import android.app.role.RoleManager
+import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.ResolveInfo
@@ -10,8 +12,6 @@ import android.provider.Settings
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -21,15 +21,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowRoleManager
 
-/**
- * 「默认数字助理」系统角色适配层的契约测试。
- *
- * 锁定的硬约束：
- * 1. 支持性与持有性必须**分开**判定：系统没有该角色时是「不支持」（UNSUPPORTED），
- *    不能混成「未设置」，否则界面会给用户一个点了没反应的按钮；
- * 2. 持有状态只信系统的 `isRoleHeld`，不使用本地缓存；
- * 3. 拿不到角色申请 Intent 时必须给出可用的回退设置页，不能两头都断。
- */
+/** 验证默认助理状态查询及设置入口的实际启动顺序。 */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [31, 32, 33, 34, 35, 36], application = Application::class)
 class AssistantRoleTest {
@@ -53,7 +45,7 @@ class AssistantRoleTest {
     @Test
     fun unsupportedWhenSystemDoesNotExposeTheRole() {
         assertFalse(AssistantRole.isAssistantRoleSupported(context))
-        assertFalse(AssistantRole.isAssistantRoleHeld(context))
+        assertEquals(false, AssistantRole.isAssistantRoleHeld(context))
     }
 
     /** 系统提供该角色但未授予：支持、未持有。 */
@@ -62,7 +54,7 @@ class AssistantRoleTest {
         shadowOf(roleManager).addAvailableRole(RoleManager.ROLE_ASSISTANT)
 
         assertTrue(AssistantRole.isAssistantRoleSupported(context))
-        assertFalse(AssistantRole.isAssistantRoleHeld(context))
+        assertEquals(false, AssistantRole.isAssistantRoleHeld(context))
     }
 
     /** 角色已授予：支持且持有。 */
@@ -71,100 +63,86 @@ class AssistantRoleTest {
         shadowOf(roleManager).addHeldRole(RoleManager.ROLE_ASSISTANT)
 
         assertTrue(AssistantRole.isAssistantRoleSupported(context))
-        assertTrue(AssistantRole.isAssistantRoleHeld(context))
+        assertEquals(true, AssistantRole.isAssistantRoleHeld(context))
     }
 
     /** 撤销后必须立刻变成「未持有」：不允许任何本地缓存把状态粘住。 */
     @Test
     fun revocationIsReflectedImmediately() {
         shadowOf(roleManager).addHeldRole(RoleManager.ROLE_ASSISTANT)
-        assertTrue(AssistantRole.isAssistantRoleHeld(context))
+        assertEquals(true, AssistantRole.isAssistantRoleHeld(context))
 
         shadowOf(roleManager).removeHeldRole(RoleManager.ROLE_ASSISTANT)
-        assertFalse(AssistantRole.isAssistantRoleHeld(context))
+        assertEquals(false, AssistantRole.isAssistantRoleHeld(context))
     }
 
-    /** 不支持时不提供角色申请 Intent：调用方必须能识别「弹不出来」并走回退。 */
     @Test
-    fun requestIntentIsNullWhenRoleIsUnsupported() {
-        assertNull(AssistantRole.createRequestRoleIntent(context))
-    }
-
-    /** 支持时给出真正的 REQUEST_ROLE Intent，且带上角色名。 */
-    @Test
-    fun requestIntentTargetsRequestRoleWithAssistantRoleName() {
+    fun assistantSettingsPrecedesDefaultAppsAndGeneralSettings() {
+        registerSettingsActions(
+            Settings.ACTION_VOICE_INPUT_SETTINGS,
+            Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS,
+            Settings.ACTION_SETTINGS,
+        )
         shadowOf(roleManager).addAvailableRole(RoleManager.ROLE_ASSISTANT)
+        val starter = SettingsStarter(context)
 
-        val intent = AssistantRole.createRequestRoleIntent(context)
-
-        assertNotNull("支持该角色时必须给出申请入口", intent)
-        assertEquals("android.app.role.action.REQUEST_ROLE", intent!!.action)
-        assertEquals(RoleManager.ROLE_ASSISTANT, intent.getStringExtra("android.intent.extra.ROLE_NAME"))
+        assertTrue(AssistantRole.openSettings(starter))
+        assertEquals(listOf(Settings.ACTION_VOICE_INPUT_SETTINGS), starter.attempts)
     }
 
-    /**
-     * 回退设置页必须按「官方默认应用页 → 数字助理设置 → 应用管理」的优先级给出，
-     * 并且只在系统真的能解析时才出现：给出一个不存在的页面等于让用户点了没反应。
-     */
     @Test
-    fun fallbackSettingsIntentsAreOrderedAndOnlyIncludeResolvablePages() {
-        val packageManager = shadowOf(context.packageManager)
+    fun assistantSettingsSkipsMissingVoicePageAndOpensDefaultApps() {
+        registerSettingsActions(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS, Settings.ACTION_SETTINGS)
+        val starter = SettingsStarter(context)
 
-        // 只注册「默认数字助理」设置页：官方默认应用页在本机不存在。
-        packageManager.addResolveInfoForIntent(
-            Intent(Settings.ACTION_VOICE_INPUT_SETTINGS),
-            ResolveInfo().apply {
-                activityInfo = ActivityInfo().apply {
-                    packageName = "com.android.settings"
-                    name = "com.android.settings.Settings\$VoiceInputSettingsActivity"
-                }
-            },
-        )
-
-        val intents = AssistantRole.fallbackSettingsIntents(context)
-
-        assertEquals(listOf(Settings.ACTION_VOICE_INPUT_SETTINGS), intents.map { it.action })
-        assertTrue(
-            "回退页不能带 NEW_TASK：for-result 拿不到结果，也无法判断用户是否真的设置完成",
-            intents.none { it.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0 },
-        )
-        assertEquals(Settings.ACTION_VOICE_INPUT_SETTINGS, AssistantRole.createFallbackSettingsIntent(context)?.action)
+        assertTrue(AssistantRole.openSettings(starter))
+        assertEquals(listOf(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS), starter.attempts)
     }
 
-    /** 一个设置页都解析不到时返回空/ null：调用方必须据此呈现「不支持」，而不是留个死按钮。 */
-    @Test
-    fun noResolvableSettingsPageIsReportedAsAbsent() {
-        assertTrue(AssistantRole.fallbackSettingsIntents(context).isEmpty())
-        assertNull(AssistantRole.createFallbackSettingsIntent(context))
-    }
-
-    /** 官方默认应用页可用时排在第一位（API 34+）。 */
     @Test
     @Config(sdk = [34])
-    fun theOfficialDefaultAppsPageWinsWhenAvailable() {
-        val packageManager = shadowOf(context.packageManager)
-        listOf(
-            Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS,
+    fun assistantSettingsContinuesAfterLaunchExceptions() {
+        registerSettingsActions(
             Settings.ACTION_VOICE_INPUT_SETTINGS,
-        ).forEach { action ->
-            packageManager.addResolveInfoForIntent(
-                Intent(action),
-                ResolveInfo().apply {
-                    activityInfo = ActivityInfo().apply {
-                        packageName = "com.android.settings"
-                        name = "com.android.settings.$action"
-                    }
-                },
-            )
-        }
-
-        assertEquals(
-            listOf(
-                Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS,
-                Settings.ACTION_VOICE_INPUT_SETTINGS,
-            ),
-            AssistantRole.fallbackSettingsIntents(context).map { it.action },
+            Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS,
+            Settings.ACTION_SETTINGS,
         )
+        val starter = SettingsStarter(
+            context,
+            mapOf(
+                Settings.ACTION_VOICE_INPUT_SETTINGS to ActivityNotFoundException(),
+                Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS to SecurityException(),
+            ),
+        )
+
+        assertTrue(AssistantRole.openSettings(starter))
+        assertEquals(
+            listOf(Settings.ACTION_VOICE_INPUT_SETTINGS, Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS, Settings.ACTION_SETTINGS),
+            starter.attempts,
+        )
+    }
+
+    @Test
+    @Config(sdk = [34])
+    fun assistantSettingsReportsWhenNoPageCanStart() {
+        registerSettingsActions(Settings.ACTION_SETTINGS)
+        val starter = SettingsStarter(context, mapOf(Settings.ACTION_SETTINGS to SecurityException()))
+
+        assertFalse(AssistantRole.openSettings(starter))
+        assertEquals(listOf(Settings.ACTION_SETTINGS), starter.attempts)
+    }
+
+    @Test
+    @Config(sdk = [34])
+    fun settingsHomeIsActionableWithoutClaimingAssistantSelectionIsAvailable() {
+        val entry = buildVisiblePermissions(34, emptySet()).first { it.id == "assistant_role" }
+        registerSettingsActions(Settings.ACTION_SETTINGS)
+        val starter = SettingsStarter(context)
+
+        assertFalse(AssistantRole.isAssistantRoleSupported(context))
+        assertEquals(PermissionStatus.UNKNOWN, resolvePermissionStatus(context, entry))
+        assertTrue(AssistantRole.openSettings(starter))
+        assertEquals(listOf(Settings.ACTION_SETTINGS), starter.attempts)
     }
 
     /** 状态映射：不支持 → UNSUPPORTED，支持未持有 → DENIED，已持有 → GRANTED。 */
@@ -181,4 +159,30 @@ class AssistantRoleTest {
         shadowOf(roleManager).addHeldRole(RoleManager.ROLE_ASSISTANT)
         assertEquals(PermissionStatus.GRANTED, resolvePermissionStatus(context, entry))
     }
+
+    private fun registerSettingsActions(vararg actions: String) {
+        val packageManager = shadowOf(context.packageManager)
+        actions.forEach { action ->
+            packageManager.addResolveInfoForIntent(Intent(action), ResolveInfo().apply {
+                activityInfo = ActivityInfo().apply {
+                    packageName = "com.android.settings"
+                    name = "com.android.settings.$action"
+                }
+            })
+        }
+    }
+
+    private class SettingsStarter(
+        base: Context,
+        private val failures: Map<String, RuntimeException> = emptyMap(),
+    ) : ContextWrapper(base) {
+        val attempts = mutableListOf<String>()
+
+        override fun startActivity(intent: Intent) {
+            val action = requireNotNull(intent.action)
+            attempts += action
+            failures[action]?.let { throw it }
+        }
+    }
+
 }

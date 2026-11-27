@@ -101,6 +101,7 @@ CapabilityTemporaryApprovalsTest
 MessageProcessingSettingsTest
 NotificationScopeOwnershipTest
 OnboardingStateTest
+OnboardingSystemAccessTest
 PermissionCatalogTest
 PushConfigurationSerializationTest
 SettingsBackupCodecTest
