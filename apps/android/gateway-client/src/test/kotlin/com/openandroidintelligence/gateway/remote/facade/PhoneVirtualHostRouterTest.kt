@@ -1,7 +1,9 @@
 package com.openandroidintelligence.gateway.remote.facade
 
 import com.openandroidintelligence.control.remote.*
+import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcConnectionScope
 import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
@@ -88,6 +90,93 @@ class PhoneVirtualHostRouterTest {
         null
     } catch (failure: ControlRequestException) {
         failure.code
+    }
+
+    private fun workspaceCreateCarrier(path: Any? = "phone-capabilities"): JsonValue.JObject =
+        Json.of(mapOf("args" to mapOf("request" to mapOf("path" to path)))) as JsonValue.JObject
+
+    private fun workspace(result: JsonValue): JsonValue.JObject {
+        val root = result as JsonValue.JObject
+        assertEquals(setOf("created", "workspace"), root.fields.map { it.first }.toSet())
+        assertEquals(JsonValue.JBool(false), JsonFields.field(root, "created"))
+        return JsonFields.obj(JsonFields.field(root, "workspace"))!!
+    }
+
+    private fun assertWorkspace(workspace: JsonValue.JObject, expectedSessionIds: List<String>) {
+        assertEquals("phone-capabilities", JsonFields.string(workspace, "workspaceId"))
+        assertEquals("phone-capabilities", JsonFields.string(workspace, "path"))
+        assertEquals("test-phone-workspace", JsonFields.string(workspace, "title"))
+        assertEquals(expectedSessionIds, JsonFields.strings(workspace, "sessionIds"))
+        java.time.Instant.parse(JsonFields.string(workspace, "createdAt")!!)
+        java.time.Instant.parse(JsonFields.string(workspace, "updatedAt")!!)
+    }
+
+    @Test fun 官方carrier打开已有工作区返回当前记录且无副作用() = runTest {
+        val ledger = Ledger()
+        val executor = Executor()
+        val bus = PhoneControlBus(this, ledger, executor, phoneFacadeTestStrings)
+        bus.create(access())
+        runCurrent()
+        val sessionsBefore = bus.sessions(access())
+        val sessionIds = sessionsBefore.map { JsonFields.string(it as JsonValue.JObject, "sessionId")!! }
+        val ledgerBefore = ledger.rows.toMap()
+        val changesBefore = bus.changes.value
+        val router = PhoneVirtualHostRouter(bus)
+        val handler = PhoneRemoteRpcHostHandler(this, router) { access() }
+        val scope = RemoteRpcConnectionScope("https://remote.example", "account", "phone", "controller", "connection", 1)
+        val payload = Json.of(mapOf("args" to mapOf("request" to mapOf("path" to "phone-capabilities"))))
+        val response = handler.invoke(scope, "harness.remote.call", Json.of(mapOf(
+            "endpoint" to "workspace/create",
+            "payload" to payload,
+        )) as JsonValue.JObject) as JsonValue.JObject
+
+        assertEquals(JsonValue.JBool(true), JsonFields.field(response, "ok"))
+        val workspace = workspace(JsonFields.field(response, "value")!!)
+        assertWorkspace(workspace, sessionIds)
+        assertEquals(sessionsBefore, bus.sessions(access()))
+        assertEquals(ledgerBefore, ledger.rows)
+        assertEquals(changesBefore, bus.changes.value)
+        assertTrue(executor.digests.isEmpty())
+        handler.close()
+    }
+
+    @Test fun 工作区打开路径错误返回稳定未找到且不创建内容() = runTest {
+        val ledger = Ledger()
+        val bus = PhoneControlBus(this, ledger, Executor(), phoneFacadeTestStrings)
+        val router = PhoneVirtualHostRouter(bus)
+        val before = bus.sessions(access())
+
+        listOf("", "/phone-capabilities", "phone-capabilities/").forEach { path ->
+            assertEquals("CONTROL_WORKSPACE_NOT_FOUND", failureCode {
+                router.route(access(), "workspace/create", workspaceCreateCarrier(path))
+            })
+        }
+        assertEquals(before, bus.sessions(access()))
+        assertTrue(ledger.rows.isEmpty())
+    }
+
+    @Test fun 工作区打开字段或授权无效时拒绝且没有副作用() = runTest {
+        val ledger = Ledger()
+        val executor = Executor()
+        val bus = PhoneControlBus(this, ledger, executor, phoneFacadeTestStrings)
+        val router = PhoneVirtualHostRouter(bus)
+        val baseline = workspaceCreateCarrier()
+
+        listOf(
+            Json.of(mapOf("args" to mapOf("request" to emptyMap<String, Any>()))),
+            Json.of(mapOf("args" to mapOf("request" to mapOf("path" to "phone-capabilities", "workspaceId" to "phone-capabilities")))),
+            Json.of(mapOf("args" to mapOf("request" to mapOf("path" to "phone-capabilities")), "extra" to true)),
+            Json.of(mapOf("request" to mapOf("path" to "phone-capabilities"))),
+        ).forEach { input ->
+            assertEquals("CONTROL_PARAMETERS_INVALID", failureCode { router.route(access(), "workspace/create", input) })
+        }
+        assertTrue(ledger.rows.isEmpty())
+
+        executor.current = false
+        assertEquals("REMOTE_AUTHORIZATION_CHANGED", failureCode {
+            router.route(access(), "workspace/create", baseline)
+        })
+        assertTrue(executor.digests.isEmpty())
     }
 
     @Test fun 官方时区元数据不参与业务幂等或参数摘要() = runTest {

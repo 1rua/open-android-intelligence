@@ -122,6 +122,12 @@ class RemoteIdentityStore(
         return save(scope, next)
     }
 
+    /** 凭据仓库原子提交新角色凭据后，解除同进程内存中的旧撤销标记，使当前运行时可读取新凭据。 */
+    @Synchronized
+    internal fun restoreCommitted(scope: RemoteIdentityScope) {
+        revokedScopes.remove(scope.storageKey)
+    }
+
     @Synchronized
     fun clear(scope: RemoteIdentityScope) {
         invalidateAccount(scope.origin, scope.accountId)

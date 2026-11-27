@@ -77,6 +77,10 @@ class PhoneRemoteRpcHostHandler(
                 lateinit var job: Job
                 job = connection.worker.launch(start = CoroutineStart.LAZY) {
                     try {
+                        // SharedFlow 无 replay：先等真实事件消费者登记，再启动上游流产生 baseline/snapshot。
+                        connection.events.subscriptionCount.first { it > 0 }
+                        authenticatedAccess(scope)
+                        router.requireOutput(access, epoch, metadataOnly)
                         router.stream(access, text(fields, "endpoint"), fields.getValue("payload")).collect { value ->
                             authenticatedAccess(scope)
                             connection.events.emit(PendingEvent(RemoteRpcEvent("harness.remote.frame", Json.of(mapOf("streamId" to streamId,

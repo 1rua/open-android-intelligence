@@ -1,6 +1,7 @@
 package com.openandroidintelligence.gateway.remote.network
 
 import com.openandroidintelligence.gateway.remote.identity.*
+import com.openandroidintelligence.gateway.remote.protocol.RemoteBase64Url
 import com.openandroidintelligence.gateway.remote.protocol.RemoteWireJson
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import com.openandroidintelligence.gateway.remote.runtime.*
@@ -70,6 +71,50 @@ class RemoteServerApiTest {
             assertTrue(registrations.all { it.third.objectValue().value("device").objectValue().requiredText("clientVersion") == com.openandroidintelligence.gateway.client.BuildConfig.OAI_REMOTE_CLIENT_VERSION })
             assertEquals(setOf("client", "host"), registrations.map { it.third.objectValue().value("device").objectValue().requiredText("role") }.toSet())
             assertEquals(7, fixture.requests.size)
+        }
+    }
+    @Test fun ownedHost注册使用客户端票据固定请求且先拒绝来源和角色() = runBlocking {
+        Server().use { fixture ->
+            val issuedAt = System.currentTimeMillis() + 60_000
+            fixture.route("/api/v1/devices/register-owned-role") {
+                obj("accessToken" to "a".repeat(16), "accessTokenExpiresAt" to issuedAt,
+                    "refreshToken" to "r".repeat(16), "refreshTokenExpiresAt" to issuedAt)
+            }
+            val clientAccessToken = "c".repeat(32)
+            val identity = RemoteStaticIdentityFactory.generate(RemoteDeviceId("00000000-0000-4000-8000-000000000001"))
+            val api = RemoteServerApi(fixture.origin, deviceNameProvider = { "测试手机" })
+            val hostScope = RemoteIdentityScope(fixture.origin, "owner", RemoteRole.HOST)
+            for (scope in listOf(
+                RemoteIdentityScope("https://other.example", "owner", RemoteRole.HOST),
+                RemoteIdentityScope(fixture.origin, "owner", RemoteRole.CLIENT),
+            )) {
+                val failure = runCatching { api.registerOwnedHost(scope, identity, clientAccessToken) }.exceptionOrNull()
+                assertEquals(IllegalStateException::class.java, failure?.javaClass)
+                assertEquals(if (scope.origin != fixture.origin) "REMOTE_ORIGIN_MISMATCH" else "REMOTE_ROLE_MISMATCH", failure?.message)
+            }
+            assertTrue(fixture.requests.isEmpty())
+
+            val credential = api.registerOwnedHost(hostScope, identity, clientAccessToken)
+
+            assertEquals(identity, credential.identity)
+            assertEquals(RemoteTokenPair("a".repeat(16), issuedAt, "r".repeat(16), issuedAt), credential.tokens)
+            val request = fixture.requests.single()
+            assertEquals("/api/v1/devices/register-owned-role", request.first)
+            assertEquals("Bearer $clientAccessToken", request.second)
+            assertEquals(Json.canonical(obj(
+                "v" to 1,
+                "device" to obj(
+                    "deviceId" to "00000000-0000-4000-8000-000000000001",
+                    "name" to "测试手机",
+                    "role" to "host",
+                    "platform" to "android",
+                    "identityKey" to RemoteBase64Url.encode(identity.publicKey),
+                    "clientVersion" to com.openandroidintelligence.gateway.client.BuildConfig.OAI_REMOTE_CLIENT_VERSION,
+                    "harnessVersion" to com.openandroidintelligence.gateway.remote.protocol.RemoteProtocol.HARNESS_COMPATIBILITY_VERSION,
+                ),
+            )), Json.canonical(request.third))
+            assertFalse(credential.identity.toString().contains(clientAccessToken))
+            assertFalse(credential.toString().contains(clientAccessToken))
         }
     }
     @Test fun 上游目录无online时必须查询presence且以独立在线事实为准() = runBlocking {
@@ -243,6 +288,48 @@ class RemoteServerApiTest {
                 fixture.rawRoute("/api/v1/auth/oauth/providers", 200, body, contentType)
                 assertEquals("INVALID_MESSAGE", failureCode { api.loginProviders() })
             }
+        }
+    }
+    @Test fun 响应200读到一半断开归类为CONNECTION_FAILED且下次请求恢复成功() = runBlocking {
+        val expiresAt = System.currentTimeMillis() + 60_000
+        val tokenBody = Json.canonical(obj(
+            "accessToken" to "a".repeat(32), "accessTokenExpiresAt" to expiresAt,
+            "refreshToken" to "r".repeat(32), "refreshTokenExpiresAt" to expiresAt + 600_000,
+        ))
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
+                .setBody(tokenBody).setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
+            server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
+                .setBody(tokenBody))
+            server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
+                .setBody(tokenBody).setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
+            server.enqueue(MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
+                .setBody(tokenBody))
+            server.enqueue(MockResponse().setResponseCode(400).setHeader("Content-Type", "application/json")
+                .setBody(Json.canonical(obj("error" to obj("code" to "AUTH_INVALID", "message" to "x".repeat(128)))))
+                .setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
+            // 显式绑定 127.0.0.1，避免双栈宿主机上 OkHttp 对 localhost 在断连后切到未监听的 ::1 路由。
+            server.start(java.net.InetAddress.getByName("127.0.0.1"), 0)
+            val origin = "http://127.0.0.1:${server.port}"
+            val api = RemoteServerApi(origin)
+            val hostScope = RemoteIdentityScope(origin, "owner", RemoteRole.HOST)
+            val identity = RemoteStaticIdentityFactory.generate(RemoteDeviceId("00000000-0000-4000-8000-000000000099"))
+
+            assertEquals("CONNECTION_FAILED", failureCode {
+                api.registerAccountRole(hostScope, identity, RemoteAccountAuthorizationToken("l".repeat(32)))
+            })
+            assertEquals(1, server.requestCount)
+            val firstRecovered = api.registerAccountRole(hostScope, identity, RemoteAccountAuthorizationToken("l".repeat(32)))
+            assertEquals("a".repeat(32), firstRecovered.tokens.accessToken)
+
+            assertEquals("CONNECTION_FAILED", failureCode {
+                api.registerOwnedHost(hostScope, identity, "c".repeat(32))
+            })
+            assertEquals(3, server.requestCount)
+            val ownedRecovered = api.registerOwnedHost(hostScope, identity, "c".repeat(32))
+            assertEquals("a".repeat(32), ownedRecovered.tokens.accessToken)
+
+            assertEquals("CONNECTION_FAILED", failureCode { api.loginProviders() })
         }
     }
     private suspend fun failureCode(block: suspend () -> Unit): String =

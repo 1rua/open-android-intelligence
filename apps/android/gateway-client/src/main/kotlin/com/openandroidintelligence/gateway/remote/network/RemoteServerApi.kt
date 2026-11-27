@@ -24,6 +24,8 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.CancellationException
@@ -33,7 +35,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
-import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 
@@ -71,6 +72,14 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
         accountToken: RemoteAccountAuthorizationToken): RemoteRoleCredential {
         check(scope.origin == origin) { "REMOTE_ORIGIN_MISMATCH" }
         return RemoteRoleCredential(identity, RemoteAuthCodec.parseTokenPair(auth(RemoteAuthCodec.registerAccountRole(identity, scope.role, accountToken, deviceNameProvider()))))
+    }
+    /** 调用方以真实账号型 Client 的短期访问票据授权，为同一账号新增 HOST 角色身份；本项目不记录该票据。 */
+    suspend fun registerOwnedHost(scope: RemoteIdentityScope, identity: RemoteStaticIdentity,
+        clientAccessToken: String): RemoteRoleCredential {
+        check(scope.origin == origin) { "REMOTE_ORIGIN_MISMATCH" }
+        check(scope.role == RemoteRole.HOST) { "REMOTE_ROLE_MISMATCH" }
+        return RemoteRoleCredential(identity, RemoteAuthCodec.parseTokenPair(
+            auth(RemoteAuthCodec.registerOwnedRole(identity, RemoteRole.HOST, clientAccessToken, deviceNameProvider()))))
     }
     override suspend fun refresh(scope: RemoteIdentityScope, deviceId: String, refreshToken: String): RemoteTokenPair {
         check(scope.origin == origin) { "REMOTE_ORIGIN_MISMATCH" }
@@ -159,30 +168,37 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
                 val code = when {
                     it.code == 429 -> "RATE_LIMITED"
                     it.code in 500..599 -> "INTERNAL_ERROR"
-                    it.code in 400..499 -> safeErrorCode(it) ?: "CONNECTION_FAILED"
+                    it.code in 400..499 -> safeErrorCode(method, it) ?: "CONNECTION_FAILED"
                     else -> "CONNECTION_FAILED"
                 }
                 throw RemoteRpcException(code)
             }
-            val bytes = readBody(it) ?: throw RemoteRpcException("INVALID_MESSAGE")
+            val bytes = readBody(method, it) ?: throw RemoteRpcException("INVALID_MESSAGE")
             try { RemoteWireJson.decode(bytes) } catch (_: Exception) { throw RemoteRpcException("INVALID_MESSAGE") }
         }
     }
-    private fun safeErrorCode(response: Response): String? {
-        val bytes = readBody(response) ?: return null
+    private suspend fun safeErrorCode(method: String, response: Response): String? {
+        val bytes = readBody(method, response) ?: return null
         val parsed = runCatching { RemoteWireJson.decode(bytes) }.getOrNull() ?: return null
         val code = (parsed as? JsonValue.JObject)?.fields?.firstOrNull { row -> row.first == "error" }?.second
             ?.let { row -> (row as? JsonValue.JObject)?.optionalText("code") }
         return code?.takeIf { value -> Regex("[A-Z0-9_]{1,128}").matches(value) }
     }
-    private fun readBody(response: Response): ByteArray? = response.body?.byteStream()?.use { input ->
-        val output = java.io.ByteArrayOutputStream(); val buffer = ByteArray(8192)
-        while (true) {
-            val count = input.read(buffer); if (count < 0) break
-            if (output.size() + count > 4 * 1024 * 1024) throw RemoteRpcException("HTTP_RESPONSE_TOO_LARGE")
-            output.write(buffer, 0, count)
+    private suspend fun readBody(method: String, response: Response): ByteArray? = try {
+        response.body?.byteStream()?.use { input ->
+            val output = java.io.ByteArrayOutputStream(); val buffer = ByteArray(8192)
+            while (true) {
+                val count = input.read(buffer); if (count < 0) break
+                if (output.size() + count > 4 * 1024 * 1024) throw RemoteRpcException("HTTP_RESPONSE_TOO_LARGE")
+                output.write(buffer, 0, count)
+            }
+            output.toByteArray()
         }
-        output.toByteArray()
+    } catch (failure: IOException) {
+        currentCoroutineContext().ensureActive()
+        // 正文中途断开按网络故障上报，由调用方按既有恢复规则决定是否重试。
+        logHttpIoFailure(method, failure)
+        throw RemoteRpcException("CONNECTION_FAILED")
     }
     companion object {
         const val DEFAULT_ORIGIN = "https://dsh.r2049.cn"
@@ -192,23 +208,27 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
         private fun encode(value: String) = URLEncoder.encode(value, "UTF-8").replace("+", "%20")
     }
 }
+private fun logHttpIoFailure(method: String, e: IOException) {
+    // 只记录固定故障类别，不带 URL、票据或系统返回的异常正文。
+    val failure = when (e) {
+        is java.net.SocketTimeoutException -> "SOCKET_TIMEOUT"
+        is java.io.InterruptedIOException -> "CALL_TIMEOUT"
+        is javax.net.ssl.SSLException -> "TLS_FAILED"
+        is java.net.ConnectException -> "CONNECT_FAILED"
+        is java.net.UnknownHostException -> "DNS_FAILED"
+        is java.net.SocketException -> "SOCKET_FAILED"
+        is java.net.ProtocolException -> "PROTOCOL_FAILED"
+        is java.io.EOFException -> "PEER_CLOSED"
+        else -> "IO_FAILED"
+    }
+    java.util.logging.Logger.getLogger("RemoteServerApi").warning("HTTP_$method $failure")
+}
 internal suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation ->
     continuation.invokeOnCancellation { cancel() }
     enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) {
             if (!continuation.isActive) return
-            // 只记录固定故障类别，不带 URL、票据或系统返回的异常正文。
-            val failure = when (e) {
-                is java.net.SocketTimeoutException -> "SOCKET_TIMEOUT"
-                is java.io.InterruptedIOException -> "CALL_TIMEOUT"
-                is javax.net.ssl.SSLException -> "TLS_FAILED"
-                is java.net.ConnectException -> "CONNECT_FAILED"
-                is java.net.UnknownHostException -> "DNS_FAILED"
-                is java.net.SocketException -> "SOCKET_FAILED"
-                is java.io.EOFException -> "PEER_CLOSED"
-                else -> "IO_FAILED"
-            }
-            java.util.logging.Logger.getLogger("RemoteServerApi").warning("HTTP_${call.request().method} $failure")
+            logHttpIoFailure(call.request().method, e)
             continuation.resumeWithException(RemoteRpcException("CONNECTION_FAILED"))
         }
         override fun onResponse(call: Call, response: Response) {

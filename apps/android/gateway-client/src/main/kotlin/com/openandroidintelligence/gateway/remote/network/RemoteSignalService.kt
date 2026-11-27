@@ -40,6 +40,7 @@ internal class RemoteSignalService(
     private val onClosed: (String) -> Unit = {},
     private val onHeartbeat: () -> Unit = {},
     private val iceServers: suspend (String) -> List<RemoteIceServer> = { id -> api.iceServers(credential.tokens.accessToken, id) },
+    private val rtcPeerFactory: ((RemoteConnectionBinding, Long, List<RemoteIceServer>, Boolean, (String, JsonValue.JObject) -> Unit) -> RemoteRtcPeerSession)? = null,
 ) {
     private val lifetime = SupervisorJob(parentScope.coroutineContext[Job])
     private val worker = CoroutineScope(parentScope.coroutineContext + lifetime)
@@ -200,7 +201,7 @@ internal class RemoteSignalService(
             }
             "signal.offer", "signal.answer", "signal.ice" -> {
                 val tunnel = requireTunnel(payload)
-                worker.launch { try { tunnel.signal(frame.type, payload) } catch (_: Exception) { tunnel.fail("RTC_NEGOTIATION_FAILED") } }
+                worker.launch { tunnel.signal(frame.type, payload) }
             }
             "relay" -> requireTunnel(payload).receiveRelay(payload)
             "ping" -> { sendControl("pong", payload); observeHeartbeat() }
@@ -285,27 +286,59 @@ internal class RemoteSignalService(
         private val localPrivate = credential.identity.privateKeyCopy()
         private val secure = try { RemoteSecureChannel(NoiseIkChannel.create(if (identityScope.role == RemoteRole.CLIENT) NoiseRole.CLIENT_INITIATOR else NoiseRole.HOST_RESPONDER,
             binding, localPrivate, peer.publicKey)) } finally { localPrivate.fill(0) }
-        private val sent = Mutex(); private val handshake = Mutex(); private val rtcSignals = Mutex(); private val callbacksLock = Any()
+        private val sent = Mutex(); private val handshake = Mutex(); private val rtcSignals = Mutex(); private val transportSelection = Mutex(); private val callbacksLock = Any()
+        private val rtcStateLock = Any()
         private val messages = linkedSetOf<(ByteArray) -> Unit>(); private val closures = linkedSetOf<(String) -> Unit>()
         private val carrierReady = CompletableDeferred<Unit>()
-        private val rtcAvailable = CompletableDeferred<RemoteRtcPeer>()
+        private val rtcAvailable = CompletableDeferred<RemoteRtcPeerSession>()
         @Volatile private var rtcDisabled = false
-        @Volatile private var rtcPeer: RemoteRtcPeer? = null
-        @Volatile private var rtc: com.openandroidintelligence.gateway.remote.transport.RtcDataChannelTransport? = null
+        private var rtcGeneration = 0L
+        private var rtcPeer: RemoteRtcPeerSession? = null
+        private var rtcInitTask: Deferred<RemoteRtcPeerSession?>? = null
+        private var rtc: com.openandroidintelligence.gateway.remote.transport.RtcDataChannelTransport? = null
         @Volatile private var relaySocket: RemoteSocket? = null
         private var outgoingCounter = 0L; private var incomingCounter = 0L
         @Volatile private var terminal: String? = null
         @Volatile private var selected: String? = null
         private var rpc: RemoteRpcSession? = null
+        private fun isRtcGenerationActive(generation: Long): Boolean = synchronized(rtcStateLock) {
+            terminal == null && selected != "relay" && !rtcDisabled && rtcGeneration == generation
+        }
+        private fun invalidateRtc(): Pair<RemoteRtcPeerSession?, Deferred<RemoteRtcPeerSession?>?> {
+            val closingPeer: RemoteRtcPeerSession?
+            val cancellingInit: Deferred<RemoteRtcPeerSession?>?
+            synchronized(rtcStateLock) {
+                rtcDisabled = true
+                rtcGeneration++
+                rtc = null
+                closingPeer = rtcPeer.also { rtcPeer = null }
+                cancellingInit = rtcInitTask.also { rtcInitTask = null }
+            }
+            return closingPeer to cancellingInit
+        }
+        private fun cleanupRtcAsync(closingPeer: RemoteRtcPeerSession?, cancellingInit: Deferred<RemoteRtcPeerSession?>?) {
+            if (closingPeer == null && cancellingInit == null) return
+            val dispatched = worker.isActive && runCatching {
+                worker.launch(NonCancellable) {
+                    cancellingInit?.cancel()
+                    runCatching { closingPeer?.close() }
+                }
+            }.isSuccess
+            if (!dispatched) {
+                cancellingInit?.cancel()
+                runCatching { closingPeer?.close() }
+            }
+        }
         suspend fun selectClientTransport() {
             val webRtcEnabled = negotiated.any { it in setOf("transport.lan", "transport.p2p", "transport.turn") }
             if (webRtcEnabled) {
                 try {
-                    val peerRtc = createRtc(turnOnly = false)
+                    val (generation, peerRtc) = ensureRtcPeer() ?: throw RemoteRpcException("RTC_UNAVAILABLE")
                     val carrier = peerRtc.initiate()
                     val transport = peerRtc.selectedTransport()
-                    synchronized(callbacksLock) {
+                    synchronized(rtcStateLock) {
                         requireCurrentSelection()
+                        if (!isRtcGenerationActive(generation) || rtcPeer !== peerRtc) throw RemoteRpcException("RTC_CLOSED")
                         rtc = carrier
                         selected = transport
                     }
@@ -315,78 +348,153 @@ internal class RemoteSignalService(
                     if (failure is CancellationException && failure !is TimeoutCancellationException) throw failure
                 }
             }
-            if (rtc == null) {
-                synchronized(callbacksLock) { requireCurrentSelection(); selected = "relay" }
-                discardRtc()
-                attachRelay()
-            }
-            rtc?.let { carrier -> carrier.onMessage(::receiveCiphertext); carrier.onClose { fail(it) } }
+            val activeRtc = synchronized(rtcStateLock) { rtc }
+            if (activeRtc == null) selectRelay()
+            activeRtc?.let { carrier -> carrier.onMessage(::receiveCiphertext); carrier.onClose { fail(it) } }
             carrierReady.complete(Unit)
             sendControl("transport.selected", obj("connectionId" to id, "targetDeviceId" to peer.device.deviceId, "transport" to selected))
         }
-        suspend fun selectHostTransport(transport: String) {
+        private suspend fun selectRelay() {
+            synchronized(rtcStateLock) {
+                requireCurrentSelection()
+                selected = "relay"
+            }
+            // 先让旧协商失效。即使 TURN 或原生构造仍未结束，中继也可以独立就绪。
+            val (closingRtc, cancellingInit) = invalidateRtc()
+            rtcAvailable.completeExceptionally(RemoteRpcException("RTC_UNAVAILABLE"))
+            try {
+                attachRelay()
+                carrierReady.complete(Unit)
+            } finally {
+                cleanupRtcAsync(closingRtc, cancellingInit)
+            }
+        }
+        suspend fun selectHostTransport(transport: String) = transportSelection.withLock {
+            if (selected != null) {
+                // 固定 v0.6.5 Host 在已认证隧道上忽略迟到重复 transport.selected，不切换数据面也不撕毁连接。
+                if (secure.complete) return@withLock
+                throw RemoteRpcException("CONNECTION_REPLACED")
+            }
             val preferred = (assignment.fields.firstOrNull { it.first == "preferredTransports" }?.second as? JsonValue.JArray)
                 ?.items?.mapNotNull { (it as? JsonValue.JString)?.value } ?: listOf("lan", "p2p", "turn", "relay")
             if (transport !in preferred || "transport.$transport" !in negotiated) throw RemoteRpcException("TRANSPORT_NOT_NEGOTIATED")
-            synchronized(callbacksLock) {
+            if (transport == "relay") {
+                selectRelay()
+                return@withLock
+            }
+            synchronized(rtcStateLock) {
                 requireCurrentSelection()
-                if (selected != null) throw RemoteRpcException("CONNECTION_REPLACED")
                 selected = transport
             }
-            if (transport == "relay") {
-                discardRtc()
-                attachRelay()
-            } else {
-                val peerRtc = withTimeout(15_000) { rtcAvailable.await() }
-                val carrier = peerRtc.awaitOpen()
-                synchronized(callbacksLock) { requireCurrentSelection(); rtc = carrier }
-                carrier.onMessage(::receiveCiphertext)
-                carrier.onClose { fail(it) }
+            val peerRtc = withTimeout(15_000) { rtcAvailable.await() }
+            val opened = peerRtc.awaitOpen()
+            synchronized(rtcStateLock) {
+                requireCurrentSelection()
+                if (rtcDisabled || rtcPeer !== peerRtc) throw RemoteRpcException("RTC_CLOSED")
+                rtc = opened
             }
+            opened.onMessage(::receiveCiphertext); opened.onClose { fail(it) }
             carrierReady.complete(Unit)
         }
-        private fun discardRtc() {
-            val closing = synchronized(callbacksLock) {
-                rtc = null
-                rtcPeer.also { rtcPeer = null }
-            }
-            closing?.close()
-        }
-        private suspend fun createRtc(turnOnly: Boolean): RemoteRtcPeer = try {
-            val servers = try { iceServers(id) } catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { emptyList() }
+        private suspend fun createRtc(turnOnly: Boolean, expectedGeneration: Long): RemoteRtcPeerSession? {
+            if (!isRtcGenerationActive(expectedGeneration)) return null
+            val servers = try { iceServers(id) }
+            catch (cancelled: CancellationException) {
+                if (!isRtcGenerationActive(expectedGeneration)) return null
+                throw cancelled
+            } catch (_: Exception) { emptyList() }
+            // TURN 凭据返回后再次核对代次，已切到 Relay 或失效时不再构造原生 PeerConnection。
+            if (!isRtcGenerationActive(expectedGeneration)) return null
             currentCoroutineContext().ensureActive()
-            synchronized(callbacksLock) {
-                requireCurrentSelection()
-                if (selected == "relay" || rtcDisabled) throw RemoteRpcException("RTC_UNAVAILABLE")
-                rtcPeer ?: createTransport {
-                    RemoteRtcPeer(context, binding, connectionScope.generation, worker, servers, turnOnly) { type, fields ->
-                        sendControl(type, obj("connectionId" to id, "targetDeviceId" to peer.device.deviceId, *fields.fields.map { it.first to it.second }.toTypedArray()))
-                    }.also { rtcPeer = it }
+            requireCurrentSelection()
+            val signalCallback: (String, JsonValue.JObject) -> Unit = { type, fields ->
+                if (isRtcGenerationActive(expectedGeneration)) {
+                    sendControl(type, obj("connectionId" to id, "targetDeviceId" to peer.device.deviceId,
+                        *fields.fields.map { it.first to it.second }.toTypedArray()))
                 }
-            }.also { rtcAvailable.complete(it) }
-        } catch (_: LinkageError) {
-            // 原生库缺失或ABI不可加载属于传输不可用，必须走已协商Relay而不是留下悬挂握手。
-            throw RemoteRpcException("RTC_UNAVAILABLE")
+            }
+            fun buildPeer(): RemoteRtcPeerSession =
+                rtcPeerFactory?.invoke(binding, connectionScope.generation, servers, turnOnly, signalCallback)
+                    ?: RemoteRtcPeer(context, binding, connectionScope.generation, worker, servers, turnOnly, signalCallback)
+            return try {
+                if (identityScope.role == RemoteRole.CLIENT) createTransport(::buildPeer) else buildPeer()
+            } catch (_: LinkageError) {
+                // 原生库缺失或ABI不可加载属于传输不可用，必须走已协商Relay而不是留下悬挂握手。
+                throw RemoteRpcException("RTC_UNAVAILABLE")
+            }
         }
-        suspend fun signal(type: String, payload: JsonValue.JObject) = rtcSignals.withLock {
-            if (terminal != null || selected == "relay" || rtcDisabled) return@withLock
+        private suspend fun ensureRtcPeer(): Pair<Long, RemoteRtcPeerSession>? {
+            val (epoch, task) = synchronized(rtcStateLock) {
+                val epoch = rtcGeneration
+                if (!isRtcGenerationActive(epoch)) return null
+                rtcPeer?.let { return epoch to it }
+                val task = rtcInitTask ?: worker.async(start = CoroutineStart.LAZY) {
+                    val created = createRtc(turnOnly = false, expectedGeneration = epoch) ?: return@async null
+                    val adopted = synchronized(rtcStateLock) {
+                        if (!isRtcGenerationActive(epoch)) false else {
+                            rtcPeer = created
+                            true
+                        }
+                    }
+                    if (adopted) {
+                        rtcAvailable.complete(created)
+                        created
+                    } else {
+                        // 原生连接构造迟到时只回收它自身，不能挂到已接管的 Relay 上。
+                        runCatching { created.close() }
+                        null
+                    }
+                }.also { rtcInitTask = it }
+                epoch to task
+            }
+            val resolved = try {
+                task.await()
+            } catch (cancelled: CancellationException) {
+                if (!isRtcGenerationActive(epoch)) return null
+                throw cancelled
+            } ?: return null
+            return if (isRtcGenerationActive(epoch)) epoch to resolved else null
+        }
+        suspend fun signal(type: String, payload: JsonValue.JObject) {
+            val initialGeneration = synchronized(rtcStateLock) {
+                if (terminal != null || selected == "relay" || rtcDisabled) return
+                rtcGeneration
+            }
             try {
-                when (type) {
-                    "signal.offer" -> { val current = rtcPeer ?: createRtc(false); current.acceptOffer(payload.requiredText("sdp")) }
-                    "signal.answer" -> rtcPeer?.acceptAnswer(payload.requiredText("sdp")) ?: throw RemoteRpcException("RTC_UNAVAILABLE")
-                    "signal.ice" -> {
-                        // Offer 和 ICE 各自异步到达；同一隧道保留尚未设置 remote SDP 的候选。
-                        val current = rtcPeer ?: createRtc(false)
-                        current.acceptIce(payload.value("candidate").objectValue())
+                val (epoch, current) = when (type) {
+                    // Offer 和 ICE 各自异步到达；共享单次 RTC 初始化且不持锁等待 TURN 凭据网络请求。
+                    "signal.offer", "signal.ice" -> ensureRtcPeer() ?: return
+                    "signal.answer" -> synchronized(rtcStateLock) {
+                        if (terminal != null || selected == "relay" || rtcDisabled) return
+                        val peerRtc = rtcPeer ?: throw RemoteRpcException("RTC_UNAVAILABLE")
+                        rtcGeneration to peerRtc
+                    }
+                    else -> return
+                }
+                rtcSignals.withLock {
+                    if (!isRtcGenerationActive(epoch)) return@withLock
+                    when (type) {
+                        "signal.offer" -> current.acceptOffer(payload.requiredText("sdp"))
+                        "signal.answer" -> current.acceptAnswer(payload.requiredText("sdp"))
+                        "signal.ice" -> current.acceptIce(payload.value("candidate").objectValue())
                     }
                 }
-            } catch (failure: RemoteRpcException) {
-                if (identityScope.role != RemoteRole.HOST || selected != null || failure.code !in setOf("RTC_UNAVAILABLE", "RTC_SDP_FAILED", "RTC_CLOSED")) throw failure
-                // Host本地RTC不可用只结束该候选；等待Client选择合法Relay，不伪造上游未定义的signal.error。
-                rtcDisabled = true
-                discardRtc()
-                rtcAvailable.completeExceptionally(RemoteRpcException("RTC_UNAVAILABLE"))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                if (identityScope.role == RemoteRole.HOST && failure is RemoteRpcException &&
+                    failure.code in setOf("RTC_UNAVAILABLE", "RTC_SDP_FAILED", "RTC_CLOSED")) {
+                    val discarded = synchronized(rtcStateLock) {
+                        if (isRtcGenerationActive(initialGeneration) && selected == null) invalidateRtc() else null
+                    }
+                    if (discarded != null) {
+                        // Host 本地候选不可用时等待桌面选择 Relay。
+                        rtcAvailable.completeExceptionally(RemoteRpcException("RTC_UNAVAILABLE"))
+                        cleanupRtcAsync(discarded.first, discarded.second)
+                        return
+                    }
+                }
+                fail("RTC_NEGOTIATION_FAILED", initialGeneration)
             }
         }
         private suspend fun attachRelay() {
@@ -434,7 +542,15 @@ internal class RemoteSignalService(
         private fun sendControlFrame(frame: RemoteControlFrame) { requireCurrent(); socket?.send(frame) ?: throw RemoteRpcException("TRANSPORT_CLOSED") }
         suspend fun receiveHandshake(frame: RemoteControlFrame) = handshake.withLock {
             withTimeout(20_000) { carrierReady.await() }; requireCurrent()
-            if (terminal != null || secure.complete) throw RemoteRpcException("SECURE_CHANNEL_FAILED")
+            if (terminal != null) throw RemoteRpcException("SECURE_CHANNEL_FAILED")
+            if (secure.complete) {
+                // 固定 v0.6.5 Host 只忽略同隧道的重复首帧，不重跑 Noise 或认证。
+                if (identityScope.role == RemoteRole.HOST &&
+                    frame.payload.requiredText("connectionId") == id &&
+                    frame.payload.requiredText("targetDeviceId") == credential.identity.deviceId.value &&
+                    frame.payload.longValue("step") == 1L) return@withLock
+                throw RemoteRpcException("SECURE_CHANNEL_FAILED")
+            }
             secure.readHandshakeFrame(frame)
             if (identityScope.role == RemoteRole.HOST) {
                 val reply = secure.writeHandshakeFrame(UUID.randomUUID().toString(), System.currentTimeMillis())
@@ -484,7 +600,7 @@ internal class RemoteSignalService(
         override suspend fun send(bytes: ByteArray) = sent.withLock {
             requireCurrent(); terminal?.let { throw RemoteRpcException(it) }
             try { for (cipher in secure.encryptMessage(bytes)) {
-                val carrier = rtc
+                val carrier = synchronized(rtcStateLock) { rtc }
                 if (carrier != null) carrier.sendCiphertext(cipher)
                 else {
                     val payload = obj("connectionId" to id, "targetDeviceId" to peer.device.deviceId,
@@ -503,23 +619,27 @@ internal class RemoteSignalService(
             return AutoCloseable { synchronized(callbacksLock) { closures -= handler } }
         }
         override suspend fun close() { fail("CLIENT_CLOSED") }
-        fun fail(code: String) {
-            val closingRtc: RemoteRtcPeer?
+        fun fail(code: String) = fail(code, rtcEpoch = null)
+        private fun fail(code: String, rtcEpoch: Long?) {
             val closingRelay: RemoteSocket?
             val callbacks = synchronized(callbacksLock) {
-                if (terminal != null) return
-                terminal = code
-                closingRtc = rtcPeer
+                synchronized(rtcStateLock) {
+                    if (terminal != null || rtcEpoch != null && !isRtcGenerationActive(rtcEpoch)) return
+                    // 与 Relay 选路使用同一把锁，迟到的协商错误无法关闭已接管的中继。
+                    terminal = code
+                }
                 closingRelay = relaySocket
                 messages.clear()
                 closures.toList().also { closures.clear() }
             }
+            val (closingRtc, cancellingInit) = invalidateRtc()
             tunnels.remove(id, this)
             if (identityScope.role == RemoteRole.HOST && code != "CLIENT_CLOSED") {
                 Log.d(RemoteHostControl.TAG, "PEER_DISCONNECTED ${safeRoleErrorCode(code, "PEER_CONNECTION_CLOSED")}")
             }
             closeRemoteConnectionResources(
                 { onPeerClosed(connectionScope, code) },
+                { cancellingInit?.cancel(); Unit },
                 { rtcAvailable.completeExceptionally(RemoteRpcException(code)); Unit },
                 { carrierReady.completeExceptionally(RemoteRpcException(code)); Unit },
                 { secure.close() }, { closingRtc?.close(); Unit }, { closingRelay?.close(); Unit },

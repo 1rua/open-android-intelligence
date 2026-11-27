@@ -3,6 +3,7 @@ package com.openandroidintelligence.gateway.remote.runtime
 import android.content.Context
 import com.openandroidintelligence.gateway.remote.auth.*
 import com.openandroidintelligence.gateway.remote.authproduction.*
+import com.openandroidintelligence.gateway.remote.authproduction.RemoteCredentialVault.Companion.RETRYABLE_HOST_REGISTRATION_ERRORS
 import com.openandroidintelligence.gateway.remote.identity.*
 import com.openandroidintelligence.gateway.remote.network.*
 import com.openandroidintelligence.gateway.remote.rpc.*
@@ -14,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.random.Random
@@ -24,6 +26,10 @@ enum class RemoteHostConnectionState { STOPPED, CONNECTING, ONLINE, FAILED }
 private val clientReauthorizationCodes = setOf("TOKEN_EXPIRED", "AUTH_INVALID")
 private fun safeClientErrorCode(code: String, fallback: String) =
     if (code == "CLIENT_CLOSED") code else safeRoleErrorCode(code, fallback)
+private val hostRegistrationCredentialRetryCodes = RETRYABLE_HOST_REGISTRATION_ERRORS + setOf(
+    "REMOTE_REFRESH_FAILED", "REMOTE_REFRESH_CONFLICT", "REMOTE_IDENTITY_LOCKED",
+)
+private const val OLD_HOST_REGISTRATION_CONFLICT = "REMOTE_HOST_REGISTRATION_CONFLICT"
 
 /** 单活动账号的生产入口；界面选择与聊天状态留给各自领域，不从旧 Core 凭据恢复。 */
 class RemoteAccountRuntime(
@@ -62,6 +68,8 @@ class RemoteAccountRuntime(
     private val mutableHostFailure = MutableStateFlow<RemoteHostFailure?>(null)
     val hostFailure = mutableHostFailure.asStateFlow()
     @Volatile private var loginJob: Job? = null
+    @Volatile private var hostRegistrationRecoveryJob: Job? = null
+    @Volatile private var hostRegistrationRecoveryEpoch: RemoteActiveAccount? = null
     private var api: RemoteServerApi? = null
     private var host: RemoteHostControl? = null
     @Volatile private var client: RemoteSignalService? = null
@@ -72,6 +80,7 @@ class RemoteAccountRuntime(
     @Volatile private var clientWake = RemoteReconnectSignal()
     @Volatile private var standbyAwaitingForeground: RemoteActiveAccount? = null
     private var clientAvailable = CompletableDeferred<RemoteSignalService>()
+    private val hostRegistrationWake = Channel<Unit>(Channel.CONFLATED)
     private val presenceRefresh = Mutex()
     private val selectionGeneration = java.util.concurrent.atomic.AtomicLong(0)
     private val selectionLock = Any()
@@ -116,6 +125,10 @@ class RemoteAccountRuntime(
                 if (result.host.state == RemoteRoleRegistrationState.FAILED) {
                     publishHost(RemoteHostConnectionState.FAILED, RemoteHostFailure(RemoteHostFailureStage.REGISTRATION,
                         result.host.errorCode ?: "REMOTE_ROLE_REGISTRATION_FAILED"))
+                    if (result.client.state == RemoteRoleRegistrationState.REGISTERED &&
+                        result.host.errorCode in RETRYABLE_HOST_REGISTRATION_ERRORS) {
+                        mutableAccount.value?.let(::scheduleHostRegistrationRecovery)
+                    }
                 }
                 result
             }
@@ -208,7 +221,17 @@ class RemoteAccountRuntime(
         api = server; mutableAccount.value = active
         val clientError = clientRoleError(failures, client)
         startClientRole(active, clientError)
+        // 旧 Host 记录与本次待补注册不能共存：先持久终止，等待显式重新登录或后续迁移切片。
+        val oldHostRegistration = hostCredential != null && failures.hostStop == null &&
+            failures.hostRegistration in RETRYABLE_HOST_REGISTRATION_ERRORS
+        if (oldHostRegistration) {
+            val failure = RemoteHostFailure(RemoteHostFailureStage.REGISTRATION, OLD_HOST_REGISTRATION_CONFLICT)
+            try { vault.stopHostUntilLogin(active, failure) }
+            catch (_: Exception) { failClosedActive(active); return@withLock active }
+        }
         when {
+            oldHostRegistration -> publishHost(RemoteHostConnectionState.FAILED,
+                RemoteHostFailure(RemoteHostFailureStage.REGISTRATION, OLD_HOST_REGISTRATION_CONFLICT))
             failures.hostStop != null -> publishHost(RemoteHostConnectionState.FAILED, failures.hostStop)
             hostCredential != null || hostReceipt.second == "REMOTE_IDENTITY_LOCKED" -> startHost(active, server)
             hostReceipt.second != null -> publishHost(RemoteHostConnectionState.FAILED,
@@ -216,6 +239,8 @@ class RemoteAccountRuntime(
             failures.hostRegistration != null -> publishHost(RemoteHostConnectionState.FAILED,
                 RemoteHostFailure(RemoteHostFailureStage.REGISTRATION, failures.hostRegistration))
         }
+        if (hostCredential == null && hostReceipt.second == null && failures.hostStop == null &&
+            failures.hostRegistration in RETRYABLE_HOST_REGISTRATION_ERRORS && clientError == null) scheduleHostRegistrationRecovery(active)
         active
     }
 
@@ -365,11 +390,14 @@ class RemoteAccountRuntime(
     fun authenticatedPeer(connectionId: String): AuthenticatedRemotePeer = peers[connectionId] ?: throw RemoteRpcException("CONNECTION_BINDING_MISMATCH")
     suspend fun logout() {
         loginJob?.cancel(); loginJob = null
+        hostRegistrationRecoveryJob?.cancel(); hostRegistrationRecoveryJob = null; hostRegistrationRecoveryEpoch = null
         lifecycle.withLock { revokeLocal() }
     }
     private fun revokeLocal() {
         var old = mutableAccount.value
         val closingHost = synchronized(selectionLock) {
+            hostRegistrationRecoveryJob?.cancel(); hostRegistrationRecoveryJob = null; hostRegistrationRecoveryEpoch = null
+            standbyAwaitingForeground = null
             selectionGeneration.incrementAndGet(); pendingConnect?.cancel(); pendingConnect = null
             mutableHostStandby.value = false
             mutableAccount.value = null
@@ -584,6 +612,8 @@ class RemoteAccountRuntime(
         var closingPeers: List<AuthenticatedRemotePeer> = emptyList()
         synchronized(selectionLock) {
             if (mutableAccount.value == active) {
+                hostRegistrationRecoveryJob?.cancel(); hostRegistrationRecoveryJob = null; hostRegistrationRecoveryEpoch = null
+                standbyAwaitingForeground = null
                 selectionGeneration.incrementAndGet()
                 pendingConnect?.cancel(); pendingConnect = null
                 mutableAccount.value = null
@@ -645,6 +675,7 @@ class RemoteAccountRuntime(
     }
     fun refreshControlConnection() {
         val active = mutableAccount.value ?: return
+        scheduleHostRegistrationRecovery(active)
         var refreshClient = false
         synchronized(selectionLock) {
             if (mutableAccount.value != active) return
@@ -703,6 +734,203 @@ class RemoteAccountRuntime(
         }
         restart.start()
     }
+    /** 首次 Host 注册的网络失败只做有界退避，网络回调通过同一入口唤醒，不能叠加任务。 */
+    private fun scheduleHostRegistrationRecovery(active: RemoteActiveAccount) {
+        synchronized(selectionLock) {
+            if (mutableAccount.value != active) return
+            if (standbyAwaitingForeground == active || mutableClientFailure.value != null) return
+            val failure = mutableHostFailure.value
+            if (failure?.stage != RemoteHostFailureStage.REGISTRATION || failure.code !in hostRegistrationCredentialRetryCodes) return
+            if (hostRegistrationRecoveryJob?.isActive == true) {
+                if (hostRegistrationRecoveryEpoch == active) {
+                    hostRegistrationWake.trySend(Unit)
+                    return
+                }
+                hostRegistrationRecoveryJob?.cancel()
+            }
+            while (hostRegistrationWake.tryReceive().isSuccess) Unit
+            val owner = scope.launch(start = CoroutineStart.LAZY) {
+                recoverOwnedHost(active)
+            }
+            hostRegistrationRecoveryJob = owner
+            hostRegistrationRecoveryEpoch = active
+            owner.start()
+        }
+    }
+    private sealed interface HostRegistrationAttempt {
+        data object Done : HostRegistrationAttempt
+        data class Retry(val code: String, val pendingCommit: RemoteRoleCredential? = null) : HostRegistrationAttempt
+        data class Stop(val code: String) : HostRegistrationAttempt
+    }
+    private suspend fun recoverOwnedHost(active: RemoteActiveAccount) {
+        var retry = 1_000L
+        var pendingCommit: RemoteRoleCredential? = null
+        val runningJob = currentCoroutineContext()[Job]
+        try {
+            while (currentCoroutineContext().isActive) {
+                currentCoroutineContext().ensureActive()
+                val outcome = pendingCommit?.let { commitOwnedHostRegistration(active, it) }
+                    ?: attemptOwnedHostRegistration(active)
+                when (outcome) {
+                    HostRegistrationAttempt.Done -> return
+                    is HostRegistrationAttempt.Stop -> {
+                        stopHostRegistrationRecovery(active, outcome.code)
+                        return
+                    }
+                    is HostRegistrationAttempt.Retry -> {
+                        pendingCommit = outcome.pendingCommit
+                        publishHostRegistrationFailure(active, outcome.code)
+                        withTimeoutOrNull(retry) { hostRegistrationWake.receive() }
+                        retry = (retry * 2).coerceAtMost(30_000L)
+                    }
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            if (isCurrentAccount(active)) stopHostRegistrationRecovery(active, "REMOTE_CREDENTIAL_MISSING")
+        } finally {
+            synchronized(selectionLock) {
+                if (hostRegistrationRecoveryJob === runningJob) {
+                    hostRegistrationRecoveryJob = null
+                    hostRegistrationRecoveryEpoch = null
+                }
+            }
+        }
+    }
+    private fun hostRegistrationAccountBlocked(active: RemoteActiveAccount): HostRegistrationAttempt? = try {
+        requireActive(active)
+        null
+    } catch (_: RemoteIdentityLockedException) {
+        HostRegistrationAttempt.Retry("REMOTE_IDENTITY_LOCKED")
+    } catch (_: IllegalStateException) {
+        HostRegistrationAttempt.Done
+    }
+    private suspend fun attemptOwnedHostRegistration(active: RemoteActiveAccount): HostRegistrationAttempt {
+        hostRegistrationAccountBlocked(active)?.let { return it }
+        if (standbyAwaitingForeground == active || mutableClientFailure.value != null) return HostRegistrationAttempt.Done
+        val failures = try { vault.roleFailures(active) } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) {
+            hostRegistrationAccountBlocked(active)?.let { return it }
+            return if (error is RemoteIdentityLockedException) HostRegistrationAttempt.Retry("REMOTE_IDENTITY_LOCKED")
+            else HostRegistrationAttempt.Stop("REMOTE_CREDENTIAL_MISSING")
+        }
+        if (failures.hostRegistration !in RETRYABLE_HOST_REGISTRATION_ERRORS || failures.hostStop != null ||
+            failures.clientRegistration != null || failures.clientStop != null) return HostRegistrationAttempt.Done
+        storedHostRegistrationBlock(active)?.let { return HostRegistrationAttempt.Stop(it) }
+        val server = api ?: return HostRegistrationAttempt.Done
+        val client = try { credential(active, RemoteRole.CLIENT) } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) {
+            hostRegistrationAccountBlocked(active)?.let { return it }
+            // Client 密钥暂锁属于可恢复暂态，不得落盘为 Host 永久缺票终态。
+            if (error is RemoteIdentityLockedException) return HostRegistrationAttempt.Retry("REMOTE_IDENTITY_LOCKED")
+            val code = when (error) {
+                is RemoteIdentityCorruptedException -> "REMOTE_IDENTITY_CORRUPTED"
+                is RemoteRpcException -> error.code
+                else -> null
+            }
+            if (code in hostRegistrationCredentialRetryCodes) return HostRegistrationAttempt.Retry(requireNotNull(code))
+            // 客户端已落盘终态时不再叠加覆盖 Host 终态；其余不可恢复缺票停止 Host 补偿。
+            return if (runCatching { vault.roleFailures(active).clientStop }.getOrNull() == null) {
+                HostRegistrationAttempt.Stop(code ?: "REMOTE_CREDENTIAL_MISSING")
+            } else HostRegistrationAttempt.Done
+        }
+        hostRegistrationAccountBlocked(active)?.let { return it }
+        currentCoroutineContext().ensureActive()
+        val identity = try { installation.loadOrCreate(client.identity, null).host }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) {
+            hostRegistrationAccountBlocked(active)?.let { return it }
+            return when (error) {
+                is RemoteIdentityLockedException -> HostRegistrationAttempt.Retry("REMOTE_IDENTITY_LOCKED")
+                is RemoteIdentityCorruptedException -> HostRegistrationAttempt.Stop("REMOTE_IDENTITY_CORRUPTED")
+                else -> HostRegistrationAttempt.Stop("REMOTE_CREDENTIAL_MISSING")
+            }
+        }
+        storedHostRegistrationBlock(active)?.let { return HostRegistrationAttempt.Stop(it) }
+        val hostScope = RemoteIdentityScope(active.origin, active.accountId, RemoteRole.HOST)
+        // 本次尝试发起前排空更早的唤醒信号；请求飞行期间新到达的网络事件仍可唤醒下次重试。
+        while (hostRegistrationWake.tryReceive().isSuccess) Unit
+        val issued = try {
+            // 网络请求不持有 lifecycle 锁；提交前由 vault 的活动账号与 epoch 共同校验迟到结果。
+            try {
+                server.registerOwnedHost(hostScope, identity, client.tokens.accessToken)
+            } catch (authorization: RemoteRpcException) {
+                if (authorization.code !in clientReauthorizationCodes) throw authorization
+                // 与 Host 控制连接相同：只按既有存储规则续期一次，连续拒绝转为持久终态。
+                val refreshed = credential(active, RemoteRole.CLIENT, client.tokens.accessToken)
+                server.registerOwnedHost(hostScope, identity, refreshed.tokens.accessToken)
+            }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) {
+            hostRegistrationAccountBlocked(active)?.let { return it }
+            return when (failure) {
+                is RemoteIdentityLockedException -> HostRegistrationAttempt.Retry("REMOTE_IDENTITY_LOCKED")
+                is RemoteIdentityCorruptedException -> HostRegistrationAttempt.Stop("REMOTE_IDENTITY_CORRUPTED")
+                is RemoteRpcException -> {
+                    if (failure.code in hostRegistrationCredentialRetryCodes) HostRegistrationAttempt.Retry(failure.code)
+                    else HostRegistrationAttempt.Stop(failure.code)
+                }
+                else -> HostRegistrationAttempt.Stop("REMOTE_CREDENTIAL_MISSING")
+            }
+        }
+        return commitOwnedHostRegistration(active, issued)
+    }
+    private suspend fun commitOwnedHostRegistration(active: RemoteActiveAccount, issued: RemoteRoleCredential): HostRegistrationAttempt {
+        if (mutableAccount.value != active) return HostRegistrationAttempt.Done
+        val server = api ?: return HostRegistrationAttempt.Done
+        val hostScope = RemoteIdentityScope(active.origin, active.accountId, RemoteRole.HOST)
+        currentCoroutineContext().ensureActive()
+        return when (vault.completeHostRegistration(active, issued)) {
+            RemoteCredentialVault.HostRegistrationCommitResult.Committed -> {
+                // 与 revokeLocal/importPairing 共用 selectionLock，闭合解除撤销标记与注销/配对之间的 TOCTOU 窗口。
+                val readyToStart = synchronized(selectionLock) {
+                    if (!isCurrentAccount(active)) false else {
+                        store.restoreCommitted(hostScope)
+                        true
+                    }
+                }
+                if (readyToStart) {
+                    android.util.Log.i(RemoteHostControl.TAG, "REGISTERED")
+                    startHost(active, server)
+                }
+                HostRegistrationAttempt.Done
+            }
+            RemoteCredentialVault.HostRegistrationCommitResult.ExistingHostConflict ->
+                HostRegistrationAttempt.Stop(storedHostRegistrationBlock(active) ?: OLD_HOST_REGISTRATION_CONFLICT)
+            RemoteCredentialVault.HostRegistrationCommitResult.IdentityConflict ->
+                HostRegistrationAttempt.Stop(OLD_HOST_REGISTRATION_CONFLICT)
+            RemoteCredentialVault.HostRegistrationCommitResult.CredentialsLocked ->
+                // 服务端已完成注册。解锁后提交原响应，避免重复发起注册。
+                HostRegistrationAttempt.Retry("REMOTE_IDENTITY_LOCKED", pendingCommit = issued)
+            RemoteCredentialVault.HostRegistrationCommitResult.NotEligible -> HostRegistrationAttempt.Done
+        }
+    }
+    private fun storedHostRegistrationBlock(active: RemoteActiveAccount): String? {
+        val receipt = readStoredRole(active, RemoteRole.HOST)
+        return when {
+            receipt.first != null -> OLD_HOST_REGISTRATION_CONFLICT
+            receipt.second != null -> receipt.second
+            else -> null
+        }
+    }
+    private fun isCurrentAccount(active: RemoteActiveAccount): Boolean =
+        mutableAccount.value == active && runCatching { vault.requireCurrent(active) }.isSuccess
+    private fun stopHostRegistrationRecovery(active: RemoteActiveAccount, code: String) {
+        if (!isCurrentAccount(active)) return
+        val safe = safeRoleErrorCode(code, "CONTROL_CONNECTION_FAILED")
+        try { vault.stopHostUntilLogin(active, RemoteHostFailure(RemoteHostFailureStage.REGISTRATION, safe)) }
+        catch (_: Exception) { failClosedActive(active); return }
+        publishHostRegistrationFailure(active, safe)
+    }
+    private fun publishHostRegistrationFailure(active: RemoteActiveAccount, code: String) {
+        synchronized(selectionLock) {
+            if (mutableAccount.value != active) return
+            val current = mutableHostFailure.value
+            if (current?.stage == RemoteHostFailureStage.REGISTRATION && current.code == code) return
+            publishHost(RemoteHostConnectionState.FAILED, RemoteHostFailure(RemoteHostFailureStage.REGISTRATION, code))
+        }
+    }
     private fun startHost(active: RemoteActiveAccount, server: RemoteServerApi) {
         val handler = hostHandler ?: return
         val owner = RemoteHostControl(
@@ -737,6 +965,7 @@ class RemoteAccountRuntime(
         )
         synchronized(selectionLock) {
             requireActive(active)
+            if (host != null) return
             host = owner
             mutableHostStandby.value = true
             owner.start()

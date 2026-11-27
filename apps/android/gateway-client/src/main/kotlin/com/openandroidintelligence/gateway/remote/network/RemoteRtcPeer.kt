@@ -11,6 +11,16 @@ import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.*
 import org.webrtc.*
 
+/** 隧道持有的单条 WebRTC 协商会话契约；生产实现由 [RemoteRtcPeer] 提供。 */
+internal interface RemoteRtcPeerSession : AutoCloseable {
+    suspend fun initiate(): RtcDataChannelTransport
+    suspend fun acceptOffer(sdp: String)
+    suspend fun acceptAnswer(sdp: String)
+    fun acceptIce(value: JsonValue.JObject)
+    suspend fun selectedTransport(): String
+    suspend fun awaitOpen(): RtcDataChannelTransport
+}
+
 /** 一条隧道拥有一个 PeerConnection；只传输 Noise 密文，不将 SDP 就绪当作认证。 */
 internal class RemoteRtcPeer(
     context: Context,
@@ -20,7 +30,7 @@ internal class RemoteRtcPeer(
     iceServers: List<RemoteIceServer>,
     turnOnly: Boolean,
     private val signal: (String, JsonValue.JObject) -> Unit,
-) : AutoCloseable {
+) : RemoteRtcPeerSession {
     private val opened = CompletableDeferred<RtcDataChannelTransport>()
     private val remoteReady = CompletableDeferred<Unit>()
     private val pendingIce = mutableListOf<IceCandidate>()
@@ -75,7 +85,7 @@ internal class RemoteRtcPeer(
         } catch (failure: Exception) { boundary.close(); throw failure }
         finally { nativeReady.countDown() }
     }
-    suspend fun initiate(): RtcDataChannelTransport {
+    override suspend fun initiate(): RtcDataChannelTransport {
         boundary.native {
             adopt(peer.createDataChannel(RtcDataChannelTransport.CHANNEL_LABEL, DataChannel.Init())
                 ?: throw RemoteRpcException("RTC_CHANNEL_CREATE_FAILED"))
@@ -84,18 +94,18 @@ internal class RemoteRtcPeer(
         signal("signal.offer", obj("sdp" to offer.description))
         return withTimeout(15_000) { opened.await() }
     }
-    suspend fun acceptOffer(sdp: String) {
+    override suspend fun acceptOffer(sdp: String) {
         setSdp(SessionDescription(SessionDescription.Type.OFFER, sdp), local = false)
         flushIce(); val answer = createSdp(offer = false); setSdp(answer, local = true)
         signal("signal.answer", obj("sdp" to answer.description))
     }
-    suspend fun acceptAnswer(sdp: String) { setSdp(SessionDescription(SessionDescription.Type.ANSWER, sdp), local = false); flushIce() }
-    fun acceptIce(value: JsonValue.JObject) {
+    override suspend fun acceptAnswer(sdp: String) { setSdp(SessionDescription(SessionDescription.Type.ANSWER, sdp), local = false); flushIce() }
+    override fun acceptIce(value: JsonValue.JObject) {
         val candidate = IceCandidate(value.optionalText("sdpMid"), (value.fields.firstOrNull { it.first == "sdpMLineIndex" }?.second as? JsonValue.JNumber)?.raw?.toIntOrNull() ?: 0,
             value.optionalText("candidate") ?: "")
         boundary.native { synchronized(pendingIce) { if (!remoteReady.isCompleted) pendingIce += candidate else peer.addIceCandidate(candidate) } }
     }
-    suspend fun selectedTransport(): String = withTimeout(5_000) { suspendCancellableCoroutine { continuation ->
+    override suspend fun selectedTransport(): String = withTimeout(5_000) { suspendCancellableCoroutine { continuation ->
         boundary.native { peer.getStats { report ->
             if (boundary.isClosed) {
                 if (continuation.isActive) continuation.resumeWithException(RemoteRpcException("RTC_CLOSED"))
@@ -117,7 +127,7 @@ internal class RemoteRtcPeer(
             if (continuation.isActive) continuation.resume(selected)
         } }
     } }
-    suspend fun awaitOpen() = withTimeout(15_000) { opened.await() }
+    override suspend fun awaitOpen(): RtcDataChannelTransport = withTimeout(15_000) { opened.await() }
     private fun flushIce() { boundary.native { synchronized(pendingIce) { remoteReady.complete(Unit); pendingIce.forEach(peer::addIceCandidate); pendingIce.clear() } } }
     private fun adopt(channel: DataChannel) {
         if (boundary.isClosed || transport != null || channel.label() != RtcDataChannelTransport.CHANNEL_LABEL) {

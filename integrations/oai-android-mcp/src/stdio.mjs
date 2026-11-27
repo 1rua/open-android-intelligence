@@ -2,21 +2,35 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { BRIDGE_PREFIX } from './bridge.mjs';
+import { BRIDGE_PREFIX, parseLoopbackHttpOrigin } from './bridge.mjs';
 
 const id = z.string().min(1).max(256);
 const requestId = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/u);
 const fixed = { hostId: id, backend: z.literal('harness'), workspaceId: z.literal('phone-capabilities') };
 const task = { ...fixed, taskSessionId: id };
 const server = new McpServer({ name: 'oai-android-mcp-server', version: '1.0.0' });
-const base = new URL(process.env.OAI_ANDROID_BRIDGE_URL ?? 'http://127.0.0.1:0');
-if (base.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(base.hostname) || base.username || base.password || base.pathname !== '/' || base.search || base.hash) throw new Error('BRIDGE_LOOPBACK_URL_REQUIRED');
+const parsedBase = parseLoopbackHttpOrigin(process.env.OAI_ANDROID_BRIDGE_URL);
+if (!parsedBase) throw new Error('BRIDGE_LOOPBACK_URL_REQUIRED');
+const base = parsedBase.url;
 const bearer = process.env.OAI_ANDROID_BRIDGE_BEARER;
-if (!bearer) throw new Error('BRIDGE_BEARER_REQUIRED');
+if (!bearer || !/^[A-Za-z0-9._~-]{16,256}$/u.test(bearer)) throw new Error('BRIDGE_BEARER_REQUIRED');
 async function bridge(operation, args) {
-  const response = await fetch(new URL(`${BRIDGE_PREFIX}/${operation}`, base), { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(60000), headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer}` }, body: JSON.stringify(args) });
-  if (!response.ok) throw new Error('BRIDGE_AUTHORIZATION_REJECTED');
-  const result = await response.json(); if (!result.ok) throw Object.assign(new Error(result.error?.code ?? 'BRIDGE_CALL_FAILED'), { taskSessionId: result.error?.taskSessionId }); return result.value;
+  let response;
+  try {
+    response = await fetch(new URL(`${BRIDGE_PREFIX}/${operation}`, base), { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(60000),
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer}` }, body: JSON.stringify(args) });
+  } catch { throw new Error('BRIDGE_UNAVAILABLE'); }
+  let result;
+  try { result = await response.json(); } catch { throw new Error(response.ok ? 'BRIDGE_INVALID_RESPONSE' : `BRIDGE_HTTP_${response.status}`); }
+  if (!result?.ok) {
+    const code = typeof result?.error?.code === 'string' ? result.error.code : `BRIDGE_HTTP_${response.status}`;
+    const error = new Error(code);
+    if (typeof result?.error?.taskSessionId === 'string') error.taskSessionId = result.error.taskSessionId;
+    error.httpStatus = response.status;
+    throw error;
+  }
+  if (response.status !== 200) throw new Error(`BRIDGE_HTTP_${response.status}`);
+  return result.value;
 }
 function register(name, title, description, schema, operation, map = value => value, readOnly = true) {
   server.registerTool(name, { title, description, inputSchema: schema.strict(), annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: readOnly, openWorldHint: true } }, async args => {
@@ -24,7 +38,7 @@ function register(name, title, description, schema, operation, map = value => va
     catch (error) { return { isError: true, ...(typeof error?.taskSessionId === 'string' ? { structuredContent: { taskSessionId: error.taskSessionId, state: 'outcome_unknown' } } : {}), content: [{ type: 'text', text: `手机工具失败：${error instanceof Error ? error.message : 'UNKNOWN'}。请查询原 request_id，勿自动重发副作用。` }] }; }
   });
 }
-register('android_bridge_status', '手机桥状态', '读取当前 DSH 本机手机桥是否可用。', z.object({}), 'status');
+register('android_bridge_status', '手机桥状态', '读取当前 DSH 本机手机桥是否可用；只返回非敏感连接状态。', z.object({}), 'status');
 register('android_list_devices', '列出手机', '列出当前账号已授权且公开 phone-capabilities 工作区的手机。', z.object({}), 'list_devices');
 register('android_list_capabilities', '手机能力状态', '读取指定手机可用性；执行时仍由手机已验证能力和本机授权裁决。', z.object(fixed), 'capabilities');
 register('android_request_status', '查询请求回执', '从当前 control-bus 查询指定原任务的最小持久回执；不会恢复旧任务。', z.object({ ...task, request_id: requestId, targetRequestId: requestId }), 'request_status');
