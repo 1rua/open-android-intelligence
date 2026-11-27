@@ -166,6 +166,9 @@ npm run test:full
 
 ---
 
+## 感谢
+本项目基于[ds-harness-remote](https://github.com/liguobao/ds-harness-remote)实现,欢迎给上游项目和本项目star
+
 ## 开源协议
 
 本项目基于 [MIT License](./LICENSE) 开源。
