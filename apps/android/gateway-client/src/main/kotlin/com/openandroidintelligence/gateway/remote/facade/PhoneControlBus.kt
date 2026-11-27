@@ -156,8 +156,7 @@ class PhoneControlBus(
                     update(access, task.scope.taskSessionId, request.requestId) { old ->
                         old.copy(state = if (waiting) ControlRequestState.AWAITING_CONFIRMATION else ControlRequestState.ACCEPTED)
                     }
-                    event(task, if (waiting) "approval/asked" else "approval/decided", mapOf("id" to "local-${request.requestId}",
-                        "request_id" to request.requestId, "localOnly" to true))
+                    publishApproval(task, request.requestId, waiting)
                 } }, consumeSmsSendEffect = {
                     synchronized(lock) {
                         requireOutput(access, deliveryEpoch)
@@ -227,6 +226,9 @@ class PhoneControlBus(
                     update(access, task.scope.taskSessionId, request.requestId) { it.copy(
                         state = if (it.executionFence) ControlRequestState.OUTCOME_UNKNOWN else if (failure is CancellationException) ControlRequestState.CANCELLED else ControlRequestState.DENIED,
                         execution = if (it.executionFence) ControlExecutionStatus.UNKNOWN else ControlExecutionStatus.NOT_STARTED, errorCode = code) }
+                    if (old.state == ControlRequestState.AWAITING_CONFIRMATION && code == "LOCAL_USER_REJECTED") {
+                        publishApproval(task, request.requestId, waiting = false)
+                    }
                     finish(access, task, request.requestId)
                 }
             }
@@ -237,6 +239,12 @@ class PhoneControlBus(
                 task.access.remove(request.requestId)
             }
         } }
+    }
+
+    private fun publishApproval(task: Task, requestId: String, waiting: Boolean) {
+        event(task, if (waiting) "approval/asked" else "approval/decided", mapOf(
+            "id" to "local-$requestId", "request_id" to requestId, "localOnly" to true,
+        ))
     }
 
     private fun cancelRequest(access: ControlAccessBinding, task: Task, request: ParsedControlRequest): JsonValue {

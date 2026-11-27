@@ -1,9 +1,12 @@
 package com.openandroidintelligence.screen
 
 import android.content.Context
+import android.content.res.ColorStateList
 import android.content.res.Configuration
+import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.os.Build
 import android.view.InputDevice
 import android.view.MotionEvent
@@ -123,7 +126,11 @@ internal class PhoneControlOverlayView(
     private fun button(label: Int, container: Int, content: Int, action: () -> Unit): Button = Button(context).apply {
         withoutShadow()
         backgroundTintList = null
-        background = fill(container, 24)
+        background = RippleDrawable(
+            ColorStateList.valueOf((content and 0x00ffffff) or 0x1f000000),
+            fill(container, 24),
+            fill(Color.WHITE, 24),
+        )
         minHeight = dp(48)
         minimumHeight = dp(48)
         isAllCaps = false

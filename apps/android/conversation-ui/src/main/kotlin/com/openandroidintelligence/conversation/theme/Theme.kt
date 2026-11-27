@@ -1,5 +1,6 @@
 package com.openandroidintelligence.conversation.theme
 
+import android.content.Context
 import android.os.Build
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.AnimationSpec
@@ -23,6 +24,22 @@ import com.openandroidintelligence.ui.design.rememberSystemMotionPolicy
 /** 系统动态取色（Monet）自 Android 12（API 31）起提供。 */
 fun supportsDynamicColor(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
+/** 为 Compose 界面与原生窗口解析同一套 Material 3 角色。 */
+fun resolveAppColorScheme(
+    context: Context,
+    darkTheme: Boolean,
+    dynamicColor: Boolean,
+    palette: ThemePalette,
+): ColorScheme {
+    val dynamicAvailable = dynamicColor && supportsDynamicColor()
+    return when {
+        dynamicAvailable && darkTheme -> dynamicDarkColorScheme(context)
+        dynamicAvailable -> dynamicLightColorScheme(context)
+        darkTheme -> palette.darkScheme()
+        else -> palette.lightScheme()
+    }
+}
+
 /**
  * 主题桥接层。
  *
@@ -43,14 +60,7 @@ fun OpenAndroidIntelligenceTheme(
     streamingHapticFeedback: Boolean = false,
     content: @Composable () -> Unit,
 ) {
-    val context = LocalContext.current
-    val dynamicAvailable = dynamicColor && supportsDynamicColor()
-    val target = when {
-        dynamicAvailable && darkTheme -> dynamicDarkColorScheme(context)
-        dynamicAvailable -> dynamicLightColorScheme(context)
-        darkTheme -> palette.darkScheme()
-        else -> palette.lightScheme()
-    }
+    val target = resolveAppColorScheme(LocalContext.current, darkTheme, dynamicColor, palette)
     val policy = rememberSystemMotionPolicy(reduceMotion)
     val colorSpec: AnimationSpec<Color> =
         if (policy.isReduced) {

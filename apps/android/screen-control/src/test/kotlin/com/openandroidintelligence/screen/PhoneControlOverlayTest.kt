@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.View
@@ -112,9 +113,9 @@ class PhoneControlOverlayTest {
             assertFalse(pending.isCompleted)
 
             pending.cancelAndJoin()
-            overlay.finish("cancel-before-first-frame")
-
             assertTrue("取消后系统窗口登记必须清除", manager.registered.isEmpty())
+            assertEquals(1, manager.removeCount)
+            overlay.finish("cancel-before-first-frame")
             assertEquals(1, manager.removeCount)
             assertNull(overlay.protectedBounds)
             val next = async { overlay.confirm("next", "ui.tap") }
@@ -308,7 +309,9 @@ class PhoneControlOverlayTest {
                 listOf(colors.primary to colors.onPrimary, colors.secondaryContainer to colors.onSecondaryContainer,
                     colors.errorContainer to colors.onErrorContainer).forEachIndexed { index, (container, content) ->
                     val button = root.getChildAt(index + 1) as Button
-                    assertEquals(container, fill(button))
+                    val ripple = button.background as RippleDrawable
+                    assertTrue(ripple.isStateful)
+                    assertEquals(container, (ripple.getDrawable(0) as GradientDrawable).color?.defaultColor)
                     assertEquals(content, button.currentTextColor)
                     assertEquals(0f, button.elevation)
                     assertNull(button.stateListAnimator)

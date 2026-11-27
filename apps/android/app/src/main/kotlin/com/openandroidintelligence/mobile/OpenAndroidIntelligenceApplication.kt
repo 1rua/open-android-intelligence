@@ -2,15 +2,13 @@ package com.openandroidintelligence.mobile
 
 import android.app.Application
 import android.content.Context
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.openandroidintelligence.control.remote.PhoneControlOverlayColors
 import com.openandroidintelligence.control.remote.PhoneControlOverlayTheme
-import com.openandroidintelligence.conversation.theme.supportsDynamicColor
+import com.openandroidintelligence.conversation.theme.resolveAppColorScheme
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.CapabilityProviderSelector
@@ -46,14 +44,7 @@ class OpenAndroidIntelligenceApplication : Application(), RemoteStandbyOwner, Ph
 
     override fun phoneControlOverlayColors(context: Context): PhoneControlOverlayColors {
         val appearance = appearancePreferences.settings.value
-        val dark = context.appearanceIsDark(appearance)
-        val dynamic = appearance.dynamicColor && supportsDynamicColor()
-        val scheme = when {
-            dynamic && dark -> dynamicDarkColorScheme(context)
-            dynamic -> dynamicLightColorScheme(context)
-            dark -> appearance.palette.darkScheme()
-            else -> appearance.palette.lightScheme()
-        }
+        val scheme = resolveAppColorScheme(context, context.appearanceIsDark(appearance), appearance.dynamicColor, appearance.palette)
         return PhoneControlOverlayColors(
             surfaceContainerHigh = scheme.surfaceContainerHigh.toArgb(),
             onSurface = scheme.onSurface.toArgb(),
