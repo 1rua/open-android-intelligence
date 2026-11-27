@@ -54,6 +54,34 @@ class ScreenSnapshotInvalidationTest {
         Dispatchers.resetMain()
     }
 
+    @Test fun 快照失效前后仅在需要比对时枚举系统窗口() {
+        installTargetWindow()
+        val start = ScreenAccessibilityConnection.generation
+        var enumerations = 0
+        fun event() = ScreenAccessibilityConnection.onWindowEvent(AccessibilityEvent.TYPE_WINDOWS_CHANGED, null, 0) {
+            enumerations++
+            ScreenAccessibilityConnection.observeWindows(service)
+        }
+
+        event()
+        assertEquals(start + 1, ScreenAccessibilityConnection.generation)
+        assertEquals(0, enumerations)
+
+        GenerationBackend().read()
+        installTargetAndOverlayWindows()
+        event()
+        assertEquals(start + 1, ScreenAccessibilityConnection.generation)
+        assertEquals(1, enumerations)
+
+        installTargetWindow(active = false, focused = false)
+        event()
+        assertEquals(start + 2, ScreenAccessibilityConnection.generation)
+        assertEquals(2, enumerations)
+        event()
+        assertEquals(start + 3, ScreenAccessibilityConnection.generation)
+        assertEquals(2, enumerations)
+    }
+
     @Test fun 观察浮层卸载时仍由系统提供显示尺寸() {
         val manager = service.getSystemService(android.view.WindowManager::class.java)
         val observed = LocalOverlayWindowObserver(manager)

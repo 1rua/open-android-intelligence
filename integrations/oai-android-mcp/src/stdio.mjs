@@ -35,7 +35,17 @@ async function bridge(operation, args) {
 function register(name, title, description, schema, operation, map = value => value, readOnly = true) {
   server.registerTool(name, { title, description, inputSchema: schema.strict(), annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: readOnly, openWorldHint: true } }, async args => {
     try { const output = await bridge(operation, map(args)); return { content: [{ type: 'text', text: JSON.stringify(output) }], structuredContent: output }; }
-    catch (error) { return { isError: true, ...(typeof error?.taskSessionId === 'string' ? { structuredContent: { taskSessionId: error.taskSessionId, state: 'outcome_unknown' } } : {}), content: [{ type: 'text', text: `手机工具失败：${error instanceof Error ? error.message : 'UNKNOWN'}。请查询原 request_id，勿自动重发副作用。` }] }; }
+    catch (error) {
+      const code = error instanceof Error ? error.message : 'UNKNOWN';
+      const hint = code === 'PHONE_TARGET_NOT_CONNECTED' || code === 'PHONE_TARGET_CONNECTION_MISMATCH'
+        ? '请先在 DSH 的 Remote 面板连接目标手机。本次请求未发送。'
+        : '请查询原 request_id，勿自动重发副作用。';
+      return {
+        isError: true,
+        ...(typeof error?.taskSessionId === 'string' ? { structuredContent: { taskSessionId: error.taskSessionId, state: 'outcome_unknown' } } : {}),
+        content: [{ type: 'text', text: `手机工具失败：${code}。${hint}` }],
+      };
+    }
   });
 }
 register('android_bridge_status', '手机桥状态', '读取当前 DSH 本机手机桥是否可用；只返回非敏感连接状态。', z.object({}), 'status');

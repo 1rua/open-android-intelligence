@@ -2,17 +2,13 @@ package com.openandroidintelligence.screen
 
 import android.graphics.PixelFormat
 import android.view.Gravity
-import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.TextView
-import android.widget.ScrollView
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.control.ScreenBounds
 import com.openandroidintelligence.control.ScreenHostRegistry
+import com.openandroidintelligence.control.remote.PhoneControlOverlayTheme
 import com.openandroidintelligence.control.remote.PhoneLocalControlUi
 import com.openandroidintelligence.control.remote.PhoneLocalControlUiRegistry
 import com.openandroidintelligence.control.remote.LocalUiCaptureProtection
@@ -30,8 +26,12 @@ class PhoneControlOverlay(
     private val service: ScreenAccessibilityService,
     private val manager: WindowManager = service.getSystemService(WindowManager::class.java),
 ) : PhoneLocalControlUi, AutoCloseable {
-    private val queue = Mutex(); private var view: View? = null; private var activeId: String? = null
-    private var decision: CompletableDeferred<Boolean>? = null
+    private class Request(val id: String, val decision: CompletableDeferred<Boolean>? = null)
+
+    private val queue = Mutex()
+    private var owner: Request? = null
+    // 只记录 addView 成功返回的窗口，附着与首帧是另外的状态。
+    private var view: PhoneControlOverlayView? = null
     @Volatile private var bounds: ScreenBounds? = null
     @Volatile private var protecting = false
     @Volatile private var stopped = false
@@ -57,7 +57,7 @@ class PhoneControlOverlay(
             if (params == null || params.windowAnimations != 0 || params.dimAmount != 0f || params.blurBehindRadius != 0 ||
                 params.flags and WindowManager.LayoutParams.FLAG_SECURE == 0 || hasExternalDrawing(current)) geometryProvable = false
         }
-        if (current != null && current.isLaidOut && current.width > 0 && current.height > 0) {
+        if (current != null && current.isLaidOut && !current.isLayoutRequested && current.width > 0 && current.height > 0) {
             val at = IntArray(2); current.getLocationOnScreen(at)
             val actual = ScreenBounds(at[0], at[1], at[0] + current.width, at[1] + current.height)
             if (actual != bounds) recordBounds(actual, display)
@@ -73,7 +73,7 @@ class PhoneControlOverlay(
             combine(protectionChanges, PhoneLocalControlUiRegistry.changes) { local, owner -> local to owner }.first {
                 currentCoroutineContext().ensureActive()
                 if (stopped || PhoneLocalControlUiRegistry.current !== this@PhoneControlOverlay ||
-                    activeId != requestId || view !== ownedView || !protecting) {
+                    owner?.id != requestId || view !== ownedView || !protecting) {
                     throw ControlRequestException("SCREEN_LOCAL_UI_CHANGED")
                 }
                 result = captureProtection()?.takeIf { it.ready }
@@ -102,84 +102,87 @@ class PhoneControlOverlay(
         changedProtection()
     }
     override suspend fun confirm(requestId: String, capability: String, localParameters: String?): Boolean {
-        queue.lock()
+        val pending = CompletableDeferred<Boolean>()
+        val request = Request(requestId, pending)
+        queue.lock(request)
         var retained = false
-        return try { withContext(Dispatchers.Main.immediate) {
-            if (stopped) return@withContext false
-            val pending = CompletableDeferred<Boolean>(); decision = pending; activeId = requestId
-            val detail = if (capability == "org.openandroidintelligence.sms.send") {
-                val parameters = localParameters?.let { JsonFields.obj(Json.parse(it)) }
-                    ?: return@withContext false
-                service.getString(R.string.remote_phone_sms_confirmation,
-                    JsonFields.string(parameters, "recipient") ?: return@withContext false,
-                    JsonFields.int(parameters, "subscriptionId") ?: return@withContext false,
-                    JsonFields.string(parameters, "text")?.take(240) ?: return@withContext false,
-                    JsonFields.string(parameters, "text")?.length ?: return@withContext false)
-            } else if (capability == "push.bind_recipient") {
-                val parameters=localParameters?.let { JsonFields.obj(Json.parse(it)) } ?: return@withContext false
-                val keys=listOf("controllerDeviceId","controllerKeyFingerprint","origin","accountId","hostDeviceId",
-                    "hostKeyFingerprint","backend","workspaceId","sessionId")
-                val values=keys.map { JsonFields.string(parameters,it) ?: return@withContext false }
-                service.getString(R.string.remote_phone_push_recipient_confirmation,*values.toTypedArray())
-            } else null
-            val title=if (capability == "push.bind_recipient") service.getString(R.string.remote_phone_push_recipient_title)
-                else service.getString(R.string.remote_phone_confirm,capability)
-            show(title,pending,detail)
-            val allowed = withTimeoutOrNull(5 * 60_000) { pending.await() } ?: false
-            decision = null
-            if (allowed && !stopped) {
-                show(service.getString(R.string.remote_phone_executing), null)
-                retained = true
+        try {
+            retained = withContext(Dispatchers.Main.immediate) {
+                if (stopped) return@withContext false
+                val detail = if (capability == "org.openandroidintelligence.sms.send") {
+                    val parameters = localParameters?.let { JsonFields.obj(Json.parse(it)) } ?: return@withContext false
+                    val text = JsonFields.string(parameters, "text") ?: return@withContext false
+                    service.getString(R.string.remote_phone_sms_confirmation,
+                        JsonFields.string(parameters, "recipient") ?: return@withContext false,
+                        JsonFields.int(parameters, "subscriptionId") ?: return@withContext false,
+                        text.take(240), text.length)
+                } else if (capability == "push.bind_recipient") {
+                    val parameters = localParameters?.let { JsonFields.obj(Json.parse(it)) } ?: return@withContext false
+                    val keys = listOf("controllerDeviceId", "controllerKeyFingerprint", "origin", "accountId", "hostDeviceId",
+                        "hostKeyFingerprint", "backend", "workspaceId", "sessionId")
+                    val values = keys.map { JsonFields.string(parameters, it) ?: return@withContext false }
+                    service.getString(R.string.remote_phone_push_recipient_confirmation, *values.toTypedArray())
+                } else null
+                val title = if (capability == "push.bind_recipient") service.getString(R.string.remote_phone_push_recipient_title)
+                    else service.getString(R.string.remote_phone_confirm, capability)
+                owner = request
+                mount(title, detail) { pending.complete(it) }
+                val allowed = withTimeoutOrNull(5 * 60_000) { pending.await() } == true
+                if (!allowed || stopped || owner !== request) return@withContext false
+
+                // 详情和确认按钮移出同一个窗口。重新布局前仍保护整个屏幕。
+                bounds = null
+                checkNotNull(view).showExecuting(service.getString(R.string.remote_phone_executing))
+                changedProtection()
                 true
-            } else false
-        } } finally { if (!retained) withContext(NonCancellable + Dispatchers.Main.immediate) {
-            decision = null
-            try { hide() } finally { activeId = null; queue.unlock() }
-        } }
-    }
-    override suspend fun executing(requestId: String) {
-        val owns = withContext(Dispatchers.Main.immediate) { activeId == requestId }
-        if (owns) return
-        queue.lock()
-        try { withContext(Dispatchers.Main.immediate) {
-        if (stopped) throw IllegalStateException("REMOTE_EMERGENCY_STOPPED"); activeId = requestId
-        show(service.getString(R.string.remote_phone_executing), null)
-        } } catch (failure: Exception) {
-            withContext(NonCancellable + Dispatchers.Main.immediate) {
-                try { hide() } finally { activeId = null; queue.unlock() }
             }
-            throw failure
+            return retained
+        } finally {
+            if (!retained) withContext(NonCancellable + Dispatchers.Main.immediate) { release(request) }
         }
     }
-    override suspend fun finish(requestId: String) = withContext(NonCancellable + Dispatchers.Main.immediate) {
-        if (activeId == requestId) {
-            decision?.complete(false)
-            try { hide() } finally { activeId = null; if (queue.isLocked) queue.unlock() }
+
+    override suspend fun executing(requestId: String) {
+        val owns = withContext(Dispatchers.Main.immediate) { owner?.id == requestId }
+        if (owns) return
+        val request = Request(requestId)
+        queue.lock(request)
+        var retained = false
+        try {
+            withContext(Dispatchers.Main.immediate) {
+                if (stopped) throw IllegalStateException("REMOTE_EMERGENCY_STOPPED")
+                owner = request
+                mount(service.getString(R.string.remote_phone_executing))
+            }
+            retained = true
+        } finally {
+            if (!retained) withContext(NonCancellable + Dispatchers.Main.immediate) { release(request) }
         }
     }
-    override fun emergencyStop() { stopped = true; changedProtection(); decision?.complete(false); stopNative(); PhoneLocalControlUiRegistry.notifyEmergencyStop() }
-    private fun stopNative() { com.openandroidintelligence.control.remote.NativePhoneScreenRegistry.current?.stop(); ScreenHostRegistry.current?.revoke() }
-    private fun show(title: String, pending: CompletableDeferred<Boolean>?, detail: String? = null) {
+
+    override suspend fun finish(requestId: String) {
+        withContext(NonCancellable + Dispatchers.Main.immediate) {
+            owner?.takeIf { it.id == requestId }?.let(::release)
+        }
+    }
+
+    override fun emergencyStop() {
+        stopped = true
         changedProtection()
+        owner?.decision?.complete(false)
+        stopNative()
+        PhoneLocalControlUiRegistry.notifyEmergencyStop()
+    }
+
+    private fun stopNative() { com.openandroidintelligence.control.remote.NativePhoneScreenRegistry.current?.stop(); ScreenHostRegistry.current?.revoke() }
+
+    private fun mount(title: String, detail: String? = null, decide: ((Boolean) -> Unit)? = null) {
+        check(view == null)
         protecting = true
-        hide(clearProtection = false)
-        val layout = LinearLayout(service).apply {
-            orientation = LinearLayout.VERTICAL
-            val density = resources.displayMetrics.density
-            setPadding((16 * density).toInt(), (12 * density).toInt(), (16 * density).toInt(), (12 * density).toInt())
-            setBackgroundColor(0xff202124.toInt())
-            elevation = 0f; translationZ = 0f; outlineProvider = null
-            clipChildren = true; clipToPadding = true
-        }
-        layout.addView(TextView(service).apply { text = title; setTextColor(0xffffffff.toInt()) })
-        if (detail != null) {
-            layout.addView(ScrollView(service).apply {
-                addView(TextView(service).apply { text = detail; setTextColor(0xffffffff.toInt()) })
-            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
-                (service.resources.displayMetrics.heightPixels / 3)))
-        }
-        if (pending != null) { layout.addView(button(R.string.remote_phone_allow) { pending.complete(true) }); layout.addView(button(R.string.remote_phone_deny) { pending.complete(false) }) }
-        layout.addView(button(R.string.remote_phone_stop) { emergencyStop() })
+        changedProtection()
+        val colors = (service.application as? PhoneControlOverlayTheme)?.phoneControlOverlayColors(service)
+            ?: systemPhoneControlOverlayColors(service)
+        val layout = PhoneControlOverlayView(service, colors, title, detail, decide, ::emergencyStop)
         val params = WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_SECURE or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, PixelFormat.TRANSLUCENT).apply {
                 gravity = Gravity.TOP or Gravity.END
@@ -193,25 +196,51 @@ class PhoneControlOverlay(
                 else geometryProvable = false
             }
         }
-        manager.addView(layout, params); view = layout
+        try {
+            manager.addView(layout, params)
+        } catch (_: WindowManager.BadTokenException) {
+            layout.deactivate()
+            throw ControlRequestException("LOCAL_CONFIRMATION_UI_UNAVAILABLE")
+        } catch (_: WindowManager.InvalidDisplayException) {
+            layout.deactivate()
+            throw ControlRequestException("LOCAL_CONFIRMATION_UI_UNAVAILABLE")
+        }
+        view = layout
     }
-    private fun button(label: Int, action: () -> Unit): Button = Button(service).apply {
-        // 系统按钮的按压 Z 动画会在窗口外产生影子，整屏遮蔽路径不允许该类外绘。
-        stateListAnimator = null; elevation = 0f; translationZ = 0f; outlineProvider = null
-        setText(label); var physicalDown = false
-        setOnTouchListener { _, event -> if (event.actionMasked == MotionEvent.ACTION_DOWN) physicalDown = event.deviceId != 0 && event.source and android.view.InputDevice.SOURCE_TOUCHSCREEN == android.view.InputDevice.SOURCE_TOUCHSCREEN; if (event.actionMasked == MotionEvent.ACTION_CANCEL) physicalDown = false; false }
-        setOnClickListener { if (physicalDown) action(); physicalDown = false }
+
+    private fun release(request: Request) {
+        try {
+            if (owner === request) {
+                owner = null
+                val registered = view
+                view = null
+                try {
+                    registered?.deactivate()
+                    // 首帧前已登记的窗口同样必须从 WindowManager 注销。
+                    registered?.let(manager::removeViewImmediate)
+                } finally {
+                    bounds = null
+                    protecting = false
+                    changedProtection()
+                }
+            }
+        } finally {
+            if (queue.holdsLock(request)) queue.unlock(request)
+            request.decision?.complete(false)
+        }
     }
-    private fun hide(clearProtection: Boolean = true) {
-        if (clearProtection) protecting = false
-        bounds = null
-        val old = view; view = null
-        changedProtection()
-        old?.let { if (it.isAttachedToWindow) manager.removeViewImmediate(it) }
-    }
+
     override fun close() {
-        stopped = true; decision?.complete(false); stopNative(); hide()
-        if (PhoneLocalControlUiRegistry.current === this) PhoneLocalControlUiRegistry.current = null
+        stopped = true
+        try {
+            stopNative()
+        } finally {
+            try {
+                owner?.let(::release)
+            } finally {
+                if (PhoneLocalControlUiRegistry.current === this) PhoneLocalControlUiRegistry.current = null
+            }
+        }
     }
     companion object { internal const val CAPTURE_LAYOUT_TIMEOUT_MS = 2_000L }
 }

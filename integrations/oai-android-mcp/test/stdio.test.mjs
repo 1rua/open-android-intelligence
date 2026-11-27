@@ -9,8 +9,9 @@ import { PhoneMcpBridge, registerPhoneMcpRoute } from '../src/bridge.mjs';
 
 test('真实 Stdio SDK tools/list 与 tools/call 严格保持 android 命名和明确任务', async () => {
   const calls = [];
+  let connectedTargetDeviceId;
   const bridge = new PhoneMcpBridge({
-    status() { return { connectedTargetDeviceId: 'phone-1', recoveryGeneration: 0 }; },
+    status() { return { connected: !!connectedTargetDeviceId, connectedTargetDeviceId, recoveryGeneration: 0 }; },
     async devices() { return [{ deviceId: 'phone-1', name: '隔离手机' }]; },
     async discoverToolWorkspaces() { return { workspaces: [{ backend: 'harness', workspaceId: 'phone-capabilities' }] }; },
     async runSessionTool(operation, args) {
@@ -41,7 +42,18 @@ test('真实 Stdio SDK tools/list 与 tools/call 严格保持 android 命名和�
     const status = await client.callTool({ name: 'android_bridge_status', arguments: {} });
     assert.equal(status.structuredContent.phoneOnly, true);
     const fixed = { hostId: 'phone-1', backend: 'harness', workspaceId: 'phone-capabilities' };
-    const tree = await client.callTool({ name: 'android_get_ui_tree', arguments: { ...fixed, request_id: 'request-tree-000001', args: {} } });
+    const startTree = { name: 'android_get_ui_tree', arguments: { ...fixed, request_id: 'request-tree-000001', args: {} } };
+    const disconnected = await client.callTool(startTree);
+    assert.equal(disconnected.isError, true);
+    assert.match(disconnected.content[0].text, /PHONE_TARGET_NOT_CONNECTED.*Remote 面板.*未发送/u);
+    assert.deepEqual(calls, []);
+    connectedTargetDeviceId = 'phone-other';
+    const wrongPhone = await client.callTool(startTree);
+    assert.equal(wrongPhone.isError, true);
+    assert.match(wrongPhone.content[0].text, /PHONE_TARGET_NOT_CONNECTED.*Remote 面板.*未发送/u);
+    assert.deepEqual(calls, []);
+    connectedTargetDeviceId = 'phone-1';
+    const tree = await client.callTool(startTree);
     assert.equal(tree.structuredContent.taskSessionId, 'task-explicit');
     const missing = await client.callTool({ name: 'android_tap', arguments: { ...fixed, request_id: 'request-tap-0000001', args: { snapshotId: 's1', nodeId: 'n1' } } });
     assert.equal(missing.isError, true);

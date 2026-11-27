@@ -37,10 +37,9 @@ class ScreenAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
         // 只保留窗口 ID、类型、状态和包名等失效判定所需信息，不保留事件源或界面文本。
-        val observed = ScreenAccessibilityConnection.observeWindows(this)
-        if (ScreenAccessibilityConnection.requiresInvalidation(
-                event.eventType, event.packageName?.toString(), event.windowId, observed,
-            )) ScreenAccessibilityConnection.changed(event.eventType)
+        ScreenAccessibilityConnection.onWindowEvent(event.eventType, event.packageName?.toString(), event.windowId) {
+            ScreenAccessibilityConnection.observeWindows(this)
+        }
     }
 
     override fun onInterrupt() { ScreenAccessibilityConnection.interrupt(this) }
@@ -148,6 +147,24 @@ object ScreenAccessibilityConnection {
         synchronized(windowStateLock) {
             snapshotTargets = observed?.targets
             observedAuxiliary = observed?.auxiliary
+        }
+    }
+
+    internal fun onWindowEvent(
+        eventType: Int,
+        eventPackage: String?,
+        windowId: Int,
+        observe: () -> ObservedWindows?,
+    ) {
+        // 没有可继续使用的快照时，窗口指纹无法豁免这次失效。
+        // 仍通知布局观察者，但跳过主线程上的逐窗无障碍查询。
+        val hasSnapshot = synchronized(windowStateLock) { snapshotTargets != null }
+        if (!hasSnapshot || requiresInvalidation(eventType, eventPackage, windowId, observe())) {
+            synchronized(windowStateLock) {
+                snapshotTargets = null
+                observedAuxiliary = null
+            }
+            changed(eventType)
         }
     }
 

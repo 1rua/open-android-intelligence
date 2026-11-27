@@ -1,15 +1,29 @@
 package com.openandroidintelligence.screen
 
+import android.app.Application
+import android.content.Context
+import android.content.res.Configuration
+import android.graphics.Rect
+import android.graphics.drawable.GradientDrawable
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
+import android.view.WindowInsets
+import android.view.WindowManager
+import android.view.WindowMetrics
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import com.openandroidintelligence.control.ScreenBounds
+import com.openandroidintelligence.control.remote.ControlRequestException
+import com.openandroidintelligence.control.remote.PhoneControlOverlayColors
+import com.openandroidintelligence.control.remote.PhoneControlOverlayTheme
 import com.openandroidintelligence.control.remote.PhoneLocalControlUiRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.test.*
 import org.junit.After
 import org.junit.Assert.*
@@ -25,18 +39,98 @@ import org.robolectric.util.ReflectionHelpers
 @Config(sdk = [34])
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class PhoneControlOverlayTest {
+    class ThemedApplication : Application(), PhoneControlOverlayTheme {
+        lateinit var colors: PhoneControlOverlayColors
+
+        override fun phoneControlOverlayColors(context: Context): PhoneControlOverlayColors = colors
+    }
+
+    private class RecordingWindow(private val manager: WindowManager, private val attach: Boolean = false) : WindowManager by manager {
+        val registered = mutableSetOf<View>()
+        var addCount = 0
+            private set
+        var removeCount = 0
+            private set
+        var nextError: RuntimeException? = null
+
+        override fun addView(view: View, params: ViewGroup.LayoutParams) {
+            addCount++
+            nextError?.let {
+                nextError = null
+                throw it
+            }
+            if (attach) manager.addView(view, params) else view.layoutParams = params
+            assertTrue(registered.add(view))
+        }
+
+        override fun removeViewImmediate(view: View) {
+            removeCount++
+            assertTrue(registered.remove(view))
+            if (attach) manager.removeViewImmediate(view)
+        }
+
+        @Suppress("DEPRECATION")
+        override fun getMaximumWindowMetrics(): WindowMetrics = WindowMetrics(Rect(0, 0, 400, 800), WindowInsets.Builder().build())
+
+        fun layout(height: Int) {
+            val window = registered.single()
+            window.measure(View.MeasureSpec.makeMeasureSpec(320, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY))
+            window.layout(0, 0, 320, height)
+        }
+    }
+
     @Before fun prepare() { Dispatchers.setMain(UnconfinedTestDispatcher()) }
     @After fun restore() { PhoneLocalControlUiRegistry.current = null; Dispatchers.resetMain() }
     private fun view(overlay: PhoneControlOverlay): LinearLayout = ReflectionHelpers.getField<View>(overlay, "view") as LinearLayout
+    private fun dispatchTouch(button: Button, action: Int) {
+        val event = MotionEvent.obtain(0, 1, action, 10f, 10f, 1f, 1f, 0, 1f, 1f, 1, 0)
+        event.source = InputDevice.SOURCE_TOUCHSCREEN
+        button.dispatchTouchEvent(event)
+        event.recycle()
+    }
+
     private fun press(button: Button) {
         button.layout(0, 0, 300, 100)
-        for (action in listOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
-            val event = MotionEvent.obtain(0, 1, action, 10f, 10f, 1f, 1f, 0, 1f, 1f, 1, 0)
-            event.source = InputDevice.SOURCE_TOUCHSCREEN
-            button.dispatchTouchEvent(event); event.recycle()
-        }
+        dispatchTouch(button, MotionEvent.ACTION_DOWN)
+        dispatchTouch(button, MotionEvent.ACTION_UP)
         org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
     }
+    @Test fun 首帧前取消会卸载已登记但未附着的确认窗口() = runTest {
+        val service = Robolectric.buildService(ScreenAccessibilityService::class.java).create().get()
+        val manager = RecordingWindow(service.getSystemService(WindowManager::class.java))
+        val overlay = PhoneControlOverlay(service, manager)
+        var stops = 0
+        val stopListener = PhoneLocalControlUiRegistry.observeEmergencyStop { stops++ }
+        try {
+            val pending = async { overlay.confirm("cancel-before-first-frame", "ui.tap") }
+            runCurrent()
+            val window = manager.registered.single() as LinearLayout
+            val staleStop = window.getChildAt(3) as Button
+            assertFalse(window.isAttachedToWindow)
+            assertNotNull(overlay.protectedBounds)
+            assertFalse(pending.isCompleted)
+
+            pending.cancelAndJoin()
+            overlay.finish("cancel-before-first-frame")
+
+            assertTrue("取消后系统窗口登记必须清除", manager.registered.isEmpty())
+            assertEquals(1, manager.removeCount)
+            assertNull(overlay.protectedBounds)
+            val next = async { overlay.confirm("next", "ui.tap") }
+            runCurrent()
+            assertFalse(staleStop.isEnabled)
+            assertFalse(staleStop.performClick())
+            runCurrent()
+            assertEquals(0, stops)
+            assertFalse(next.isCompleted)
+            next.cancelAndJoin()
+        } finally {
+            stopListener.close()
+            overlay.close()
+        }
+    }
+
     @Test fun syntheticClickCannotApproveAndAnotherRequestCannotReplaceOwnedConfirmation() = runTest {
         val service = Robolectric.buildService(ScreenAccessibilityService::class.java).create().get()
         val overlay = PhoneControlOverlay(service)
@@ -67,30 +161,71 @@ class PhoneControlOverlayTest {
             assertFalse(overlay.confirm("owner-later", "ui.tap"))
         } finally { registration.close(); overlay.close() }
     }
-    @Test fun failedExecutingWindowInstallationReleasesOnlyItsOwnConfirmationOwner() = runTest {
+    @Test fun 首次挂载被系统拒绝时不卸载未登记窗口且可继续下一请求() = runTest {
         val service = Robolectric.buildService(ScreenAccessibilityService::class.java).create().get()
-        val real = service.getSystemService(android.view.WindowManager::class.java)
-        var installs = 0
-        val window = object : android.view.WindowManager by real {
-            override fun addView(view: View, params: android.view.ViewGroup.LayoutParams) {
-                if (++installs == 2) throw android.view.WindowManager.BadTokenException("服务已撤销")
-                real.addView(view, params)
+        for (error in listOf(WindowManager.BadTokenException("系统拒绝窗口凭据"), WindowManager.InvalidDisplayException("显示器不可用"))) {
+            val window = RecordingWindow(service.getSystemService(WindowManager::class.java)).apply { nextError = error }
+            val overlay = PhoneControlOverlay(service, window)
+            try {
+                val failure = runCatching { overlay.confirm("owner-failed", "ui.tap") }.exceptionOrNull()
+                assertEquals("LOCAL_CONFIRMATION_UI_UNAVAILABLE", (failure as ControlRequestException).code)
+                assertNull(overlay.protectedBounds)
+                assertEquals(0, window.removeCount)
+                assertTrue(window.registered.isEmpty())
+
+                val next = async { overlay.confirm("owner-after-failure", "ui.tap") }
+                runCurrent()
+                assertTrue(window.registered.isNotEmpty())
+                assertFalse(next.isCompleted)
+                next.cancelAndJoin()
+                assertEquals(1, window.removeCount)
+            } finally {
+                overlay.close()
             }
         }
-        val overlay = PhoneControlOverlay(service, window)
+    }
+
+    @Test fun 关闭已批准的胶囊会释放旧队列且迟到清理不影响新胶囊() = runTest {
+        val service = Robolectric.buildService(ScreenAccessibilityService::class.java).create().get()
+        val manager = RecordingWindow(service.getSystemService(WindowManager::class.java), attach = true)
+        val old = PhoneControlOverlay(service, manager)
+        val replacement = PhoneControlOverlay(service, manager)
+        PhoneLocalControlUiRegistry.current = old
         try {
-            val first = async { runCatching { overlay.confirm("owner-failed", "ui.tap") } }; runCurrent()
-            press(view(overlay).getChildAt(1) as Button); runCurrent()
-            assertTrue(first.await().isFailure)
-            val second = async { overlay.confirm("owner-after-failure", "ui.tap") }; runCurrent()
-            assertNotNull(view(overlay)); assertFalse(second.isCompleted)
-            overlay.emergencyStop(); runCurrent(); assertFalse(second.await())
-        } finally { overlay.close() }
+            val first = async { old.confirm("active", "ui.tap") }
+            runCurrent()
+            press((manager.registered.single() as LinearLayout).getChildAt(1) as Button)
+            runCurrent()
+            assertTrue(first.await())
+            val queued = backgroundScope.async { old.confirm("queued", "ui.tap") }
+            runCurrent()
+            assertFalse(queued.isCompleted)
+
+            old.close()
+            PhoneLocalControlUiRegistry.current = replacement
+            runCurrent()
+            assertTrue(queued.isCompleted)
+            assertFalse(queued.await())
+            assertTrue(manager.registered.isEmpty())
+
+            val next = async { replacement.confirm("next", "ui.tap") }
+            runCurrent()
+            val newWindow = manager.registered.single()
+            old.finish("active")
+            replacement.finish("active")
+            assertSame(newWindow, manager.registered.single())
+            assertFalse(next.isCompleted)
+            next.cancelAndJoin()
+        } finally {
+            old.close()
+            replacement.close()
+        }
     }
 
     @Test fun smsConfirmationShowsLocalRecipientSubscriptionAndPreviewInSecureNonFocusableWindow() = runTest {
         val service = Robolectric.buildService(ScreenAccessibilityService::class.java).create().get()
-        val overlay = PhoneControlOverlay(service)
+        val manager = RecordingWindow(service.getSystemService(WindowManager::class.java), attach = true)
+        val overlay = PhoneControlOverlay(service, manager)
         try {
             val body = "仅本机显示的短信".repeat(40)
             val parameters = com.openandroidintelligence.gateway.schema.Json.canonical(
@@ -98,7 +233,10 @@ class PhoneControlOverlayTest {
                     "recipient" to "+15550000777", "text" to body)))
             val waiting = async { overlay.confirm("sms-local-owner", "org.openandroidintelligence.sms.send", parameters) }
             runCurrent()
-            val confirmation = view(overlay)
+            val confirmation = manager.registered.single() as LinearLayout
+            manager.layout(300)
+            val before = requireNotNull(overlay.captureProtection())
+            assertTrue(before.ready)
             val detail = ((confirmation.getChildAt(1) as ScrollView).getChildAt(0) as TextView).text.toString()
             assertTrue(detail.contains("+15550000777"))
             assertTrue(detail.contains("7"))
@@ -110,13 +248,76 @@ class PhoneControlOverlayTest {
             assertTrue(params.flags and android.view.WindowManager.LayoutParams.FLAG_SECURE != 0)
             assertTrue(params.flags and android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE != 0)
             val allow = confirmation.getChildAt(2) as Button
+            val deny = confirmation.getChildAt(3) as Button
+            val stop = confirmation.getChildAt(4) as Button
             allow.performClick(); runCurrent(); assertFalse(waiting.isCompleted)
-            press(allow); runCurrent(); assertTrue(waiting.await())
-            val executing = view(overlay)
-            assertFalse((executing.getChildAt(0) as TextView).text.toString().contains(body.take(240)))
+            allow.layout(0, 0, 300, 100)
+            dispatchTouch(allow, MotionEvent.ACTION_DOWN)
+            // 在这次模拟触摸与窗口下一次遍历之间核对保护范围。
+            allow.performClick()
+            runCurrent()
+            assertTrue(waiting.await())
+            val executing = manager.registered.single() as LinearLayout
+            assertSame(confirmation, executing)
+            assertSame(params, executing.layoutParams)
+            assertEquals(1, manager.addCount)
+            assertEquals(0, manager.removeCount)
+            assertEquals(service.getString(R.string.remote_phone_executing), (executing.getChildAt(0) as TextView).text)
+            assertEquals(2, executing.childCount)
+            assertSame(stop, executing.getChildAt(1))
+            assertFalse(allow.isEnabled)
+            assertFalse(deny.isEnabled)
+            assertEquals(ScreenBounds(0, 0, Int.MAX_VALUE, Int.MAX_VALUE), overlay.protectedBounds)
+            assertFalse(requireNotNull(overlay.captureProtection()).ready)
+            manager.layout(120)
+            val after = requireNotNull(overlay.captureProtection())
+            assertTrue(after.ready)
+            assertTrue(after.generation > before.generation)
+            assertEquals(before.maskedRegions, after.maskedRegions)
             overlay.finish("sms-local-owner"); runCurrent()
             assertNull(overlay.protectedBounds)
+            assertEquals(1, manager.removeCount)
         } finally { overlay.close() }
+    }
+
+    @Test
+    @Config(sdk = [31, 34], application = ThemedApplication::class)
+    fun 原生按钮和标题使用当前深浅色角色() = runTest {
+        val service = Robolectric.buildService(ScreenAccessibilityService::class.java).create().get()
+        val nightModes = listOf(Configuration.UI_MODE_NIGHT_NO, Configuration.UI_MODE_NIGHT_YES)
+        val schemes = nightModes.mapIndexed { index, nightMode ->
+            val config = Configuration(service.resources.configuration).apply {
+                uiMode = uiMode and Configuration.UI_MODE_NIGHT_MASK.inv() or nightMode
+            }
+            systemPhoneControlOverlayColors(service.createConfigurationContext(config))
+                .copy(primary = if (index == 0) 0xff266128.toInt() else 0xff8fda92.toInt())
+        }
+        assertNotEquals(schemes.first().surfaceContainerHigh, schemes.last().surfaceContainerHigh)
+        val app = service.application as ThemedApplication
+        val manager = RecordingWindow(service.getSystemService(WindowManager::class.java))
+        val overlay = PhoneControlOverlay(service, manager)
+        try {
+            for (colors in schemes) {
+                app.colors = colors
+                val pending = async { overlay.confirm("theme", "ui.tap") }
+                runCurrent()
+                val root = manager.registered.single() as LinearLayout
+                fun fill(view: View) = (view.background as GradientDrawable).color?.defaultColor
+                assertEquals(colors.surfaceContainerHigh, fill(root))
+                assertEquals(colors.onSurface, (root.getChildAt(0) as TextView).currentTextColor)
+                listOf(colors.primary to colors.onPrimary, colors.secondaryContainer to colors.onSecondaryContainer,
+                    colors.errorContainer to colors.onErrorContainer).forEachIndexed { index, (container, content) ->
+                    val button = root.getChildAt(index + 1) as Button
+                    assertEquals(container, fill(button))
+                    assertEquals(content, button.currentTextColor)
+                    assertEquals(0f, button.elevation)
+                    assertNull(button.stateListAnimator)
+                }
+                pending.cancelAndJoin()
+            }
+        } finally {
+            overlay.close()
+        }
     }
 
     @Test fun 首次推送收件绑定显示可信主体和精确目标且合成点击不能批准() = runTest {
