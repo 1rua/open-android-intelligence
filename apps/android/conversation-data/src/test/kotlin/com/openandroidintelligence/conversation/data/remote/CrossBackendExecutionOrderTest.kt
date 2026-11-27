@@ -759,6 +759,329 @@ class CrossBackendExecutionOrderTest {
         assertEquals(NativeExecutionStatus.UNKNOWN, upserted.executionSteps.single().status)
     }
 
+    @Test
+    fun `乱序裸tool_result先于tool_call到达时按callId缓冲合并且绝不产生孤立tool卡`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(durable(1, "turn/start", obj("turn" to 1)))
+
+        // 1. 裸结果先于调用到达（且携带空字符串 callId 与真实 toolCallId）：绝不生成孤立 [tool] 卡
+        val earlyResultEvents = projection.accept(
+            durable(2, "tool/result", obj("callId" to "", "toolCallId" to "call-ooo-1", "output" to "early-ok")),
+        )
+        assertTrue("裸结果先到时不得发出孤立事件", earlyResultEvents.isEmpty())
+        assertTrue("裸结果先到时不得在时间线造孤立行", projection.rows.isEmpty())
+
+        // 2. 随后对应 tool/call 到达：自动合并先前缓冲结果，单卡即达 COMPLETED
+        val callEvents = projection.accept(
+            durable(3, "tool/call", obj("callId" to "call-ooo-1", "name" to "read_file", "arguments" to """{"path":"a.kt"}""")),
+        )
+        val mergedStep = callEvents.filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("call-ooo-1", mergedStep.stepId)
+        assertEquals("read_file", mergedStep.toolName)
+        assertEquals("""{"path":"a.kt"}""", mergedStep.arguments)
+        assertEquals("early-ok", mergedStep.output)
+        assertEquals(NativeExecutionStatus.COMPLETED, mergedStep.status)
+
+        // 3. 完全无主的孤立裸结果（无论带未匹配 callId 还是缺失 callId 且无工具名）：绝不生成孤立 [tool] 卡片
+        assertTrue(
+            projection.accept(durable(4, "tool/result", obj("callId" to "ghost-call-99", "output" to "orphan"))).isEmpty(),
+        )
+        assertTrue(
+            projection.accept(durable(5, "tool/result", obj("toolName" to "tool", "output" to ""))).isEmpty(),
+        )
+        assertTrue("孤立结果绝不写入时间线行", projection.rows.isEmpty())
+    }
+
+    @Test
+    fun `流式block_start无真实ID后经tool_call_delta重绑真实callId并与tool_result单卡配对`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "start", "attemptId" to "att-rebind", "turn" to 1)))
+        projection.accept(
+            obj(
+                "type" to "assistant-stream",
+                "frame" to obj(
+                    "type" to "chunk",
+                    "attemptId" to "att-rebind",
+                    "chunk" to obj("type" to "block-start", "index" to 0, "blockType" to "tool_use", "name" to "grep"),
+                ),
+            ),
+        )
+        projection.accept(
+            obj(
+                "type" to "assistant-stream",
+                "frame" to obj(
+                    "type" to "chunk",
+                    "attemptId" to "att-rebind",
+                    "chunk" to obj("type" to "tool-call-delta", "index" to 0, "callId" to "real-call-77", "delta" to """{"q":"TODO"}"""),
+                ),
+            ),
+        )
+        val resultEvents = projection.accept(
+            durable(10, "tool/result", obj("callId" to "real-call-77", "output" to "3 matches")),
+        )
+        // 已更新原宿主流式行，不再补发重复 ExecutionStepsUpdated
+        assertTrue(resultEvents.filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().isEmpty())
+        val row = projection.rows.getValue("remote-stream:att-rebind")
+        val steps = row.timelineSteps.filterIsInstance<ExecutionTimelineStep.ToolCallStep>().map { it.step }
+        assertEquals("重绑后必须只保留单张卡片", 1, steps.size)
+        assertEquals("real-call-77", steps.single().stepId)
+        assertEquals("grep", steps.single().toolName)
+        assertEquals("""{"q":"TODO"}""", steps.single().arguments)
+        assertEquals("3 matches", steps.single().output)
+        assertEquals(NativeExecutionStatus.COMPLETED, steps.single().status)
+    }
+
+    @Test
+    fun `Codex的functionCall按call_id配对且增量outputDelta与MCP格式及隐藏条目过滤均生效`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(codex("turn/started", "turn" to obj("id" to "T-pair")))
+
+        // 1. hookPrompt / contextCompaction 隐藏条目不得生成消息或工具卡
+        assertTrue(
+            projection.accept(codex("item/completed", "item" to obj("id" to "hp-1", "type" to "hookPrompt", "text" to "internal hook"))).isEmpty(),
+        )
+        assertTrue(
+            projection.accept(codex("item/completed", "item" to obj("id" to "cc-1", "type" to "contextCompaction", "text" to "compacted"))).isEmpty(),
+        )
+
+        // 2. functionCall + functionCallOutput 通过 call_id（而非 item.id）配对
+        val fcStart = projection.accept(
+            codex("item/started", "item" to obj("id" to "item-fc-1", "type" to "functionCall", "call_id" to "fc_call_9", "name" to "search", "arguments" to """{"q":"kotlin"}""")),
+        ).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("fc_call_9", fcStart.stepId)
+        val fcDone = projection.accept(
+            codex("item/completed", "item" to obj("id" to "item-fco-2", "type" to "functionCallOutput", "call_id" to "fc_call_9", "output" to "found 5")),
+        ).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("fc_call_9", fcDone.stepId)
+        assertEquals("search", fcDone.toolName)
+        assertEquals("found 5", fcDone.output)
+        assertEquals(NativeExecutionStatus.COMPLETED, fcDone.status)
+
+        // 3. commandExecution 增量 outputDelta 累计输出 + MCP server/tool 名称 + contentItems 文本提取
+        projection.accept(codex("item/started", "item" to obj("id" to "cmd-delta", "type" to "commandExecution", "command" to "echo hi")))
+        val deltaStep = projection.accept(
+            codex("item/commandExecution/outputDelta", "itemId" to "cmd-delta", "delta" to "line1\n"),
+        ).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("line1\n", deltaStep.output)
+        val deltaStep2 = projection.accept(
+            codex("item/commandExecution/outputDelta", "itemId" to "cmd-delta", "delta" to "line2"),
+        ).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("line1\nline2", deltaStep2.output)
+
+        val mcpDone = projection.accept(
+            codex(
+                "item/completed",
+                "item" to obj(
+                    "id" to "mcp-ci",
+                    "type" to "mcpToolCall",
+                    "server" to "github",
+                    "tool" to "list_issues",
+                    "contentItems" to listOf(obj("type" to "text", "text" to "Issue #250")),
+                ),
+            ),
+        ).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("github: list_issues", mcpDone.toolName)
+        assertEquals("Issue #250", mcpDone.output)
+    }
+
+    @Test
+    fun `ACP在已有正文轮次仍通过catchUp回放tool_call_update并支持跨轮回写与去孤立卡`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.beginTurn("acp-req-1")
+
+        // 1. 孤立裸 tool_call_update 无调用定义时不得创建孤立 [tool] 卡
+        assertTrue(
+            projection.accept(
+                acp("tool_call_update", extra = listOf("toolCallId" to "ghost-acp", "status" to "completed")),
+            ).isEmpty(),
+        )
+        assertTrue(projection.rows.isEmpty())
+
+        // 2. 本轮先有正文 + tool_call（in_progress），导致 acpTurnHadContent = true
+        projection.accept(acp("agent_message_chunk", content = "正在查询"))
+        projection.accept(
+            acp(
+                "tool_call",
+                extra = listOf("toolCallId" to "acp-tc-1", "title" to "fetch_logs", "rawInput" to obj("limit" to 20), "status" to "in_progress"),
+            ),
+        )
+        val firstRowId = projection.rows.keys.single()
+
+        // 3. prompt_completed 携带 catchUp 中的 tool_call_update（带嵌套 ToolCallContent）：必须回放完成而非标 UNKNOWN
+        projection.accept(
+            acp(
+                "prompt_completed",
+                extra = listOf(
+                    "stopReason" to "end_turn",
+                    "catchUp" to listOf(
+                        acp(
+                            "tool_call_update",
+                            extra = listOf(
+                                "toolCallId" to "acp-tc-1",
+                                "status" to "completed",
+                                "content" to listOf(
+                                    obj("type" to "content", "content" to obj("type" to "text", "text" to "log line ok")),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val firstRow = projection.rows.getValue(firstRowId)
+        val step1 = firstRow.executionSteps.single()
+        assertEquals("acp-tc-1", step1.stepId)
+        assertEquals("fetch_logs", step1.toolName)
+        assertEquals("log line ok", step1.output)
+        assertEquals(NativeExecutionStatus.COMPLETED, step1.status)
+
+        // 4. 跨轮迟到 tool_call_update（命中上一轮的 acp-tc-1）：必须回写原消息行而不是在新轮创建重复卡
+        projection.beginTurn("acp-req-2")
+        projection.accept(acp("agent_message_chunk", content = "第二轮正文"))
+        projection.accept(
+            acp(
+                "tool_call_update",
+                extra = listOf("toolCallId" to "acp-tc-1", "status" to "completed", "rawOutput" to "late-enriched"),
+            ),
+        )
+        assertEquals(2, projection.rows.size)
+        val secondRow = projection.rows.values.last()
+        assertTrue("跨轮迟到更新不得污染新轮工具列表", secondRow.executionSteps.isEmpty())
+        assertEquals("late-enriched", projection.rows.getValue(firstRowId).executionSteps.single().output)
+    }
+
+    @Test
+    fun `OpenAI与Hermes风格tool_calls数组和role_tool消息精确配对并隐藏内部tool行`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(
+            durable(
+                1,
+                "assistant/message",
+                obj(
+                    "turnId" to "turn-hermes",
+                    "message" to obj(
+                        "id" to "msg-hermes-asst",
+                        "role" to "assistant",
+                        "content" to listOf(obj("type" to "text", "text" to "先查一下目录")),
+                        "tool_calls" to listOf(
+                            obj(
+                                "id" to "call_hermes_1",
+                                "type" to "function",
+                                "function" to obj("name" to "shell", "arguments" to """{"cmd":"pwd"}"""),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val toolResultEvents = projection.accept(
+            durable(
+                2,
+                "user/message",
+                obj(
+                    "turnId" to "turn-hermes",
+                    "message" to obj(
+                        "id" to "msg-hermes-tool-res",
+                        "role" to "tool",
+                        "tool_call_id" to "call_hermes_1",
+                        "content" to "/workspace/project",
+                    ),
+                ),
+            ),
+        )
+        assertFalse("role=tool 内部结果行绝不能上屏", "msg-hermes-tool-res" in projection.rows)
+        val updatedRow = projection.rows.getValue("msg-hermes-asst")
+        val step = updatedRow.executionSteps.single()
+        assertEquals("call_hermes_1", step.stepId)
+        assertEquals("shell", step.toolName)
+        assertEquals("""{"cmd":"pwd"}""", step.arguments)
+        assertEquals("/workspace/project", step.output)
+        assertEquals(NativeExecutionStatus.COMPLETED, step.status)
+        assertEquals(1, toolResultEvents.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().size)
+    }
+
+    @Test
+    fun `ACP进行中预览内容不误判完成且Codex拒绝态判失败及MCP结果与stdout_data提取准确`() {
+        val projection = RemoteTimelineProjection(local)
+
+        // 1. ACP tool_call 显式 status=in_progress 且携带预览 content：必须保持 RUNNING，待 completed 才转终态
+        projection.beginTurn("acp-inprogress-req")
+        projection.accept(
+            acp(
+                "tool_call",
+                extra = listOf(
+                    "toolCallId" to "acp-preview-1",
+                    "title" to "apply_patch",
+                    "status" to "in_progress",
+                    "content" to listOf(obj("type" to "content", "content" to obj("type" to "text", "text" to "preview diff"))),
+                ),
+            ),
+        )
+        val rowId = projection.rows.keys.single()
+        val runningStep = projection.rows.getValue(rowId).executionSteps.single()
+        assertEquals(NativeExecutionStatus.RUNNING, runningStep.status)
+        assertEquals("preview diff", runningStep.output)
+
+        projection.accept(
+            acp(
+                "tool_call_update",
+                extra = listOf(
+                    "toolCallId" to "acp-preview-1",
+                    "status" to "completed",
+                    "rawOutput" to "patched 1 file",
+                ),
+            ),
+        )
+        val doneStep = projection.rows.getValue(rowId).executionSteps.single()
+        assertEquals(NativeExecutionStatus.COMPLETED, doneStep.status)
+        assertEquals("patched 1 file", doneStep.output)
+
+        // 2. Codex declined 判 FAILED；MCP result:{content:[{type:text}]} 提取纯文本；tool/result 支持 data 与 stdout+stderr
+        val declinedStep = projection.accept(
+            codex(
+                "item/completed",
+                "item" to obj(
+                    "id" to "cmd-declined",
+                    "type" to "commandExecution",
+                    "command" to "rm -rf /",
+                    "status" to "declined",
+                    "stderr" to "user declined",
+                ),
+            ),
+        ).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals(NativeExecutionStatus.FAILED, declinedStep.status)
+        assertEquals("user declined", declinedStep.output)
+
+        val mcpEnvelopeStep = projection.accept(
+            codex(
+                "item/completed",
+                "item" to obj(
+                    "id" to "mcp-env-1",
+                    "type" to "mcpToolCall",
+                    "server" to "docs",
+                    "tool" to "search",
+                    "result" to obj("content" to listOf(obj("type" to "text", "text" to "Found spec"))),
+                ),
+            ),
+        ).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("docs: search", mcpEnvelopeStep.toolName)
+        assertEquals("Found spec", mcpEnvelopeStep.output)
+
+        projection.accept(durable(20, "tool/call", obj("callId" to "call-data-1", "name" to "fetch")))
+        val dataResult = projection.accept(
+            durable(21, "tool/result", obj("callId" to "call-data-1", "data" to "payload-from-data")),
+        ).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("payload-from-data", dataResult.output)
+        assertEquals(NativeExecutionStatus.COMPLETED, dataResult.status)
+
+        projection.accept(durable(22, "tool/call", obj("callId" to "call-std-1", "name" to "run")))
+        val stdResult = projection.accept(
+            durable(23, "tool/result", obj("callId" to "call-std-1", "stdout" to "out-1", "stderr" to "err-1")),
+        ).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("out-1\nerr-1", stdResult.output)
+        assertEquals(NativeExecutionStatus.COMPLETED, stdResult.status)
+    }
+
     private fun kotlinx.coroutines.test.TestScope.historyRepository(
         backend: String,
         records: List<JsonValue>,

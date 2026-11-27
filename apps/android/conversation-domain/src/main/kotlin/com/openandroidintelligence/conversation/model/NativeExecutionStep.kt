@@ -17,45 +17,21 @@ data class NativeExecutionStep(
     val orderSequence: Long? = null,
 ) {
     /**
-     * 合并同一工具调用步骤的前后快照：
-     * - 终态（[NativeExecutionStatus.COMPLETED] / [NativeExecutionStatus.FAILED]）不被后续非终态回写；
-     * - 保留首次有效工具名、参数、发生时间与单调顺序号；
-     * - 若旧 `sourceMessageId` 为临时占位行（`history-tool:*` / `remote-stream:*`）且新快照提供了真实宿主消息 ID，则升级为真实消息 ID。
+     * 合并同一工具调用步骤的前后快照，统一委托给领域唯一权威实现 [ToolCallPairing.mergeSteps]。
      */
-    fun mergeWith(incoming: NativeExecutionStep): NativeExecutionStep {
-        val existingTerminal = status == NativeExecutionStatus.COMPLETED || status == NativeExecutionStatus.FAILED
-        val incomingNonTerminal = incoming.status == NativeExecutionStatus.RUNNING || incoming.status == NativeExecutionStatus.UNKNOWN
-        val mergedStatus = if (existingTerminal && incomingNonTerminal) status else incoming.status
-        val mergedName = when {
-            incoming.toolName.isNotBlank() && incoming.toolName != "tool" -> incoming.toolName
-            toolName.isNotBlank() -> toolName
-            else -> incoming.toolName.ifBlank { "tool" }
-        }
-        return incoming.copy(
-            toolName = mergedName,
-            arguments = incoming.arguments.ifEmpty { arguments },
-            output = incoming.output ?: output,
-            status = mergedStatus,
-            revision = maxOf(revision, incoming.revision),
-            sourceMessageId = resolveSourceMessageId(sourceMessageId, incoming.sourceMessageId),
-            occurredAt = occurredAt?.takeIf { it > 0L } ?: incoming.occurredAt,
-            orderSequence = orderSequence ?: incoming.orderSequence,
-        )
-    }
+    fun mergeWith(incoming: NativeExecutionStep): NativeExecutionStep =
+        ToolCallPairing.mergeSteps(this, incoming)
 
     /**
-     * 仅在新快照修订号更高且不把已终态步骤倒退为运行中时应用更新，并继承原调用位置与顺序元数据。
+     * 仅在新快照修订号更高且不把已终态步骤倒退为运行中时应用更新，
+     * 并复用 [ToolCallPairing.mergeSteps] 保留真实工具名、参数、输出及原调用位置与顺序元数据。
      */
     fun applyNewerSnapshot(incoming: NativeExecutionStep?): NativeExecutionStep {
         if (incoming == null || incoming.revision <= revision) return this
-        val existingTerminal = status == NativeExecutionStatus.COMPLETED || status == NativeExecutionStatus.FAILED
-        val incomingNonTerminal = incoming.status == NativeExecutionStatus.RUNNING || incoming.status == NativeExecutionStatus.UNKNOWN
+        val existingTerminal = ToolCallPairing.isTerminalStatus(status)
+        val incomingNonTerminal = !ToolCallPairing.isTerminalStatus(incoming.status)
         if (existingTerminal && incomingNonTerminal) return this
-        return incoming.copy(
-            sourceMessageId = resolveSourceMessageId(sourceMessageId, incoming.sourceMessageId),
-            occurredAt = occurredAt ?: incoming.occurredAt,
-            orderSequence = orderSequence ?: incoming.orderSequence,
-        )
+        return ToolCallPairing.mergeSteps(this, incoming)
     }
 
     companion object {

@@ -315,4 +315,76 @@ class CrossAgentContextInjectionProjectionTest {
         assertEquals("第一步：最终答案。", textOf(rebasedRow.parts))
         assertEquals("第一步：".length, rebasedRow.reasoning.single().bodyOffset)
     }
+
+    @Test
+    fun `source_kind注入来源与块级meta标记及Codex_input_text多词标签均统一过滤`() {
+        val projection = RemoteTimelineProjection(local)
+
+        // 1. source.kind 为 hook / compaction / schedule 的协议注入消息整条过滤
+        projection.accept(
+            event(
+                seq = 300,
+                kind = "user/message",
+                data = obj(
+                    "source" to obj("kind" to "hook"),
+                    "message" to obj("id" to "u-hook", "role" to "user", "text" to "Hook prompt payload"),
+                ),
+            ),
+        )
+        projection.accept(
+            event(
+                seq = 301,
+                kind = "user/message",
+                data = obj(
+                    "source" to obj("kind" to "compaction"),
+                    "message" to obj("id" to "u-compact", "role" to "user", "text" to "Summary from compaction"),
+                ),
+            ),
+        )
+        assertTrue("hook 与 compaction 来源消息不得上屏", projection.rows.isEmpty())
+
+        // 2. 内容块级 isMeta / visibility=hidden / type=system_reminder 跳过，仅保留真实正文块
+        projection.accept(
+            event(
+                seq = 302,
+                kind = "user/message",
+                data = obj(
+                    "source" to obj("kind" to "rpc", "rpcId" to "cli-blk-1"),
+                    "message" to obj(
+                        "id" to "u-block-meta",
+                        "role" to "user",
+                        "content" to listOf(
+                            obj("type" to "text", "text" to "secret block", "isMeta" to true),
+                            obj("type" to "text", "text" to "hidden vis", "visibility" to "hidden"),
+                            obj("type" to "system_reminder", "text" to "reminder block"),
+                            obj("type" to "text", "text" to "保留的真实用户内容"),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        assertEquals("保留的真实用户内容", textOf(projection.rows.getValue("u-block-meta").parts))
+
+        // 3. Codex userMessage 的 input 数组（input_text）中携带多词 <permissions instructions> 注入
+        projection.accept(
+            obj(
+                "method" to "item/completed",
+                "params" to obj(
+                    "threadId" to native,
+                    "turnId" to "turn-codex-ctx",
+                    "item" to obj(
+                        "id" to "u-codex-input",
+                        "type" to "userMessage",
+                        "input" to listOf(
+                            obj(
+                                "type" to "input_text",
+                                "text" to "<permissions instructions>\nSandbox policy\n</permissions instructions>\n\n帮我跑单测",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        assertEquals("帮我跑单测", textOf(projection.rows.getValue("u-codex-input").parts))
+    }
 }

@@ -67,6 +67,8 @@ internal fun JsonValue.objectValue(): JsonValue.JObject = this as? JsonValue.JOb
     ?: throw RemoteSessionException("REMOTE_INVALID_RESPONSE")
 internal fun JsonValue.at(key: String): JsonValue? = (this as? JsonValue.JObject)?.fields?.firstOrNull { it.first == key }?.second
 internal fun JsonValue.text(key: String): String? = (at(key) as? JsonValue.JString)?.value
+/** 读取并去除首尾空白的非空字符串；避免 JSON 空串 `""` 短路 `?:` 回退链。 */
+internal fun JsonValue.nonBlankText(key: String): String? = text(key)?.trim()?.takeIf { it.isNotEmpty() }
 internal fun JsonValue.requiredText(key: String): String = text(key)?.takeIf { it.isNotEmpty() }
     ?: throw RemoteSessionException("REMOTE_INVALID_RESPONSE")
 internal fun JsonValue.number(key: String): Long? = (at(key) as? JsonValue.JNumber)?.raw?.toBigDecimalOrNull()?.longValueExact()

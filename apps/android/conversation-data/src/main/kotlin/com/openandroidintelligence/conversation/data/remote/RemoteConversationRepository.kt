@@ -235,9 +235,11 @@ class RemoteConversationRepository(
             val eventType = event.text("type")
             val data = event.at("data") ?: return@mapNotNull null
             if (eventType == "tool/call" || eventType == "tool/result") {
-                extractToolCallId(data)?.let { "history-tool:$it" }
+                extractToolCallId(data, allowRecordIdFallback = eventType == "tool/call")?.let { callId ->
+                    synchronized(target) { target.ownerMessageIdForTool(callId) } ?: "history-tool:$callId"
+                }
             } else {
-                (data.at("message") ?: data).text("id")
+                (data.at("message") ?: data).nonBlankText("id")
             }
         }.toSet()
         val (snapshotRows, snapshotMessages) = synchronized(target) {
