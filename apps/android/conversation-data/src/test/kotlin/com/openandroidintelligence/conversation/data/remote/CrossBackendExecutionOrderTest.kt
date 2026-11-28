@@ -1292,6 +1292,437 @@ class CrossBackendExecutionOrderTest {
         assertTrue("跨消息 tool_result 不得在当前 assistantSnapshot 行重复插卡", snapStreamRow.executionSteps.isEmpty())
     }
 
+    @Test
+    fun `Codex持久化tool_result从message_content的tool-result块提取配对ID与输出覆盖无外层和带外层callId形态`() = runTest {
+        val historyRecords = listOf(
+            durable(1, "turn/start", obj("turn" to 1), time = 1_000L),
+            durable(
+                2,
+                "tool/call",
+                obj("turn" to 1, "callId" to "codex-cmd-1", "name" to "commandExecution", "command" to "ls -la"),
+                time = 1_000L,
+            ),
+            // 形态 A：外层 data 不带 callId，toolCallId 与输出均在 data.message.content 的 tool-result 块内
+            durable(
+                3,
+                "tool/result",
+                obj(
+                    "turn" to 1,
+                    "message" to obj(
+                        "role" to "tool",
+                        "content" to listOf(
+                            obj(
+                                "type" to "tool-result",
+                                "toolCallId" to "codex-cmd-1",
+                                "toolName" to "commandExecution",
+                                "output" to "total 12\nREADME.md",
+                            ),
+                        ),
+                    ),
+                ),
+                time = 1_010L,
+            ),
+            durable(
+                4,
+                "tool/call",
+                obj("turn" to 1, "callId" to "codex-cmd-2", "name" to "commandExecution", "command" to "git status"),
+                time = 1_020L,
+            ),
+            // 形态 B：外层 data 额外带 callId，但实际输出在 data.message.content 的 tool-result 块内
+            durable(
+                5,
+                "tool/result",
+                obj(
+                    "turn" to 1,
+                    "callId" to "codex-cmd-2",
+                    "message" to obj(
+                        "role" to "tool",
+                        "content" to listOf(
+                            obj(
+                                "type" to "tool-result",
+                                "toolCallId" to "codex-cmd-2",
+                                "output" to obj("type" to "text", "value" to "nothing to commit"),
+                            ),
+                        ),
+                    ),
+                ),
+                time = 1_030L,
+            ),
+            durable(
+                6,
+                "tool/call",
+                obj("turn" to 1, "callId" to "codex-cmd-3", "name" to "read_file", "arguments" to """{"path":"a.kt"}"""),
+                time = 1_040L,
+            ),
+            durable(
+                7,
+                "tool/call",
+                obj("turn" to 1, "callId" to "codex-cmd-4", "name" to "read_file", "arguments" to """{"path":"b.kt"}"""),
+                time = 1_045L,
+            ),
+            // 形态 C：单条持久化消息携带多个 tool_result / tool-result 块
+            durable(
+                8,
+                "tool/result",
+                obj(
+                    "turn" to 1,
+                    "message" to obj(
+                        "role" to "tool",
+                        "content" to listOf(
+                            obj("type" to "tool-result", "toolCallId" to "codex-cmd-3", "content" to listOf(obj("type" to "text", "text" to "file-a"))),
+                            obj("type" to "tool_result", "tool_use_id" to "codex-cmd-4", "isError" to true, "output" to "not found"),
+                        ),
+                    ),
+                ),
+                time = 1_050L,
+            ),
+            durable(9, "turn/end", obj("turn" to 1, "reason" to obj("kind" to "completed")), time = 1_060L),
+        )
+
+        val repo = historyRepository("codex", historyRecords, activityKnown = true)
+        try {
+            val firstPage = repo.timeline(local, PageRequest())
+            val refreshedPage = repo.timeline(local, PageRequest())
+            for (page in listOf(firstPage, refreshedPage)) {
+                val byId = page.messages.associateBy { it.id }
+                val step1 = byId.getValue("history-tool:codex-cmd-1").executionSteps.single()
+                assertEquals(NativeExecutionStatus.COMPLETED, step1.status)
+                assertEquals("total 12\nREADME.md", step1.output)
+
+                val step2 = byId.getValue("history-tool:codex-cmd-2").executionSteps.single()
+                assertEquals(NativeExecutionStatus.COMPLETED, step2.status)
+                assertEquals("nothing to commit", step2.output)
+
+                val step3 = byId.getValue("history-tool:codex-cmd-3").executionSteps.single()
+                assertEquals(NativeExecutionStatus.COMPLETED, step3.status)
+                assertEquals("file-a", step3.output)
+
+                val step4 = byId.getValue("history-tool:codex-cmd-4").executionSteps.single()
+                assertEquals(NativeExecutionStatus.FAILED, step4.status)
+                assertEquals("not found", step4.output)
+            }
+        } finally {
+            repo.close()
+        }
+    }
+
+    @Test
+    fun `DSH开场snapshot从activeAttempt恢复活跃流与工具调用后同attemptId后续chunk正常续接不抛GAP`() {
+        // 1. 仓库样例形态 A（builtin-review-round2-fixed-probe）：activeAttempt.stream 含 text-chunks，后续 chunk 续接正文
+        val projection = RemoteTimelineProjection(local, clock = { 2_000L })
+        projection.accept(
+            obj(
+                "type" to "snapshot",
+                "cursor" to 2,
+                "records" to emptyList<Any>(),
+                "assistantStream" to obj(
+                    "revision" to 2,
+                    "activeAttempt" to obj(
+                        "turn" to 1,
+                        "attemptId" to "attempt-one",
+                        "stream" to listOf(
+                            obj("type" to "text-chunks", "texts" to listOf("已有前缀")),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        assertEquals(com.openandroidintelligence.conversation.model.GenerationState.RUNNING, projection.generationState)
+        assertEquals("1", projection.generationId)
+        val afterSnap = projection.rows.getValue("remote-stream:attempt-one")
+        assertEquals("已有前缀", afterSnap.parts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value })
+
+        projection.accept(
+            obj(
+                "type" to "assistant-stream",
+                "frame" to obj(
+                    "type" to "chunk",
+                    "attemptId" to "attempt-one",
+                    "chunk" to obj("type" to "text-delta", "text" to "后续分片"),
+                ),
+            ),
+        )
+        val afterChunk = projection.rows.getValue("remote-stream:attempt-one")
+        assertEquals("已有前缀后续分片", afterChunk.parts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value })
+
+        // 2. 仓库样例形态 B（builtin-review-fixed-probe）：省略 records 且 stream 为空数组，后续 chunk 不抛 REMOTE_ASSISTANT_STREAM_GAP
+        val emptyStreamProjection = RemoteTimelineProjection(local, clock = { 3_000L })
+        emptyStreamProjection.accept(
+            obj(
+                "type" to "snapshot",
+                "assistantStream" to obj(
+                    "revision" to 1,
+                    "activeAttempt" to obj(
+                        "attemptId" to "already-started",
+                        "turn" to 1,
+                        "stream" to emptyList<Any>(),
+                    ),
+                ),
+            ),
+        )
+        emptyStreamProjection.accept(
+            obj(
+                "type" to "assistant-stream",
+                "frame" to obj(
+                    "type" to "chunk",
+                    "attemptId" to "already-started",
+                    "chunk" to obj("type" to "text-delta", "text" to "空流后首片"),
+                ),
+            ),
+        )
+        assertEquals(
+            "空流后首片",
+            emptyStreamProjection.rows.getValue("remote-stream:already-started").parts
+                .filterIsInstance<MessagePart.Text>().joinToString("") { it.value },
+        )
+
+        // 3. 含 tool-call-chunks、nextIndex 与历史运行中工具的 activeAttempt：保留活跃工具、忽略重复旧 index、正常续接并回写工具结果
+        val toolStreamProjection = RemoteTimelineProjection(local, clock = { 4_000L })
+        toolStreamProjection.accept(
+            obj(
+                "type" to "snapshot",
+                "cursor" to 5,
+                "records" to listOf(
+                    durable(4, "turn/start", obj("turn" to 2), time = 3_900L),
+                    durable(5, "tool/call", obj("turn" to 2, "callId" to "hist-running", "name" to "grep"), time = 3_950L),
+                ),
+                "assistantStream" to obj(
+                    "revision" to 4,
+                    "activeAttempt" to obj(
+                        "attemptId" to "attempt-tool",
+                        "startedAfterSeq" to 5,
+                        "turn" to 2,
+                        "step" to 1,
+                        "nextIndex" to 2,
+                        "stream" to listOf(
+                            obj("type" to "chunkrow/tool-call-chunks", "index" to 0, "id" to "tc-snap-1", "name" to "read_file", "args" to listOf("{\"path\":", "\"Main.kt\"}")),
+                            obj("type" to "chunkrow/text-chunks", "index" to 1, "texts" to listOf("正在读取")),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        assertEquals(
+            "activeAttempt 声明 turn=2 活跃时，历史运行中工具不得误标 UNKNOWN",
+            NativeExecutionStatus.RUNNING,
+            toolStreamProjection.rows.getValue("history-tool:hist-running").executionSteps.single().status,
+        )
+        // 已在 snapshot 中覆盖的旧序号 index=1 忽略不重复追加
+        assertTrue(
+            toolStreamProjection.accept(
+                obj(
+                    "type" to "assistant-stream",
+                    "frame" to obj("type" to "chunk", "attemptId" to "attempt-tool", "index" to 1, "chunk" to obj("type" to "text-delta", "index" to 1, "text" to "正在读取")),
+                ),
+            ).isEmpty(),
+        )
+        // 预期序号 index=2 正常续接正文，随后 tool/result 回写原工具卡
+        toolStreamProjection.accept(
+            obj(
+                "type" to "assistant-stream",
+                "frame" to obj("type" to "chunk", "attemptId" to "attempt-tool", "index" to 2, "chunk" to obj("type" to "text-delta", "index" to 1, "text" to "并分析")),
+            ),
+        )
+        toolStreamProjection.accept(
+            durable(6, "tool/result", obj("turn" to 2, "callId" to "tc-snap-1", "output" to "package demo"), time = 4_100L),
+        )
+        val liveRow = toolStreamProjection.rows.getValue("remote-stream:attempt-tool")
+        assertEquals("正在读取并分析", liveRow.parts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value })
+        val liveTool = liveRow.executionSteps.single()
+        assertEquals("tc-snap-1", liveTool.stepId)
+        assertEquals("read_file", liveTool.toolName)
+        assertEquals("""{"path":"Main.kt"}""", liveTool.arguments)
+        assertEquals("package demo", liveTool.output)
+        assertEquals(NativeExecutionStatus.COMPLETED, liveTool.status)
+    }
+
+    @Test
+    fun `Codex实时原生turnId与历史数字turn序号对齐时活跃工具保持RUNNING不被误改UNKNOWN`() = runTest {
+        val projection = RemoteTimelineProjection(local, clock = { 1_000L })
+        // 1. 实时链路先用原生 turnId 投影运行中的工具
+        projection.accept(codex("turn/started", "turn" to obj("id" to "turn_native_active")))
+        projection.accept(
+            codex(
+                "item/started",
+                "turnId" to "turn_native_active",
+                "item" to obj("id" to "cmd-live-1", "type" to "commandExecution", "command" to "./gradlew test"),
+            ),
+        )
+
+        // 2. 随后加载同一会话的 dsh/sessionHistory：历史事件里的 turn 为数字 1，而分页 activeTurnId 为原生 ID
+        projection.accept(durable(1, "turn/start", obj("turn" to 0), time = 500L), history = true)
+        projection.accept(durable(2, "tool/call", obj("turn" to 0, "callId" to "cmd-old-0", "name" to "bash"), time = 510L), history = true)
+        projection.accept(durable(3, "turn/end", obj("turn" to 0, "reason" to obj("kind" to "completed")), time = 520L), history = true)
+        projection.accept(durable(4, "turn/start", obj("turn" to 1), time = 1_000L), history = true)
+        projection.accept(durable(5, "tool/call", obj("turn" to 1, "callId" to "cmd-live-1", "name" to "commandExecution", "command" to "./gradlew test"), time = 1_010L), history = true)
+        projection.accept(durable(6, "tool/call", obj("turn" to 1, "callId" to "cmd-live-2", "name" to "read_file"), time = 1_020L), history = true)
+        projection.finishHistoricalReplay(activeGenerationId = "turn_native_active")
+
+        val oldRow = projection.rows.getValue("history-tool:cmd-old-0")
+        assertEquals("已结束旧轮次缺结果工具仍应收敛为 UNKNOWN", NativeExecutionStatus.UNKNOWN, oldRow.executionSteps.single().status)
+
+        val activeRow1 = projection.rows.getValue("history-tool:cmd-live-1")
+        assertEquals("已绑定原生轮次的工具卡必须保留原生 generationId", "turn_native_active", activeRow1.generationId)
+        assertEquals("活跃回合工具绝不能因数字 turn 与原生 activeTurnId 失配被改成 UNKNOWN", NativeExecutionStatus.RUNNING, activeRow1.executionSteps.single().status)
+
+        val activeRow2 = projection.rows.getValue("history-tool:cmd-live-2")
+        assertEquals("同活跃数字回合内的其他运行中工具也应保持 RUNNING", NativeExecutionStatus.RUNNING, activeRow2.executionSteps.single().status)
+
+        // 3. 冷打开场景：仓储首次加载仅含数字 turn=1 历史记录且分页声明原生 activeTurnId，同样保持 RUNNING
+        val coldRecords = listOf(
+            durable(1, "turn/start", obj("turn" to 1), time = 2_000L),
+            durable(2, "tool/call", obj("turn" to 1, "callId" to "cmd-cold-1", "name" to "commandExecution"), time = 2_010L),
+        )
+        val repo = historyRepository("codex", coldRecords, activeGenerationId = "turn_native_cold", activityKnown = true)
+        try {
+            val page = repo.timeline(local, PageRequest())
+            val coldStep = page.messages.single { it.id == "history-tool:cmd-cold-1" }.executionSteps.single()
+            assertEquals(NativeExecutionStatus.RUNNING, coldStep.status)
+        } finally {
+            repo.close()
+        }
+    }
+
+    @Test
+    fun `Codex内部条目在实时与历史入口使用统一过滤判定且codex_compaction不产生工具卡`() = runTest {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(codex("turn/started", "turn" to obj("id" to "T-filter")))
+        assertTrue(projection.accept(codex("item/started", "item" to obj("id" to "c-live", "type" to "contextCompaction"))).isEmpty())
+        assertTrue(projection.accept(codex("item/completed", "item" to obj("id" to "c-live", "type" to "contextCompaction"))).isEmpty())
+        assertTrue(projection.accept(codex("item/completed", "item" to obj("id" to "h-live", "type" to "hookPrompt"))).isEmpty())
+        assertTrue(projection.rows.isEmpty())
+
+        val historyRecords = listOf(
+            durable(1, "turn/start", obj("turn" to 1), time = 1_000L),
+            durable(2, "tool/call", obj("turn" to 1, "callId" to "cmp-1", "name" to "codex.compaction"), time = 1_010L),
+            durable(
+                3,
+                "tool/result",
+                obj(
+                    "turn" to 1,
+                    "message" to obj(
+                        "role" to "tool",
+                        "content" to listOf(
+                            obj("type" to "tool-result", "toolCallId" to "cmp-1", "output" to "Context compacted"),
+                        ),
+                    ),
+                ),
+                time = 1_020L,
+            ),
+            durable(4, "tool/call", obj("turn" to 1, "callId" to "hk-1", "name" to "hookPrompt"), time = 1_025L),
+            durable(5, "tool/call", obj("turn" to 1, "callId" to "real-cmd-1", "name" to "commandExecution", "command" to "echo ok"), time = 1_030L),
+            durable(6, "tool/result", obj("turn" to 1, "callId" to "real-cmd-1", "output" to "ok"), time = 1_040L),
+            durable(7, "turn/end", obj("turn" to 1, "reason" to obj("kind" to "completed")), time = 1_050L),
+        )
+        val repo = historyRepository("codex", historyRecords, activityKnown = true)
+        try {
+            val page = repo.timeline(local, PageRequest())
+            assertEquals("codex.compaction 与 hookPrompt 历史条目不得新增工具卡", listOf("history-tool:real-cmd-1"), page.messages.map { it.id })
+            assertEquals(1, page.messages.sumOf { it.executionSteps.size })
+            assertEquals("ok", page.messages.single().executionSteps.single().output)
+        } finally {
+            repo.close()
+        }
+    }
+
+    @Test
+    fun `缺少配对ID的裸tool_result即使携带真实工具名在实时与历史链路均绝不创建新卡片`() {
+        // 1. 实时链路
+        val liveProjection = RemoteTimelineProjection(local)
+        liveProjection.accept(durable(1, "turn/start", obj("turn" to 1)))
+        val liveCallEvents = liveProjection.accept(
+            durable(2, "tool/call", obj("callId" to "call-01", "name" to "read_file", "arguments" to """{"path":"a.kt"}""")),
+        )
+        assertEquals(1, liveCallEvents.filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().size)
+        val liveUnpairedResult = liveProjection.accept(
+            durable(3, "tool/result", obj("name" to "read_file", "output" to "orphan output")),
+        )
+        assertTrue("缺少配对 ID 的裸 tool/result 即使带真实 name 也绝不能产生 event:3 新卡", liveUnpairedResult.isEmpty())
+        assertTrue(liveProjection.rows.isEmpty())
+
+        // 2. 历史链路：仅保留 history-tool:call-01（绝不出现 history-tool:event:3），回合结束后自然标注 UNKNOWN
+        val historyProjection = RemoteTimelineProjection(local)
+        historyProjection.accept(durable(1, "turn/start", obj("turn" to 1)), history = true)
+        historyProjection.accept(
+            durable(2, "tool/call", obj("turn" to 1, "callId" to "call-01", "name" to "read_file", "arguments" to """{"path":"a.kt"}""")),
+            history = true,
+        )
+        val histUnpairedResult = historyProjection.accept(
+            durable(3, "tool/result", obj("turn" to 1, "name" to "read_file", "output" to "orphan output")),
+            history = true,
+        )
+        assertTrue("历史链路缺少配对 ID 的裸 tool/result 不得新增卡片", histUnpairedResult.isEmpty())
+        historyProjection.accept(durable(4, "turn/end", obj("turn" to 1, "reason" to obj("kind" to "completed"))), history = true)
+
+        assertEquals(listOf("history-tool:call-01"), historyProjection.rows.keys.toList())
+        val step = historyProjection.rows.getValue("history-tool:call-01").executionSteps.single()
+        assertEquals("call-01", step.stepId)
+        assertEquals("无匹配结果的原调用在回合结束后应标注 UNKNOWN", NativeExecutionStatus.UNKNOWN, step.status)
+    }
+
+    @Test
+    fun `Codex先收outputDelta后收带完整aggregatedOutput的item_completed优先保留终态完整输出`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(codex("turn/started", "turn" to obj("id" to "T-delta-priority")))
+
+        // 1. 缓冲路径：先收到 outputDelta（尚未 item/started），再收到携带两行 aggregatedOutput 的 item/completed
+        val bufferedDeltaEvents = projection.accept(
+            codex("item/commandExecution/outputDelta", "turnId" to "T-delta-priority", "itemId" to "cmd-buf-1", "delta" to "第一行"),
+        )
+        assertTrue(bufferedDeltaEvents.isEmpty())
+        val completedStep = projection.accept(
+            codex(
+                "item/completed",
+                "turnId" to "T-delta-priority",
+                "item" to obj(
+                    "id" to "cmd-buf-1",
+                    "type" to "commandExecution",
+                    "command" to "printf '第一行\\n第二行'",
+                    "aggregatedOutput" to "第一行\n第二行",
+                    "status" to "completed",
+                ),
+            ),
+        ).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals(NativeExecutionStatus.COMPLETED, completedStep.status)
+        assertEquals("终态完整输出必须优先保留，不得被先前缓冲的增量覆盖", "第一行\n第二行", completedStep.output)
+
+        // 2. 缓冲回填路径：若终态 item/completed 未携带输出，则回填先前累计的增量输出
+        projection.accept(
+            codex("item/commandExecution/outputDelta", "turnId" to "T-delta-priority", "itemId" to "cmd-buf-2", "delta" to "第一行"),
+        )
+        val backfilledStep = projection.accept(
+            codex(
+                "item/completed",
+                "turnId" to "T-delta-priority",
+                "item" to obj(
+                    "id" to "cmd-buf-2",
+                    "type" to "commandExecution",
+                    "command" to "echo 第一行",
+                    "status" to "completed",
+                ),
+            ),
+        ).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals(NativeExecutionStatus.COMPLETED, backfilledStep.status)
+        assertEquals("终态未带输出时应回填先前累计的增量输出", "第一行", backfilledStep.output)
+
+        // 3. 已登记路径：item/started -> outputDelta("第一行") -> item/completed(aggregatedOutput="第一行\n第二行")
+        projection.accept(
+            codex("item/started", "turnId" to "T-delta-priority", "item" to obj("id" to "cmd-reg-3", "type" to "commandExecution", "command" to "cmd")),
+        )
+        projection.accept(
+            codex("item/commandExecution/outputDelta", "turnId" to "T-delta-priority", "itemId" to "cmd-reg-3", "delta" to "第一行"),
+        )
+        val regCompleted = projection.accept(
+            codex(
+                "item/completed",
+                "turnId" to "T-delta-priority",
+                "item" to obj("id" to "cmd-reg-3", "type" to "commandExecution", "aggregatedOutput" to "第一行\n第二行", "status" to "completed"),
+            ),
+        ).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals(NativeExecutionStatus.COMPLETED, regCompleted.status)
+        assertEquals("第一行\n第二行", regCompleted.output)
+    }
+
     private fun kotlinx.coroutines.test.TestScope.historyRepository(
         backend: String,
         records: List<JsonValue>,

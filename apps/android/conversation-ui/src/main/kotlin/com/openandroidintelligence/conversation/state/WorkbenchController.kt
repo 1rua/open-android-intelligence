@@ -1779,10 +1779,10 @@ class WorkbenchController(
                     LocalSubmissionState.OUTCOME_UNKNOWN
             } == true
             val restoredRows = renderTimeline()
-            val cleanSavedThreads = saved.threads.map { it.copy(title = ContextInjectionFilter.sanitizeSummaryText(it.title)) }
+            val cleanSavedThreads = saved.threads.map { it.copy(title = ContextInjectionFilter.sanitizeTitleText(it.title)) }
             _state.value = _state.value.copy(threads = if (cleanSavedThreads.isEmpty()) Loadable.Empty else Loadable.Ready(saved.organization.sort(cleanSavedThreads)),
                 organization=saved.organization, pendingFolderAssignments=pendingFolderAssignments.toMap(),
-                activeThreadId = activeThreadId, activeThreadTitle = if (restoreLastThread) ContextInjectionFilter.sanitizeSummaryText(saved.title) else "",
+                activeThreadId = activeThreadId, activeThreadTitle = if (restoreLastThread) ContextInjectionFilter.sanitizeTitleText(saved.title) else "",
                 draftVersion=saved.draftVersion,
                 draft = if (restoreComposer) {
                     if (saved.draftExplicit) saved.draft else saved.draft.ifBlank { displayedSubmission?.text.orEmpty() }
@@ -2023,7 +2023,7 @@ class WorkbenchController(
                     val cached = _state.value.organization.sort(
                         local.conversations
                             .filterNot { it.id.value in deletedThreads }
-                            .map { it.copy(title = ContextInjectionFilter.sanitizeSummaryText(it.title)) }
+                            .map { it.copy(title = ContextInjectionFilter.sanitizeTitleText(it.title)) }
                     )
                     update { it.copy(threads = if (cached.isEmpty()) Loadable.Empty else Loadable.Ready(cached)) }
                 }
@@ -2059,7 +2059,7 @@ class WorkbenchController(
                 val threads=installedOrganization.sort(
                     summaries
                         .filterNot { it.id.value in deletedThreads }
-                        .map { it.copy(title = ContextInjectionFilter.sanitizeSummaryText(it.title)) }
+                        .map { it.copy(title = ContextInjectionFilter.sanitizeTitleText(it.title)) }
                 )
                 update { state -> state.copy(organization=installedOrganization,
                     selectedFolderId=state.selectedFolderId?.takeIf { id -> installedOrganization.folders.any { it.folderId == id } },
@@ -2362,7 +2362,7 @@ class WorkbenchController(
                     val transferredComposer = SavedComposerDraft(conversation.id.value,_state.value.draft,draftRevision,_state.value.attachments)
                     composerDrafts[conversation.id.value] = transferredComposer
                     openThread(conversation.id.value)
-                    update { it.copy(activeThreadTitle=ContextInjectionFilter.sanitizeSummaryText(conversation.title)) }
+                    update { it.copy(activeThreadTitle=ContextInjectionFilter.sanitizeTitleText(conversation.title)) }
                     GatewayLog.protocolEvidence("create.ui_applied", mapOf("conversationId" to conversation.id.value))
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -2847,7 +2847,7 @@ class WorkbenchController(
             refreshThreads()
             if (detail == null) return@launch
             if (activeThreadId == threadId && !isThreadUserRenamed(threadId)) {
-                update { it.copy(activeThreadTitle = ContextInjectionFilter.sanitizeSummaryText(detail.title)) }
+                update { it.copy(activeThreadTitle = ContextInjectionFilter.sanitizeTitleText(detail.title)) }
             }
         }
     }
@@ -2874,7 +2874,7 @@ class WorkbenchController(
                     // create request. Its identity stays visible while its
                     // durable send record is written for the new conversation.
                     val pending = optimisticEntry?.let(::listOf).orEmpty()
-                    state.copy(activeThreadId = conversation.id.value, activeThreadTitle = ContextInjectionFilter.sanitizeSummaryText(conversation.title),
+                    state.copy(activeThreadId = conversation.id.value, activeThreadTitle = ContextInjectionFilter.sanitizeTitleText(conversation.title),
                         timeline = if (pending.isEmpty()) Loadable.Empty else Loadable.Ready(renderTimeline(pending)),
                         pendingBatch = pending, notice = null)
                 }
@@ -5283,7 +5283,7 @@ class WorkbenchController(
 
             is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TitleUpdated -> {
                 val threadId = event.conversationId.value
-                val cleanTitle = ContextInjectionFilter.sanitizeSummaryText(event.newTitle)
+                val cleanTitle = ContextInjectionFilter.sanitizeTitleText(event.newTitle)
                 if (cleanTitle.isNotEmpty() && !userRenamedThreads.contains(threadId)) {
                     if (threadId == activeThreadId) {
                         update { it.copy(activeThreadTitle = cleanTitle) }

@@ -344,23 +344,27 @@ class RemoteTimelineProjectionTest {
         val projection = RemoteTimelineProjection(local)
 
         // 1. result 为 JObject 结构化对象
-        val resultCall = event(1, "tool/result", obj("name" to "api", "result" to obj("code" to 200, "status" to "success")))
+        projection.accept(event(1, "tool/call", obj("callId" to "call-api", "name" to "api")))
+        val resultCall = event(2, "tool/result", obj("callId" to "call-api", "name" to "api", "result" to obj("code" to 200, "status" to "success")))
         val resultStep = projection.accept(resultCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
         assertEquals("""{"code":200,"status":"success"}""", resultStep.output)
         assertEquals(NativeExecutionStatus.COMPLETED, resultStep.status)
 
         // 2. output 为字符串
-        val outputCall = event(2, "tool/result", obj("name" to "ping", "output" to "64 bytes from 127.0.0.1"))
+        projection.accept(event(3, "tool/call", obj("callId" to "call-ping", "name" to "ping")))
+        val outputCall = event(4, "tool/result", obj("callId" to "call-ping", "name" to "ping", "output" to "64 bytes from 127.0.0.1"))
         val outputStep = projection.accept(outputCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
         assertEquals("64 bytes from 127.0.0.1", outputStep.output)
 
         // 3. content 为字符串
-        val contentCall = event(3, "tool/result", obj("name" to "read", "content" to "file payload data"))
+        projection.accept(event(5, "tool/call", obj("callId" to "call-read", "name" to "read")))
+        val contentCall = event(6, "tool/result", obj("callId" to "call-read", "name" to "read", "content" to "file payload data"))
         val contentStep = projection.accept(contentCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
         assertEquals("file payload data", contentStep.output)
 
         // 4. response 为字符串
-        val responseCall = event(4, "tool/result", obj("name" to "query", "response" to "OK"))
+        projection.accept(event(7, "tool/call", obj("callId" to "call-query", "name" to "query")))
+        val responseCall = event(8, "tool/result", obj("callId" to "call-query", "name" to "query", "response" to "OK"))
         val responseStep = projection.accept(responseCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
         assertEquals("OK", responseStep.output)
     }
@@ -378,22 +382,25 @@ class RemoteTimelineProjectionTest {
         val projection = RemoteTimelineProjection(local)
 
         // 未完成: RUNNING
-        val runningCall = event(1, "tool/call", obj("name" to "long_task"))
+        val runningCall = event(1, "tool/call", obj("callId" to "call-long", "name" to "long_task"))
         val runningStep = projection.accept(runningCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
         assertEquals(NativeExecutionStatus.RUNNING, runningStep.status)
 
         // isError 标记为 true: FAILED
-        val errorCall = event(2, "tool/result", obj("name" to "task", "isError" to true, "output" to "disk full"))
+        projection.accept(event(2, "tool/call", obj("callId" to "call-err", "name" to "task")))
+        val errorCall = event(3, "tool/result", obj("callId" to "call-err", "name" to "task", "isError" to true, "output" to "disk full"))
         val errorStep = projection.accept(errorCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
         assertEquals(NativeExecutionStatus.FAILED, errorStep.status)
 
         // status 为 failed: FAILED
-        val failedCall = event(3, "tool/result", obj("name" to "task", "status" to "failed", "output" to "timed out"))
+        projection.accept(event(4, "tool/call", obj("callId" to "call-fail", "name" to "task")))
+        val failedCall = event(5, "tool/result", obj("callId" to "call-fail", "name" to "task", "status" to "failed", "output" to "timed out"))
         val failedStep = projection.accept(failedCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
         assertEquals(NativeExecutionStatus.FAILED, failedStep.status)
 
         // 成功完成: COMPLETED
-        val completedCall = event(4, "tool/result", obj("name" to "task", "status" to "completed", "output" to "all done"))
+        projection.accept(event(6, "tool/call", obj("callId" to "call-ok", "name" to "task")))
+        val completedCall = event(7, "tool/result", obj("callId" to "call-ok", "name" to "task", "status" to "completed", "output" to "all done"))
         val completedStep = projection.accept(completedCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
         assertEquals(NativeExecutionStatus.COMPLETED, completedStep.status)
     }

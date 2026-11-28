@@ -280,6 +280,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         }
     }
     private val attempts = mutableMapOf<String, AssistantContent>()
+    private val attemptNextIndices = mutableMapOf<String, Long>()
     private val liveContent = mutableMapOf<String, AssistantContent>()
     private val codexContent = mutableMapOf<String, AssistantContent>()
     private val codexAgentMessages = mutableMapOf<String, StringBuilder>()
@@ -296,6 +297,10 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     private val knownTools = mutableMapOf<String, NativeExecutionStep>()
     private val toolOwnerMessageId = mutableMapOf<String, String>()
     private val toolGenerationByCallId = mutableMapOf<String, String>()
+    /** 记录 Codex 等后端历史数字 turn 序号与原生 turnId 的等价关系，避免活跃回合收尾失配。 */
+    private val historicalTurnAliases = mutableMapOf<String, String>()
+    /** 记录已过滤的内部协议工具调用 ID，防止其后续结果或增量残留在缓冲或时间线中。 */
+    private val hiddenToolCallIds = mutableSetOf<String>()
     /** 乱序到达的裸工具结果缓冲（以归一化 callId 为唯一键）；待对应调用到达时自动合并，绝不凭空造孤立 `[tool]` 卡。 */
     private val pendingResults = mutableMapOf<String, PendingToolResult>()
     private var nextOrderSequence = 0L
@@ -303,6 +308,32 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     /** 查询工具调用当前绑定的宿主消息行 ID，供历史分页收集归属行。 */
     fun ownerMessageIdForTool(callId: String): String? =
         ToolCallPairing.normalizeCallId(callId)?.let { toolOwnerMessageId[it] }
+
+    private fun isNumericTurnId(turnId: String?): Boolean =
+        !turnId.isNullOrEmpty() && turnId.all(Char::isDigit)
+
+    private fun canonicalHistoricalTurnId(turnId: String?): String? {
+        val trimmed = turnId?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        return historicalTurnAliases[trimmed] ?: trimmed
+    }
+
+    private fun matchesTurnIdentity(candidate: String?, target: String?): Boolean {
+        val c = candidate?.trim()?.takeIf { it.isNotEmpty() } ?: return false
+        val t = target?.trim()?.takeIf { it.isNotEmpty() } ?: return false
+        if (c == t) return true
+        val rc = resolveGeneration(canonicalHistoricalTurnId(c) ?: c)
+        val rt = resolveGeneration(canonicalHistoricalTurnId(t) ?: t)
+        return rc == rt
+    }
+
+    private fun alignHistoricalTurnWithActive(activeGen: String?) {
+        val active = activeGen?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        val openTurn = historicalTurnId?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        if (openTurn == active) return
+        if (isNumericTurnId(openTurn) && !isNumericTurnId(active)) {
+            historicalTurnAliases.putIfAbsent(openTurn, active)
+        }
+    }
 
     private fun bufferPendingToolResult(
         callId: String,
@@ -330,12 +361,35 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     private fun applyBufferedResultToCall(step: NativeExecutionStep): NativeExecutionStep {
         val canonical = ToolCallPairing.normalizeCallId(step.stepId) ?: return step
         val pending = pendingResults.remove(canonical) ?: return step
-        val incomingStatus = if (pending.failed) NativeExecutionStatus.FAILED else pending.status
+        val pendingStatus = if (pending.failed) NativeExecutionStatus.FAILED else pending.status
+        val pendingTerminal = ToolCallPairing.isTerminalStatus(pendingStatus)
+        val stepTerminal = ToolCallPairing.isTerminalStatus(step.status)
+        if (!pendingTerminal) {
+            // 缓冲内容来自先到的非终态增量（如 Codex outputDelta）：作为较早基线合并，终态帧带完整输出时优先保留终态输出。
+            val deltaBaseline = step.copy(
+                output = pending.output,
+                status = pendingStatus,
+                occurredAt = pending.occurredAt.takeIf { it > 0L } ?: step.occurredAt,
+            )
+            return mergeExecutionStep(deltaBaseline, step)
+        }
+        if (stepTerminal) {
+            val resolvedStatus = if (pending.failed || step.status == NativeExecutionStatus.FAILED) {
+                NativeExecutionStatus.FAILED
+            } else {
+                step.status
+            }
+            return step.copy(
+                output = ToolCallPairing.chooseOutput(pending.output, step.output),
+                status = resolvedStatus,
+                occurredAt = pending.occurredAt.takeIf { it > 0L } ?: step.occurredAt,
+            )
+        }
         return mergeExecutionStep(
             step,
             step.copy(
                 output = pending.output,
-                status = incomingStatus,
+                status = pendingStatus,
                 revision = ++revision,
             ),
         )
@@ -423,13 +477,15 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     ): List<VerifiedConversationEvent> {
         val source = Source(historical = true, time = lastHistoricalTimestamp, historyRead = historyRead)
         val activeGen = activeGenerationId?.trim()?.takeIf { it.isNotEmpty() }
+        alignHistoricalTurnWithActive(activeGen)
         val skipAcpFlush = activeGen != null &&
             acpMessageId?.startsWith("history-acp:") == true &&
-            (rows[acpMessageId]?.generationId == activeGen || historicalTurnId == activeGen)
+            (matchesTurnIdentity(rows[acpMessageId]?.generationId, activeGen) ||
+                matchesTurnIdentity(historicalTurnId, activeGen))
         val flushed = if (skipAcpFlush) emptyList() else flushTrailingHistoricalAcpTurn(source)
         val settled = historicalTurnId
-            ?.takeIf { turnId -> turnId != activeGen }
-            ?.let { settleHistoricalRunningTools(it, source) }
+            ?.takeUnless { turnId -> activeGen != null && matchesTurnIdentity(turnId, activeGen) }
+            ?.let { settleHistoricalRunningTools(it, source, activeGenerationId = activeGen) }
             .orEmpty()
         historicalTurnId = null
         lastAcpHistoricalUserId = null
@@ -494,9 +550,13 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         if (!history) terminalGeneration = null
         val source = Source(history, if (history) 0 else receivedAt, historyRead)
         if (value.text("type") == "snapshot") {
-            val events = value.requiredArray("records").flatMap { accept(it, history = true, receivedAt, historyRead) }.toMutableList()
+            val events = value.array("records").orEmpty().flatMap { accept(it, history = true, receivedAt, historyRead) }.toMutableList()
             val streamSnapshot = value.at("assistantStream")
-            val streamActiveTurn = streamSnapshot?.let { snapshot ->
+            val activeAttempt = streamSnapshot?.at("activeAttempt")
+            val activeAttemptTurn = activeAttempt?.let { attempt ->
+                attempt.nonBlankText("turnId") ?: attempt.number("turn")?.toString()
+            }
+            val streamActiveTurn = activeAttemptTurn ?: streamSnapshot?.let { snapshot ->
                 snapshot.array("entries")?.mapNotNull { entry ->
                     entry.nonBlankText("turnId") ?: entry.number("turn")?.toString()
                 }?.lastOrNull()
@@ -505,7 +565,8 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                     }
             }
             val hasActiveStream = streamSnapshot != null && (
-                streamSnapshot.array("entries")?.isNotEmpty() == true ||
+                activeAttempt != null ||
+                    streamSnapshot.array("entries")?.isNotEmpty() == true ||
                     streamSnapshot.at("message") != null
             )
             val snapshotActiveTurn = value.nonBlankText("activeGenerationId")
@@ -517,6 +578,13 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             streamSnapshot?.let { snapshot ->
                 snapshot.array("entries")?.forEach { entry -> events += assistantSnapshot(entry, Source(true, 0, historyRead)) }
                 snapshot.at("message")?.let { message -> events += upsert(message, "assistant", true, null, Source(true, 0, historyRead)) }
+                activeAttempt?.let { attempt ->
+                    events += assistantActiveAttempt(
+                        activeAttempt = attempt,
+                        source = Source(history, if (history) 0L else receivedAt, historyRead),
+                        fallbackTurn = snapshotActiveTurn,
+                    )
+                }
             }
             return events
         }
@@ -580,17 +648,191 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             }
             "assistant/message" -> return upsert(data, "assistant", false, event.number("seq"), source, turn ?: if (source.historical) historicalTurnId else generationId)
             "tool/call" -> {
+                if (isHiddenProtocolToolPayload(data)) {
+                    extractToolCallId(data, allowRecordIdFallback = true)?.let { hiddenToolCallIds += it }
+                    return emptyList()
+                }
                 if (!source.historical) attempts.values.forEach { it.finishTrailingReasoning() }
                 return execution(data, id, source, completed = false, explicitSeq = event.number("seq"), explicitTurn = turn, isBareResult = false)
             }
-            "tool/result" -> return execution(data, id, source, completed = true, explicitSeq = event.number("seq"), explicitTurn = turn, isBareResult = true)
+            "tool/result" -> {
+                if (isHiddenProtocolToolPayload(data)) return emptyList()
+                return execution(data, id, source, completed = true, explicitSeq = event.number("seq"), explicitTurn = turn, isBareResult = true)
+            }
             "session/title", "title/changed" -> data.text("title")?.let { rawTitle ->
-                val cleanTitle = ContextInjectionFilter.sanitizeSummaryText(rawTitle)
+                val cleanTitle = ContextInjectionFilter.sanitizeTitleText(rawTitle)
                 if (cleanTitle.isEmpty()) return emptyList()
                 return listOf(VerifiedConversationEvent.TitleUpdated(source.id(id), time, ConversationId(sessionId), cleanTitle))
             }
         }
         return emptyList()
+    }
+
+    /** 统一判定 Codex / 原生协议的内部条目（如 `contextCompaction`、`codex.compaction`、`hookPrompt`），实时与历史入口共用。 */
+    private fun isHiddenProtocolToolPayload(value: JsonValue): Boolean {
+        val candidates = listOfNotNull(
+            value.nonBlankText("type"),
+            value.nonBlankText("kind"),
+            value.nonBlankText("itemType"),
+            value.nonBlankText("item_type"),
+            value.nonBlankText("name"),
+            value.nonBlankText("toolName"),
+            value.nonBlankText("tool_name"),
+            value.nonBlankText("tool"),
+            value.at("item")?.nonBlankText("type"),
+            value.at("item")?.nonBlankText("name"),
+            value.at("toolCall")?.nonBlankText("name"),
+            value.at("toolCall")?.nonBlankText("type"),
+            value.at("tool_call")?.nonBlankText("name"),
+            value.at("function")?.nonBlankText("name"),
+        )
+        return candidates.any { ContextInjectionFilter.isHiddenProtocolItemType(it) }
+    }
+
+    private fun applyAssistantSnapshotBlock(
+        index: Int,
+        block: JsonValue,
+        content: AssistantContent,
+        rowId: String,
+        snapGen: String?,
+        source: Source,
+        ownerUpdates: MutableList<VerifiedConversationEvent>,
+    ) {
+        val kind = block.text("type") ?: return
+        when (kind) {
+            "text" -> content.append(index.toString(), "text", block.text("text").orEmpty())
+            "reasoning", "thinking", "thought" -> {
+                val thoughtText = block.text("text")
+                    ?: block.text("thinking")
+                    ?: block.text("thought")
+                    ?: block.text("reasoning")
+                    ?: ""
+                content.append(index.toString(), "reasoning", thoughtText)
+                if (block.flag("complete") == true) content.finish(index.toString())
+            }
+            in TOOL_USE_BLOCK_TYPES -> {
+                if (isHiddenProtocolToolPayload(block)) {
+                    extractToolCallId(block, allowRecordIdFallback = true)?.let { hiddenToolCallIds += it }
+                    return
+                }
+                val step = applyBufferedResultToCall(
+                    parseToolBlockStep(
+                        block = block,
+                        fallbackId = "$rowId:tool:$index",
+                        completed = isToolBlockCompleted(block),
+                        sourceTime = source.time,
+                        sourceMessageId = rowId,
+                        orderSeq = allocateOrder(null, historical = source.historical),
+                    ),
+                )
+                val merged = content.upsertTool(step, key = index.toString())
+                knownTools[merged.stepId] = merged
+                toolOwnerMessageId[merged.stepId] = rowId
+                if (snapGen != null) toolGenerationByCallId.putIfAbsent(merged.stepId, snapGen)
+            }
+            in TOOL_RESULT_BLOCK_TYPES -> {
+                if (isHiddenProtocolToolPayload(block)) return
+                applyToolResultBlockToContent(block, content, rowId, source)?.let { ownerUpdates += it }
+            }
+        }
+    }
+
+    private fun applyToolCallDeltaToContent(
+        content: AssistantContent,
+        rowId: String,
+        index: String,
+        callId: String?,
+        toolName: String?,
+        delta: String,
+        activeGen: String?,
+        source: Source,
+    ) {
+        val (reboundFrom, updatedRaw) = content.appendToolDelta(
+            key = index,
+            callId = callId,
+            name = toolName,
+            argumentsDelta = delta,
+            revision = ++revision,
+            occurredAt = source.time,
+            allocateOrderSeq = {
+                callId?.let { knownTools[it]?.orderSequence } ?: allocateOrder(null, historical = source.historical)
+            },
+            sourceMessageId = rowId,
+        )
+        if (reboundFrom != null) {
+            knownTools.remove(reboundFrom)
+            if (toolOwnerMessageId[reboundFrom] == rowId) toolOwnerMessageId.remove(reboundFrom)
+            toolGenerationByCallId.remove(reboundFrom)?.let { prevGen ->
+                toolGenerationByCallId.putIfAbsent(updatedRaw.stepId, prevGen)
+            }
+        }
+        val withPending = applyBufferedResultToCall(updatedRaw)
+        val updated = if (withPending !== updatedRaw) content.upsertTool(withPending, key = index) else updatedRaw
+        knownTools[updated.stepId] = updated
+        toolOwnerMessageId[updated.stepId] = rowId
+        if (activeGen != null) toolGenerationByCallId.putIfAbsent(updated.stepId, activeGen)
+    }
+
+    private fun applyAssistantStreamChunk(
+        chunk: JsonValue,
+        content: AssistantContent,
+        rowId: String,
+        activeGen: String?,
+        source: Source,
+        ownerUpdates: MutableList<VerifiedConversationEvent>,
+    ): Boolean {
+        val index = chunk.number("index")?.toString() ?: "0"
+        when (chunk.text("type")) {
+            "block-start" -> {
+                val blockType = chunk.text("blockType") ?: "text"
+                if (blockType in TOOL_USE_BLOCK_TYPES) {
+                    if (isHiddenProtocolToolPayload(chunk)) {
+                        extractToolCallId(chunk, allowRecordIdFallback = true)?.let { hiddenToolCallIds += it }
+                        return false
+                    }
+                    val callId = extractToolCallId(chunk, allowRecordIdFallback = true) ?: "$rowId:tool:$index"
+                    val step = applyBufferedResultToCall(
+                        parseToolBlockStep(
+                            block = chunk,
+                            fallbackId = callId,
+                            completed = false,
+                            sourceTime = source.time,
+                            sourceMessageId = rowId,
+                            orderSeq = knownTools[callId]?.orderSequence ?: allocateOrder(null, historical = source.historical),
+                        ),
+                    )
+                    val merged = content.upsertTool(step, key = index)
+                    knownTools[merged.stepId] = merged
+                    toolOwnerMessageId[merged.stepId] = rowId
+                    if (activeGen != null) toolGenerationByCallId.putIfAbsent(merged.stepId, activeGen)
+                } else {
+                    content.start(index, if (blockType in setOf("thinking", "thought")) "reasoning" else blockType)
+                }
+            }
+            "text-delta" -> content.append(index, "text", chunk.text("text") ?: chunk.text("delta").orEmpty())
+            "reasoning-delta", "thinking-delta", "thought-delta" -> content.append(
+                index,
+                "reasoning",
+                chunk.text("text") ?: chunk.text("thinking") ?: chunk.text("delta").orEmpty(),
+            )
+            "tool-call-delta", "tool_call_delta", "tool-call", "tool_call" -> {
+                if (isHiddenProtocolToolPayload(chunk)) {
+                    extractToolCallId(chunk, allowRecordIdFallback = true)?.let { hiddenToolCallIds += it }
+                    return false
+                }
+                val callId = extractToolCallId(chunk, allowRecordIdFallback = true)
+                val toolName = extractToolName(chunk, allowGenericFallback = false)
+                val delta = chunk.text("argumentsDelta") ?: chunk.text("delta") ?: chunk.text("text") ?: ""
+                applyToolCallDeltaToContent(content, rowId, index, callId, toolName, delta, activeGen, source)
+            }
+            "block-end" -> content.finish(index)
+            in TOOL_RESULT_BLOCK_TYPES -> {
+                if (isHiddenProtocolToolPayload(chunk)) return false
+                applyToolResultBlockToContent(chunk, content, rowId, source)?.let { ownerUpdates += it }
+            }
+            else -> return false
+        }
+        return true
     }
 
     private fun assistantSnapshot(entry: JsonValue, source: Source): List<VerifiedConversationEvent> {
@@ -600,42 +842,97 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         val snapGen = entry.nonBlankText("turnId") ?: entry.number("turn")?.toString() ?: generationId
         val ownerUpdates = mutableListOf<VerifiedConversationEvent>()
         entry.array("content")?.forEachIndexed { index, block ->
-            val kind = block.text("type") ?: return@forEachIndexed
-            when (kind) {
-                "text" -> content.append(index.toString(), "text", block.text("text").orEmpty())
-                "reasoning", "thinking", "thought" -> {
-                    val thoughtText = block.text("text")
-                        ?: block.text("thinking")
-                        ?: block.text("thought")
-                        ?: block.text("reasoning")
-                        ?: ""
-                    content.append(index.toString(), "reasoning", thoughtText)
-                    if (block.flag("complete") == true) content.finish(index.toString())
-                }
-                in TOOL_USE_BLOCK_TYPES -> {
-                    val step = applyBufferedResultToCall(
-                        parseToolBlockStep(
-                            block = block,
-                            fallbackId = "$rowId:tool:$index",
-                            completed = isToolBlockCompleted(block),
-                            sourceTime = source.time,
-                            sourceMessageId = rowId,
-                            orderSeq = allocateOrder(null, historical = source.historical),
-                        ),
-                    )
-                    val merged = content.upsertTool(step, key = index.toString())
-                    knownTools[merged.stepId] = merged
-                    toolOwnerMessageId[merged.stepId] = rowId
-                    if (snapGen != null) toolGenerationByCallId.putIfAbsent(merged.stepId, snapGen)
-                }
-                in TOOL_RESULT_BLOCK_TYPES -> {
-                    applyToolResultBlockToContent(block, content, rowId, source)?.let { ownerUpdates += it }
-                }
-            }
+            applyAssistantSnapshotBlock(index, block, content, rowId, snapGen, source, ownerUpdates)
         }
         if (entry.array("content") == null) content.append("text", entry.text("text") ?: entry.at("message")?.let(::contentText).orEmpty())
         attempts[attempt] = content
-        return ownerUpdates + upsertContent(rowId, content, source)
+        entry.number("nextIndex")?.let { attemptNextIndices[attempt] = it } ?: attemptNextIndices.remove(attempt)
+        return ownerUpdates + upsertContent(rowId, content, source, explicitGeneration = snapGen)
+    }
+
+    /** 从 DSH `session/follow` 开场快照的 `assistantStream.activeAttempt` 恢复活跃尝试、已收分片与工具调用状态。 */
+    private fun assistantActiveAttempt(
+        activeAttempt: JsonValue,
+        source: Source,
+        fallbackTurn: String?,
+    ): List<VerifiedConversationEvent> {
+        val attemptId = activeAttempt.nonBlankText("attemptId") ?: return emptyList()
+        val rowId = "remote-stream:$attemptId"
+        val attemptTurn = activeAttempt.nonBlankText("turnId")
+            ?: activeAttempt.number("turn")?.toString()
+            ?: fallbackTurn
+            ?: generationId
+        val content = AssistantContent()
+        val ownerUpdates = mutableListOf<VerifiedConversationEvent>()
+
+        val streamItems = activeAttempt.array("stream") ?: activeAttempt.array("chunks") ?: emptyList()
+        streamItems.forEachIndexed { itemIdx, item ->
+            val itemType = item.text("type") ?: return@forEachIndexed
+            val payload = item.at("data") ?: item
+            when (itemType) {
+                "chunk" -> {
+                    val innerChunk = item.at("chunk") ?: payload.at("chunk") ?: return@forEachIndexed
+                    applyAssistantStreamChunk(innerChunk, content, rowId, attemptTurn, source, ownerUpdates)
+                }
+                "text-chunks", "chunkrow/text-chunks" -> {
+                    val idx = (payload.number("index") ?: item.number("index"))?.toString() ?: "0"
+                    val texts = payload.array("texts")?.mapNotNull { (it as? JsonValue.JString)?.value }
+                        ?: listOfNotNull(payload.text("text"))
+                    texts.forEach { text -> content.append(idx, "text", text) }
+                }
+                "reasoning-chunks", "chunkrow/reasoning-chunks", "thinking-chunks", "thought-chunks" -> {
+                    val idx = (payload.number("index") ?: item.number("index"))?.toString() ?: "0"
+                    val texts = payload.array("texts")?.mapNotNull { (it as? JsonValue.JString)?.value }
+                        ?: listOfNotNull(payload.text("text") ?: payload.text("thinking"))
+                    texts.forEach { text -> content.append(idx, "reasoning", text) }
+                }
+                "tool-call-chunks", "chunkrow/tool-call-chunks" -> {
+                    if (isHiddenProtocolToolPayload(payload)) {
+                        extractToolCallId(payload, allowRecordIdFallback = true)?.let { hiddenToolCallIds += it }
+                        return@forEachIndexed
+                    }
+                    val idx = (payload.number("index") ?: item.number("index"))?.toString() ?: itemIdx.toString()
+                    val callId = extractToolCallId(payload, allowRecordIdFallback = true)
+                    val toolName = extractToolName(payload, allowGenericFallback = false)
+                    val argsList = (payload.array("args") ?: payload.array("deltas") ?: payload.array("argumentsDeltas"))
+                        ?.mapNotNull { (it as? JsonValue.JString)?.value }
+                        ?: listOfNotNull(payload.text("argumentsDelta") ?: payload.text("delta"))
+                    if (argsList.isEmpty()) {
+                        applyToolCallDeltaToContent(content, rowId, idx, callId, toolName, "", attemptTurn, source)
+                    } else {
+                        argsList.forEach { argDelta ->
+                            applyToolCallDeltaToContent(content, rowId, idx, callId, toolName, argDelta, attemptTurn, source)
+                        }
+                    }
+                }
+                "block-start", "text-delta", "reasoning-delta", "thinking-delta", "thought-delta",
+                "tool-call-delta", "tool_call_delta", "tool-call", "tool_call", "block-end" -> {
+                    applyAssistantStreamChunk(item, content, rowId, attemptTurn, source, ownerUpdates)
+                }
+                else -> {
+                    applyAssistantSnapshotBlock(itemIdx, item, content, rowId, attemptTurn, source, ownerUpdates)
+                }
+            }
+        }
+        activeAttempt.array("content")?.forEachIndexed { idx, block ->
+            applyAssistantSnapshotBlock(idx, block, content, rowId, attemptTurn, source, ownerUpdates)
+        }
+
+        attempts[attemptId] = content
+        activeAttempt.number("nextIndex")?.let { attemptNextIndices[attemptId] = it } ?: attemptNextIndices.remove(attemptId)
+        if (!source.historical) {
+            if (attemptTurn != null) {
+                if (generationId == null || isUnconfirmedGeneration(generationId!!)) {
+                    confirmGeneration(attemptTurn)
+                } else {
+                    generationId = attemptTurn
+                    generationState = terminals[attemptTurn]?.state ?: GenerationState.RUNNING
+                }
+            } else if (generationState == GenerationState.IDLE) {
+                generationState = GenerationState.RUNNING
+            }
+        }
+        return ownerUpdates + upsertContent(rowId, content, source, streaming = true, explicitGeneration = attemptTurn)
     }
 
     private fun assistantStream(frame: JsonValue, source: Source): List<VerifiedConversationEvent> {
@@ -644,6 +941,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         when (frame.text("type")) {
             "start" -> {
                 attempts[attempt] = AssistantContent()
+                frame.number("nextIndex")?.let { attemptNextIndices[attempt] = it } ?: attemptNextIndices.remove(attempt)
                 if (!source.historical) {
                     generationId = frame.number("turn")?.toString() ?: generationId
                     generationState = terminals[generationId]?.state ?: GenerationState.RUNNING
@@ -652,73 +950,24 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             "chunk" -> {
                 val chunk = frame.at("chunk") ?: return emptyList()
                 val content = attempts[attempt] ?: throw RemoteSessionException("REMOTE_ASSISTANT_STREAM_GAP")
-                val index = chunk.number("index")?.toString() ?: "0"
-                val activeGen = frame.nonBlankText("turnId") ?: frame.number("turn")?.toString() ?: generationId
-                when (chunk.text("type")) {
-                    "block-start" -> {
-                        val blockType = chunk.text("blockType") ?: "text"
-                        if (blockType in TOOL_USE_BLOCK_TYPES) {
-                            val callId = extractToolCallId(chunk, allowRecordIdFallback = true) ?: "$rowId:tool:$index"
-                            val step = applyBufferedResultToCall(
-                                parseToolBlockStep(
-                                    block = chunk,
-                                    fallbackId = callId,
-                                    completed = false,
-                                    sourceTime = source.time,
-                                    sourceMessageId = rowId,
-                                    orderSeq = knownTools[callId]?.orderSequence ?: allocateOrder(null, historical = source.historical),
-                                ),
-                            )
-                            val merged = content.upsertTool(step, key = index)
-                            knownTools[merged.stepId] = merged
-                            toolOwnerMessageId[merged.stepId] = rowId
-                            if (activeGen != null) toolGenerationByCallId.putIfAbsent(merged.stepId, activeGen)
-                        } else {
-                            content.start(index, if (blockType in setOf("thinking", "thought")) "reasoning" else blockType)
-                        }
+                val frameIndex = frame.number("index")
+                if (frameIndex != null) {
+                    val expectedIndex = attemptNextIndices[attempt]
+                    if (expectedIndex != null) {
+                        if (frameIndex < expectedIndex) return emptyList()
+                        if (frameIndex > expectedIndex) throw RemoteSessionException("REMOTE_ASSISTANT_STREAM_GAP")
                     }
-                    "text-delta" -> content.append(index, "text", chunk.text("text") ?: chunk.text("delta").orEmpty())
-                    "reasoning-delta", "thinking-delta", "thought-delta" -> content.append(
-                        index,
-                        "reasoning",
-                        chunk.text("text") ?: chunk.text("thinking") ?: chunk.text("delta").orEmpty(),
-                    )
-                    "tool-call-delta", "tool_call_delta", "tool-call", "tool_call" -> {
-                        val callId = extractToolCallId(chunk, allowRecordIdFallback = true)
-                        val toolName = extractToolName(chunk, allowGenericFallback = false)
-                        val delta = chunk.text("argumentsDelta") ?: chunk.text("delta") ?: chunk.text("text") ?: ""
-                        val (reboundFrom, updatedRaw) = content.appendToolDelta(
-                            key = index,
-                            callId = callId,
-                            name = toolName,
-                            argumentsDelta = delta,
-                            revision = ++revision,
-                            occurredAt = source.time,
-                            allocateOrderSeq = {
-                                callId?.let { knownTools[it]?.orderSequence } ?: allocateOrder(null, historical = source.historical)
-                            },
-                            sourceMessageId = rowId,
-                        )
-                        if (reboundFrom != null) {
-                            knownTools.remove(reboundFrom)
-                            if (toolOwnerMessageId[reboundFrom] == rowId) toolOwnerMessageId.remove(reboundFrom)
-                            toolGenerationByCallId.remove(reboundFrom)?.let { prevGen ->
-                                toolGenerationByCallId.putIfAbsent(updatedRaw.stepId, prevGen)
-                            }
-                        }
-                        val withPending = applyBufferedResultToCall(updatedRaw)
-                        val updated = if (withPending !== updatedRaw) content.upsertTool(withPending, key = index) else updatedRaw
-                        knownTools[updated.stepId] = updated
-                        toolOwnerMessageId[updated.stepId] = rowId
-                        if (activeGen != null) toolGenerationByCallId.putIfAbsent(updated.stepId, activeGen)
-                    }
-                    "block-end" -> content.finish(index)
-                    else -> return emptyList()
+                    attemptNextIndices[attempt] = frameIndex + 1L
                 }
-                return upsertContent(rowId, content, source)
+                val activeGen = frame.nonBlankText("turnId") ?: frame.number("turn")?.toString() ?: generationId
+                val ownerUpdates = mutableListOf<VerifiedConversationEvent>()
+                val handled = applyAssistantStreamChunk(chunk, content, rowId, activeGen, source, ownerUpdates)
+                if (!handled && ownerUpdates.isEmpty()) return emptyList()
+                return ownerUpdates + upsertContent(rowId, content, source, explicitGeneration = activeGen)
             }
             "end" -> {
                 attempts.remove(attempt)
+                attemptNextIndices.remove(attempt)
                 liveContent.remove(rowId)
                 rowHistorical.remove(rowId)
                 rows.remove(rowId)
@@ -781,6 +1030,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                     ?: ToolCallPairing.normalizeCallId(params.nonBlankText("itemId"))
                     ?: ToolCallPairing.normalizeCallId(params.nonBlankText("item_id"))
                     ?: return emptyList()
+                if (callId in hiddenToolCallIds) return emptyList()
                 val turnGen = params.nonBlankText("turnId") ?: if (source.historical) historicalTurnId else generationId
                 val existing = knownTools[callId]
                 if (existing == null) {
@@ -820,7 +1070,10 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                 val item = params.at("item") ?: return emptyList()
                 val turnGen = params.nonBlankText("turnId") ?: item.nonBlankText("turnId") ?: if (source.historical) historicalTurnId else generationId
                 val itemType = item.text("type")
-                if (ContextInjectionFilter.isHiddenProtocolItemType(itemType)) return emptyList()
+                if (isHiddenProtocolToolPayload(item)) {
+                    extractToolCallId(item, allowRecordIdFallback = true)?.let { hiddenToolCallIds += it }
+                    return emptyList()
+                }
                 return when (itemType) {
                     "agentMessage" -> {
                         val itemId = item.requiredText("id")
@@ -1007,7 +1260,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                         )
                     }
                     "session_info_update" -> update.text("title")?.let { rawTitle ->
-                        val cleanTitle = ContextInjectionFilter.sanitizeSummaryText(rawTitle)
+                        val cleanTitle = ContextInjectionFilter.sanitizeTitleText(rawTitle)
                         if (cleanTitle.isEmpty()) return emptyList()
                         return listOf(VerifiedConversationEvent.TitleUpdated(source.id("title:${++revision}"), source.time, ConversationId(sessionId), cleanTitle))
                     }
@@ -1378,10 +1631,16 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                     )
                 }
                 in TOOL_USE_BLOCK_TYPES -> {
+                    if (isHiddenProtocolToolPayload(block)) {
+                        extractToolCallId(block, allowRecordIdFallback = true)?.let { hiddenToolCallIds += it }
+                        return@forEachIndexed
+                    }
                     recordToolUseStep(block, fallbackId = "$rowId:tool:$index", orderIndex = index)
                 }
                 in TOOL_RESULT_BLOCK_TYPES -> {
+                    if (isHiddenProtocolToolPayload(block)) return@forEachIndexed
                     val callId = extractToolCallId(block, allowRecordIdFallback = false) ?: return@forEachIndexed
+                    if (callId in hiddenToolCallIds) return@forEachIndexed
                     val resultOutput = extractToolOutput(block, includeDataField = true)
                     val isFailed = isToolResultFailed(block)
                     val resultStatus = if (isFailed) NativeExecutionStatus.FAILED else NativeExecutionStatus.COMPLETED
@@ -1733,7 +1992,9 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             val type = node.text("type")?.lowercase()
             when {
                 type in setOf("text", "input_text", "output_text", "inputtext", "outputtext") ->
-                    node.text("text")?.takeIf { it.isNotEmpty() }
+                    (node.text("text") ?: node.text("value"))?.takeIf { it.isNotEmpty() }
+                type in setOf("error-text", "error_text") ->
+                    (node.text("value") ?: node.text("text"))?.takeIf { it.isNotEmpty() }
                 type == "content" -> node.at("content")?.let(::formatTextContentNode)
                 else -> null
             }
@@ -1961,22 +2222,26 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     private fun settleHistoricalRunningTools(
         turnId: String,
         source: Source,
+        activeGenerationId: String? = null,
     ): List<VerifiedConversationEvent.TimelineUpsert> {
         val settledEvents = mutableListOf<VerifiedConversationEvent.TimelineUpsert>()
         rows.entries.toList().forEach { (id, row) ->
-            if (row.generationId != turnId) return@forEach
-            val hasRunning = row.executionSteps.any { it.status == NativeExecutionStatus.RUNNING } ||
-                row.timelineSteps.any { it is ExecutionTimelineStep.ToolCallStep && it.step.status == NativeExecutionStatus.RUNNING }
+            if (!matchesTurnIdentity(row.generationId, turnId)) return@forEach
+            if (activeGenerationId != null && matchesTurnIdentity(row.generationId, activeGenerationId)) return@forEach
+            fun isProtectedActiveStep(stepId: String): Boolean =
+                activeGenerationId != null && matchesTurnIdentity(toolGenerationByCallId[stepId], activeGenerationId)
+            val hasRunning = row.executionSteps.any { it.status == NativeExecutionStatus.RUNNING && !isProtectedActiveStep(it.stepId) } ||
+                row.timelineSteps.any { it is ExecutionTimelineStep.ToolCallStep && it.step.status == NativeExecutionStatus.RUNNING && !isProtectedActiveStep(it.step.stepId) }
             if (!hasRunning) return@forEach
             val settledTimeline = row.timelineSteps.map { item ->
-                if (item is ExecutionTimelineStep.ToolCallStep && item.step.status == NativeExecutionStatus.RUNNING) {
+                if (item is ExecutionTimelineStep.ToolCallStep && item.step.status == NativeExecutionStatus.RUNNING && !isProtectedActiveStep(item.step.stepId)) {
                     val settledStep = item.step.copy(status = NativeExecutionStatus.UNKNOWN, revision = ++revision)
                     knownTools[settledStep.stepId] = settledStep
                     item.copy(step = settledStep)
                 } else item
             }
             val settledExec = row.executionSteps.map { step ->
-                if (step.status == NativeExecutionStatus.RUNNING) {
+                if (step.status == NativeExecutionStatus.RUNNING && !isProtectedActiveStep(step.stepId)) {
                     val settledStep = knownTools[step.stepId]?.takeIf { it.status == NativeExecutionStatus.UNKNOWN }
                         ?: step.copy(status = NativeExecutionStatus.UNKNOWN, revision = ++revision).also { knownTools[it.stepId] = it }
                     settledStep
@@ -1999,6 +2264,58 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         return settledEvents
     }
 
+    private fun applyPairedBareToolResult(
+        callId: String,
+        toolName: String,
+        resultOutput: String?,
+        isFailed: Boolean,
+        eventId: String,
+        source: Source,
+        explicitTurn: String?,
+    ): List<VerifiedConversationEvent> {
+        if (callId in hiddenToolCallIds) return emptyList()
+        val previous = knownTools[callId]
+        val resultStatus = if (isFailed) NativeExecutionStatus.FAILED else NativeExecutionStatus.COMPLETED
+        if (previous == null) {
+            // 裸工具结果先于调用到达（或原调用缺失）：按 callId 缓冲等待配对，绝不凭空造孤立卡片。
+            bufferPendingToolResult(
+                callId = callId,
+                output = resultOutput,
+                failed = isFailed,
+                status = resultStatus,
+                occurredAt = source.time,
+            )
+            return emptyList()
+        }
+        val merged = mergeExecutionStep(
+            previous,
+            previous.copy(
+                toolName = ToolCallPairing.chooseToolName(previous.toolName, toolName),
+                output = resultOutput,
+                status = resultStatus,
+                revision = ++revision,
+            ),
+        )
+        knownTools[callId] = merged
+        val ownerUpdate = applyToolUpdateToOwnerRow(merged, source)
+        if (ownerUpdate != null) return listOf(ownerUpdate)
+        if (source.historical) return emptyList()
+        val eventGeneration = toolGenerationByCallId[callId]
+            ?: canonicalHistoricalTurnId(explicitTurn)
+            ?: generationId
+            ?: "remote-execution:$sessionId"
+        return listOf(
+            VerifiedConversationEvent.ExecutionStepsUpdated(
+                eventId = source.id(eventId),
+                occurredAt = source.time,
+                conversationId = ConversationId(sessionId),
+                generationId = eventGeneration,
+                executionRevision = ++revision,
+                steps = listOf(merged),
+            ),
+        )
+    }
+
     private fun execution(
         value: JsonValue,
         eventId: String,
@@ -2008,58 +2325,65 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         explicitTurn: String? = null,
         isBareResult: Boolean = false,
     ): List<VerifiedConversationEvent> {
-        val extractedId = extractToolCallId(value, allowRecordIdFallback = !isBareResult)
-        if (isBareResult) {
-            if (extractedId != null) {
-                val previous = knownTools[extractedId]
-                val resultOutput = extractToolOutput(value, includeDataField = true)
-                val isFailed = isToolResultFailed(value)
-                val resultStatus = if (isFailed) NativeExecutionStatus.FAILED else NativeExecutionStatus.COMPLETED
-                if (previous == null) {
-                    // 裸工具结果先于调用到达（或原调用缺失）：按 callId 缓冲等待配对，绝不凭空造孤立 `[tool]` 卡片。
-                    bufferPendingToolResult(
-                        callId = extractedId,
-                        output = resultOutput,
-                        failed = isFailed,
-                        status = resultStatus,
-                        occurredAt = source.time,
-                    )
-                    return emptyList()
-                }
-                val merged = mergeExecutionStep(
-                    previous,
-                    previous.copy(
-                        toolName = ToolCallPairing.chooseToolName(previous.toolName, extractToolName(value, allowGenericFallback = false)),
-                        output = resultOutput,
-                        status = resultStatus,
-                        revision = ++revision,
-                    ),
-                )
-                knownTools[extractedId] = merged
-                val ownerUpdate = applyToolUpdateToOwnerRow(merged, source)
-                if (ownerUpdate != null) return listOf(ownerUpdate)
-                if (source.historical) return emptyList()
-                val eventGeneration = toolGenerationByCallId[extractedId]
-                    ?: explicitTurn
-                    ?: generationId
-                    ?: "remote-execution:$sessionId"
-                return listOf(
-                    VerifiedConversationEvent.ExecutionStepsUpdated(
-                        eventId = source.id(eventId),
-                        occurredAt = source.time,
-                        conversationId = ConversationId(sessionId),
-                        generationId = eventGeneration,
-                        executionRevision = ++revision,
-                        steps = listOf(merged),
-                    ),
-                )
+        if (isHiddenProtocolToolPayload(value)) {
+            if (!isBareResult) {
+                extractToolCallId(value, allowRecordIdFallback = true)?.let { hiddenToolCallIds += it }
             }
-            // 无 callId 的裸结果帧：若连真实工具名都缺失（仅占位名或空名），直接丢弃，杜绝 `[tool] 已完成 / 无输出` 孤立卡。
-            val explicitName = extractToolName(value, allowGenericFallback = false)
-            if (ToolCallPairing.isPlaceholderToolName(explicitName)) {
-                return emptyList()
-            }
+            return emptyList()
         }
+        if (isBareResult) {
+            val messageNode = value.at("message")
+            val contentBlocks = (messageNode?.array("content") ?: value.array("content")).orEmpty()
+            val resultBlocks = contentBlocks.filter { it.text("type") in TOOL_RESULT_BLOCK_TYPES }
+            val outerCallId = extractToolCallId(value, allowRecordIdFallback = false)
+                ?: messageNode?.let { extractToolCallId(it, allowRecordIdFallback = false) }
+            if (resultBlocks.isNotEmpty()) {
+                val events = mutableListOf<VerifiedConversationEvent>()
+                resultBlocks.forEachIndexed { idx, block ->
+                    if (isHiddenProtocolToolPayload(block)) return@forEachIndexed
+                    val blockCallId = extractToolCallId(block, allowRecordIdFallback = false)
+                        ?: outerCallId.takeIf { resultBlocks.size == 1 }
+                        ?: return@forEachIndexed
+                    val blockOutput = extractToolOutput(block, includeDataField = true)
+                        ?: if (resultBlocks.size == 1) {
+                            extractToolOutput(value, includeDataField = true)
+                                ?: messageNode?.let { extractToolOutput(it, includeDataField = true) }
+                        } else null
+                    val blockFailed = isToolResultFailed(block) ||
+                        (resultBlocks.size == 1 && (isToolResultFailed(value) || messageNode?.let(::isToolResultFailed) == true))
+                    val blockToolName = extractToolName(block, allowGenericFallback = false)
+                        .ifBlank { if (resultBlocks.size == 1) extractToolName(value, allowGenericFallback = false) else "" }
+                    val blockEventId = if (resultBlocks.size == 1) eventId else "$eventId:$idx"
+                    events += applyPairedBareToolResult(
+                        callId = blockCallId,
+                        toolName = blockToolName,
+                        resultOutput = blockOutput,
+                        isFailed = blockFailed,
+                        eventId = blockEventId,
+                        source = source,
+                        explicitTurn = explicitTurn,
+                    )
+                }
+                return events
+            }
+            // Issue #250：裸工具结果必须严格按明确配对 ID 回写原卡；缺少配对 ID 时直接丢弃，绝不回退事件 ID 创建新卡。
+            val callId = outerCallId ?: return emptyList()
+            val resultOutput = extractToolOutput(value, includeDataField = true)
+                ?: messageNode?.let { extractToolOutput(it, includeDataField = true) }
+            val isFailed = isToolResultFailed(value) || (messageNode?.let(::isToolResultFailed) == true)
+            val toolName = extractToolName(value, allowGenericFallback = false)
+                .ifBlank { messageNode?.let { extractToolName(it, allowGenericFallback = false) }.orEmpty() }
+            return applyPairedBareToolResult(
+                callId = callId,
+                toolName = toolName,
+                resultOutput = resultOutput,
+                isFailed = isFailed,
+                eventId = eventId,
+                source = source,
+                explicitTurn = explicitTurn,
+            )
+        }
+        val extractedId = extractToolCallId(value, allowRecordIdFallback = true)
         val id = extractedId ?: ToolCallPairing.normalizeCallId(eventId) ?: eventId
         val previous = knownTools[id]
         val orderSeq = previous?.orderSequence ?: allocateOrder(explicitSeq, historical = source.historical)
@@ -2075,9 +2399,22 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         )
         val merged = previous?.let { mergeExecutionStep(it, parsed) } ?: parsed
         knownTools[id] = merged
-        val resolvedTurn = toolGenerationByCallId[id]
-            ?: explicitTurn
-            ?: (if (source.historical) historicalTurnId else generationId)
+        val existingGen = toolGenerationByCallId[id]
+        val hasAuthoritativeNativeGen = existingGen != null &&
+            !ToolCallPairing.isProvisionalGenerationId(existingGen) &&
+            !isNumericTurnId(existingGen)
+        if (hasAuthoritativeNativeGen) {
+            if (isNumericTurnId(explicitTurn)) historicalTurnAliases[explicitTurn!!] = existingGen!!
+            if (source.historical && isNumericTurnId(historicalTurnId)) historicalTurnAliases[historicalTurnId!!] = existingGen!!
+        }
+        val mappedExplicitTurn = canonicalHistoricalTurnId(explicitTurn)
+        val mappedHistoricalTurn = canonicalHistoricalTurnId(historicalTurnId)
+        val resolvedTurn = when {
+            hasAuthoritativeNativeGen -> existingGen
+            mappedExplicitTurn != null -> mappedExplicitTurn
+            existingGen != null -> existingGen
+            else -> if (source.historical) mappedHistoricalTurn else generationId
+        }
         if (resolvedTurn != null) toolGenerationByCallId[id] = resolvedTurn
         val events = mutableListOf<VerifiedConversationEvent>()
         val ownerUpdate = applyToolUpdateToOwnerRow(merged, source)
@@ -2089,7 +2426,13 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             val existingRow = rows[rowId]
             val rowOrder = existingRow?.orderSequence ?: merged.orderSequence ?: orderSeq
             val rowTime = existingRow?.timestamp?.takeIf { it > 0L } ?: merged.occurredAt ?: source.time
-            val turnGen = existingRow?.generationId ?: explicitTurn ?: historicalTurnId ?: "history-turn:$sessionId"
+            val existingRowGen = existingRow?.generationId
+            val turnGen = when {
+                hasAuthoritativeNativeGen -> existingGen!!
+                existingRowGen != null && !isNumericTurnId(existingRowGen) -> existingRowGen
+                resolvedTurn != null -> resolvedTurn
+                else -> existingRowGen ?: mappedExplicitTurn ?: mappedHistoricalTurn ?: "history-turn:$sessionId"
+            }
             val rowStep = merged.copy(sourceMessageId = rowId, orderSequence = rowOrder, occurredAt = rowTime)
             knownTools[id] = rowStep
             toolOwnerMessageId[id] = rowId
@@ -2119,7 +2462,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             )
             return events
         }
-        val eventGeneration = toolGenerationByCallId[id] ?: explicitTurn ?: generationId ?: "remote-execution:$sessionId"
+        val eventGeneration = toolGenerationByCallId[id] ?: mappedExplicitTurn ?: generationId ?: "remote-execution:$sessionId"
         events += VerifiedConversationEvent.ExecutionStepsUpdated(
             source.id(eventId), source.time, ConversationId(sessionId),
             eventGeneration, ++revision, listOf(knownTools.getValue(id))
@@ -2278,6 +2621,31 @@ internal fun extractToolCallId(value: JsonValue, allowRecordIdFallback: Boolean 
         value.at("item")?.nonBlankText("id")?.let { ToolCallPairing.normalizeCallId(it) }?.let { return it }
     }
     return null
+}
+
+/**
+ * 提取持久事件 `tool/call` / `tool/result` 中关联的全部工具调用 ID（支持 Codex `dsh/sessionHistory`
+ * 将 `tool-result` 块写入 `data.message.content` 的信封形态），供历史分页收集归属消息行复用。
+ */
+internal fun extractToolCallIdsForDurableEvent(eventType: String?, data: JsonValue): List<String> {
+    if (eventType == "tool/call") {
+        return listOfNotNull(extractToolCallId(data, allowRecordIdFallback = true))
+    }
+    if (eventType == "tool/result") {
+        val messageNode = data.at("message")
+        val blocks = (messageNode?.array("content") ?: data.array("content")).orEmpty()
+            .filter { it.text("type") in TOOL_RESULT_BLOCK_TYPES }
+        val outer = extractToolCallId(data, allowRecordIdFallback = false)
+            ?: messageNode?.let { extractToolCallId(it, allowRecordIdFallback = false) }
+        if (blocks.isNotEmpty()) {
+            val ids = blocks.mapNotNull { block ->
+                extractToolCallId(block, allowRecordIdFallback = false) ?: outer.takeIf { blocks.size == 1 }
+            }.distinct()
+            if (ids.isNotEmpty()) return ids
+        }
+        return listOfNotNull(outer)
+    }
+    return emptyList()
 }
 
 private fun mergeExecutionStep(existing: NativeExecutionStep, incoming: NativeExecutionStep): NativeExecutionStep =

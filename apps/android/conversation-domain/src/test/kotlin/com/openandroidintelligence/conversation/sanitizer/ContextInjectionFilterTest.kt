@@ -760,6 +760,72 @@ class ContextInjectionFilterTest {
         )
     }
 
+    @Test
+    fun `保留用户消息里的普通XML示例同时剥离确有注入特征的tools上下文信封`() {
+        val ordinaryXmlExample = "<tools><tool>calculator</tool></tools>\n\n请解释这段 XML"
+        assertEquals(
+            ordinaryXmlExample,
+            ContextInjectionFilter.sanitizeText(ordinaryXmlExample, role = ContextInjectionFilter.SenderRole.USER),
+        )
+        val projectedXml = ContextInjectionFilter.projectMessage(msg(id = "u-xml", sender = "user", text = ordinaryXmlExample))
+        assertNotNull(projectedXml)
+        assertEquals(ordinaryXmlExample, textOf(projectedXml!!))
+
+        val ordinaryMemoryXml = "<memory><item>alpha</item></memory>\n\n帮我转成 JSON"
+        assertEquals(
+            ordinaryMemoryXml,
+            ContextInjectionFilter.sanitizeText(ordinaryMemoryXml, role = ContextInjectionFilter.SenderRole.USER),
+        )
+
+        // 对照：显式系统注入属性、Markdown/TOOLS.md 指令信封、JSON Schema 工具声明与紧跟已剥离注入块的 <tools> 仍可靠剥离
+        val attrInjectedTools = "<tools source=\"system\"><tool>bash</tool></tools>\n\n请解释这段 XML"
+        assertEquals(
+            "请解释这段 XML",
+            ContextInjectionFilter.sanitizeText(attrInjectedTools, role = ContextInjectionFilter.SenderRole.USER),
+        )
+
+        val markdownInjectedTools = "<tools>\n# TOOLS.md\nYou have access to the following tools:\n- read_file\n</tools>\n\n请解释这段 XML"
+        assertEquals(
+            "请解释这段 XML",
+            ContextInjectionFilter.sanitizeText(markdownInjectedTools, role = ContextInjectionFilter.SenderRole.USER),
+        )
+
+        val schemaInjectedTools = "<tools>\n{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"parameters\":{\"type\":\"object\",\"properties\":{}}}}\n</tools>\n\n帮我看下报错"
+        assertEquals(
+            "帮我看下报错",
+            ContextInjectionFilter.sanitizeText(schemaInjectedTools, role = ContextInjectionFilter.SenderRole.USER),
+        )
+
+        val chainedInjectedTools = "<environment_context><cwd>/repo</cwd></environment_context>\n<tools><tool>bash</tool></tools>\n\n继续排查"
+        assertEquals(
+            "继续排查",
+            ContextInjectionFilter.sanitizeText(chainedInjectedTools, role = ContextInjectionFilter.SenderRole.USER),
+        )
+    }
+
+    @Test
+    fun `Codex历史内部条目名称与sanitizeTitleText完整标题保留及注入剥离均生效`() {
+        assertTrue(ContextInjectionFilter.isHiddenProtocolItemType("codex.compaction"))
+        assertTrue(ContextInjectionFilter.isHiddenProtocolItemType("codex.hookPrompt"))
+        assertTrue(ContextInjectionFilter.isHiddenProtocolItemType("contextCompaction"))
+        assertTrue(ContextInjectionFilter.isHiddenProtocolItemType("hookPrompt"))
+        assertFalse(ContextInjectionFilter.isHiddenProtocolItemType("commandExecution"))
+        assertFalse(ContextInjectionFilter.isHiddenProtocolItemType("read_file"))
+
+        val longTitle172 = "会话标题前缀-" + "长".repeat(158) + "-完整尾部72"
+        assertEquals(172, longTitle172.length)
+        assertEquals("sanitizeTitleText 必须完整保留 172 字普通标题", longTitle172, ContextInjectionFilter.sanitizeTitleText(longTitle172))
+        assertEquals("sanitizeSummaryText 仍按 160 字截断摘要", 160, ContextInjectionFilter.sanitizeSummaryText(longTitle172).length)
+
+        val injectedLongTitle = "<environment_context><cwd>/app</cwd></environment_context>\n$longTitle172"
+        assertEquals(
+            "含注入信封的长标题应剥离注入并完整保留剩余 172 字正文",
+            longTitle172,
+            ContextInjectionFilter.sanitizeTitleText(injectedLongTitle),
+        )
+        assertEquals("", ContextInjectionFilter.sanitizeTitleText("<system-reminder>only internal</system-reminder>"))
+    }
+
     private fun msg(
         id: String = "m1",
         sender: String = "assistant",

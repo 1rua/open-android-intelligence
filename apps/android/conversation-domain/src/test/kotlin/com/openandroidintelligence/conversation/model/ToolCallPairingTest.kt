@@ -187,4 +187,34 @@ class ToolCallPairingTest {
         assertEquals("ok", enriched.output)
         assertEquals("msg-2", enriched.sourceMessageId)
     }
+
+    @Test
+    fun `mergeSteps在已终态收到非终态增量输出时优先保留终态完整输出且仅在终态缺输出时回填增量`() {
+        val completedWithFullOutput = NativeExecutionStep(
+            stepId = "cmd-1",
+            eventId = "ev-complete",
+            toolName = "commandExecution",
+            arguments = "printf 'line1\\nline2'",
+            output = "第一行\n第二行",
+            status = NativeExecutionStatus.COMPLETED,
+            revision = 2L,
+        )
+        val runningPartialDelta = NativeExecutionStep(
+            stepId = "cmd-1",
+            eventId = "ev-delta",
+            toolName = "commandExecution",
+            arguments = "printf 'line1\\nline2'",
+            output = "第一行",
+            status = NativeExecutionStatus.RUNNING,
+            revision = 3L,
+        )
+        val keptFull = ToolCallPairing.mergeSteps(completedWithFullOutput, runningPartialDelta)
+        assertEquals(NativeExecutionStatus.COMPLETED, keptFull.status)
+        assertEquals("终态完整输出绝不能被非终态增量覆盖", "第一行\n第二行", keptFull.output)
+
+        val completedWithoutOutput = completedWithFullOutput.copy(output = null)
+        val backfilled = ToolCallPairing.mergeSteps(completedWithoutOutput, runningPartialDelta)
+        assertEquals(NativeExecutionStatus.COMPLETED, backfilled.status)
+        assertEquals("终态缺少输出时应回填非终态累计增量", "第一行", backfilled.output)
+    }
 }

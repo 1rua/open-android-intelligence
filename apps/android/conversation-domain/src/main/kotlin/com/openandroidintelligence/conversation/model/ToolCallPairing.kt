@@ -97,13 +97,18 @@ object ToolCallPairing {
         val existingTerminal = isTerminalStatus(existing.status)
         val incomingNonTerminal = !isTerminalStatus(incoming.status)
         val mergedStatus = if (existingTerminal && incomingNonTerminal) existing.status else incoming.status
+        val mergedOutput = if (existingTerminal && incomingNonTerminal) {
+            chooseOutput(incoming.output, existing.output)
+        } else {
+            chooseOutput(existing.output, incoming.output)
+        }
         val canonicalId = normalizeCallId(existing.stepId) ?: normalizeCallId(incoming.stepId) ?: existing.stepId
         return incoming.copy(
             stepId = canonicalId,
             eventId = incoming.eventId.ifBlank { existing.eventId },
             toolName = chooseToolName(existing.toolName, incoming.toolName),
             arguments = chooseArguments(existing.arguments, incoming.arguments),
-            output = chooseOutput(existing.output, incoming.output),
+            output = mergedOutput,
             status = mergedStatus,
             revision = maxOf(existing.revision, incoming.revision),
             sourceMessageId = NativeExecutionStep.resolveSourceMessageId(existing.sourceMessageId, incoming.sourceMessageId),

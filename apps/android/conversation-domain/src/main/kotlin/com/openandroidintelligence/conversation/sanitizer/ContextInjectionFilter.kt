@@ -377,11 +377,29 @@ object ContextInjectionFilter {
         "context_files",
         "cursor_context",
         "opencode_context",
-        "memory",
-        "soul",
-        "tools",
         "claude_md",
         "agents_md",
+    )
+
+    /** 容易与用户普通 XML 示例冲突的裸单词标签；仅在相邻已剥离信封、携带显式注入属性或具备机器指令/工具声明正文特征时剥离。 */
+    private val CONDITIONAL_SINGLE_WORD_ENVELOPE_TAGS = setOf(
+        "tools",
+        "memory",
+        "soul",
+    )
+
+    private val EXPLICIT_INJECTION_ATTR_REGEX = Regex(
+        "(?i)\\b(?:source|origin|injected|system|context|role|scope|visibility|kind|path|file)\\s*=\\s*[\"'][^\"']*(?:system|developer|runtime|context|injected|internal|agent|harness|dsh|codex|hermes|openclaw|claude|true|hidden|\\.md)[^\"']*[\"']"
+    )
+
+    private val MACHINE_ENVELOPE_HEADING_REGEX = Regex("(?m)^#{1,3}\\s+\\S")
+
+    private val MACHINE_TOOL_SCHEMA_REGEX = Regex(
+        "(?is)(?:\"input_schema\"|\"type\"\\s*:\\s*\"function\"|\"parameters\"\\s*:\\s*\\{[\\s\\S]*?\"properties\"|<function_declarations\\b|<tool_definition\\b)"
+    )
+
+    private val MACHINE_ENVELOPE_PROSE_REGEX = Regex(
+        "(?i)(?:\\b(?:TOOLS|MEMORY|SOUL|AGENTS|CLAUDE|SKILL)\\.md\\b|Instructions from:|You have access to the following tools|Available tools\\s*:|Tool definitions\\s*:|System instructions\\s*:|untrusted metadata)"
     )
 
     /** 协议层常见含空格的多词 XML 上下文注入标签名（如 Codex `<permissions instructions>`）。 */
@@ -820,8 +838,13 @@ object ContextInjectionFilter {
     private val HIDDEN_PROTOCOL_ITEM_TYPES = setOf(
         "hook_prompt",
         "hookprompt",
+        "codex_hook_prompt",
+        "codex_hookprompt",
         "context_compaction",
         "contextcompaction",
+        "codex_compaction",
+        "codex_context_compaction",
+        "codex_contextcompaction",
         "system_prompt",
         "system_context",
         "context_injection",
@@ -855,9 +878,10 @@ object ContextInjectionFilter {
         return normalized in HIDDEN_CONTENT_BLOCK_TYPES
     }
 
-    /** 判断 Codex / 原生协议 item `type` 是否属于内部提示/压缩条目（既不应上屏也不应转为工具卡）。 */
+    /** 判断 Codex / 原生协议 item `type` 或历史转换工具名（如 `codex.compaction`）是否属于内部提示/压缩条目（既不应上屏也不应转为工具卡）。 */
     fun isHiddenProtocolItemType(itemType: String?): Boolean {
         val normalized = itemType?.trim()?.lowercase()
+            ?.replace('.', '_')
             ?.replace('-', '_')
             ?.replace(' ', '_')
             .orEmpty()
@@ -1481,17 +1505,25 @@ object ContextInjectionFilter {
         messages.mapNotNull { projectMessage(it) }
 
     /**
-     * 净化会话列表摘要、标题或预览文本，折叠换行为单行并截断。
+     * 净化完整会话标题：过滤上下文注入信封与内部提示、折叠换行为单行，但不截断合法长标题长度。
+     * 供标题持久化、会话列表元数据、重命名及标题更新事件使用；展示摘要截断请使用 [sanitizeSummaryText]。
      */
-    fun sanitizeSummaryText(raw: String?, maxLength: Int = 160): String {
+    fun sanitizeTitleText(raw: String?): String {
         if (raw.isNullOrBlank()) return ""
         val sanitized = sanitizeText(raw, role = SenderRole.ASSISTANT, streaming = false)
         if (sanitized.isEmpty()) return ""
-        val cleaned = if (hasCollapsibleWhitespace(sanitized)) {
+        return if (hasCollapsibleWhitespace(sanitized)) {
             sanitized.replace(SUMMARY_WHITESPACE_REGEX, " ").trim()
         } else {
             sanitized
         }
+    }
+
+    /**
+     * 净化会话列表摘要、标题或预览文本，折叠换行为单行并按 [maxLength] 截断。
+     */
+    fun sanitizeSummaryText(raw: String?, maxLength: Int = 160): String {
+        val cleaned = sanitizeTitleText(raw)
         if (cleaned.isEmpty()) return ""
         return if (cleaned.length > maxLength) cleaned.take(maxLength).trimEnd() else cleaned
     }
@@ -1707,7 +1739,7 @@ object ContextInjectionFilter {
         stripLeadingChatMl(text, alreadyStripped)?.let { return it }
 
         // 5. 成对或助手终态截断的结构化 XML 上下文信封（支持同名嵌套与属性）
-        stripLeadingXmlEnvelope(text, protectedRanges, role, streaming)?.let { return it }
+        stripLeadingXmlEnvelope(text, protectedRanges, role, streaming, alreadyStripped)?.let { return it }
 
         // 6. 方括号控制/时间/环境头或成对 [SYSTEM]...[/SYSTEM]
         stripLeadingBracketEnvelope(text, streaming)?.let { return it }
@@ -1734,7 +1766,7 @@ object ContextInjectionFilter {
 
         // 若末尾是 `untrusted metadata` 所带围栏块或根上下文 XML 信封（含内部被截断围栏），各自校验起始标签是否在保护区外
         stripTrailingUntrustedMetadata(text, streaming)?.let { return it }
-        stripTrailingXmlEnvelope(text, protectedRanges, role, streaming)?.let { return it }
+        stripTrailingXmlEnvelope(text, protectedRanges, role, streaming, alreadyStripped)?.let { return it }
 
         if (trailingProtected) return null
 
@@ -1983,22 +2015,72 @@ object ContextInjectionFilter {
         return null
     }
 
+    private fun isConditionalEnvelopeTag(rawTagName: String): Boolean {
+        val trimmed = rawTagName.trim()
+        if (trimmed.isEmpty() || isMixedPascalCaseUiTag(trimmed)) return false
+        return normalizeTagName(trimmed) in CONDITIONAL_SINGLE_WORD_ENVELOPE_TAGS
+    }
+
+    private fun shouldStripXmlEnvelope(
+        text: String,
+        openStart: Int,
+        open: ParsedOpenTag,
+        closeEnd: Int,
+        alreadyStripped: Boolean,
+    ): Boolean {
+        if (isContextEnvelopeTag(open.tagName)) return true
+        if (!isConditionalEnvelopeTag(open.tagName)) return false
+        if (alreadyStripped) return true
+        val openTagRaw = text.substring(openStart, open.endExclusive)
+        if (EXPLICIT_INJECTION_ATTR_REGEX.containsMatchIn(openTagRaw)) return true
+        if (open.selfClosing) return false
+        val closeStart = text.lastIndexOf("</", (closeEnd - 1).coerceAtLeast(open.endExclusive))
+        if (closeStart <= open.endExclusive) return false
+        val innerBody = text.substring(open.endExclusive, closeStart)
+        if (MACHINE_ENVELOPE_PROSE_REGEX.containsMatchIn(innerBody) ||
+            MACHINE_ENVELOPE_HEADING_REGEX.containsMatchIn(innerBody) ||
+            MACHINE_TOOL_SCHEMA_REGEX.containsMatchIn(innerBody)
+        ) {
+            return true
+        }
+        // 内部嵌套无歧义上下文注入标签（如 `<system-reminder>` / `<environment_context>`）时视为上下文信封
+        var cursor = 0
+        while (cursor < innerBody.length) {
+            val lt = innerBody.indexOf('<', cursor)
+            if (lt < 0) break
+            val nested = parseOpenTagAt(innerBody, lt)
+            if (nested != null && isContextEnvelopeTag(nested.tagName)) return true
+            cursor = lt + 1
+        }
+        return false
+    }
+
     private fun stripLeadingXmlEnvelope(
         text: String,
         protectedRanges: List<IntRange>,
         role: SenderRole,
         streaming: Boolean,
+        alreadyStripped: Boolean,
     ): String? {
         val open = parseOpenTagAt(text, 0) ?: return null
-        if (!isContextEnvelopeTag(open.tagName)) return null
+        val unconditional = isContextEnvelopeTag(open.tagName)
+        if (!unconditional && !isConditionalEnvelopeTag(open.tagName)) return null
         if (open.selfClosing) {
-            return text.substring(open.endExclusive)
+            return if (shouldStripXmlEnvelope(text, 0, open, open.endExclusive, alreadyStripped)) {
+                text.substring(open.endExclusive)
+            } else {
+                null
+            }
         }
         val closeEnd = findMatchingXmlCloseEnd(text, 0, open.tagName, protectedRanges)
         if (closeEnd >= 0) {
-            return text.substring(closeEnd)
+            return if (shouldStripXmlEnvelope(text, 0, open, closeEnd, alreadyStripped)) {
+                text.substring(closeEnd)
+            } else {
+                null
+            }
         }
-        if (shouldStripUnclosedEnvelope(text, 0, open, role, streaming)) {
+        if (unconditional && shouldStripUnclosedEnvelope(text, 0, open, role, streaming)) {
             return ""
         }
         return null
@@ -2009,6 +2091,7 @@ object ContextInjectionFilter {
         protectedRanges: List<IntRange>,
         role: SenderRole,
         streaming: Boolean,
+        alreadyStripped: Boolean,
     ): String? {
         if (text.indexOf('<') < 0) return null
         // 情况 A：文本末尾紧跟闭合标签 </tag>
@@ -2016,10 +2099,13 @@ object ContextInjectionFilter {
             val lt = text.lastIndexOf('<')
             if (lt >= 0 && lt + 2 < text.length && text[lt + 1] == '/' && !isProtected(lt, protectedRanges)) {
                 val closeTagName = text.substring(lt + 2, text.length - 1).trim()
-                if (isContextEnvelopeTag(closeTagName)) {
+                if (isContextEnvelopeTag(closeTagName) || isConditionalEnvelopeTag(closeTagName)) {
                     val openStart = findMatchingXmlOpenStartBackward(text, lt, closeTagName, protectedRanges)
                     if (openStart >= 0) {
-                        return text.substring(0, openStart)
+                        val open = parseOpenTagAt(text, openStart)
+                        if (open != null && shouldStripXmlEnvelope(text, openStart, open, text.length, alreadyStripped)) {
+                            return text.substring(0, openStart)
+                        }
                     }
                 }
             }

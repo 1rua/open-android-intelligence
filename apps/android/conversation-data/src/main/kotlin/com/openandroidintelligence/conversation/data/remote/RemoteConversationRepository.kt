@@ -156,7 +156,7 @@ class RemoteConversationRepository(
             result.items.map {
                 ConversationSummary(
                     ConversationId(RemoteLocalIds.encode(it.id)),
-                    ContextInjectionFilter.sanitizeSummaryText(it.title),
+                    ContextInjectionFilter.sanitizeTitleText(it.title),
                     it.updatedAt,
                     it.archived,
                 )
@@ -184,13 +184,13 @@ class RemoteConversationRepository(
                 }
             }
             mediaSource?.confirmSession(created.id)
-            return Conversation(ConversationId(localId), ContextInjectionFilter.sanitizeSummaryText(created.title), created.createdAt)
+            return Conversation(ConversationId(localId), ContextInjectionFilter.sanitizeTitleText(created.title), created.createdAt)
         } finally {
             if (creation != null) synchronized(commandLock) { commandCreations.remove(creation) }
         }
     }
     override suspend fun readConversation(conversationId: String): Conversation? =
-        rows[conversationId]?.let { Conversation(ConversationId(conversationId), ContextInjectionFilter.sanitizeSummaryText(it.title), it.createdAt) }
+        rows[conversationId]?.let { Conversation(ConversationId(conversationId), ContextInjectionFilter.sanitizeTitleText(it.title), it.createdAt) }
     override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage =
         loadTimeline(conversationId, page, notifySnapshot = true).first
 
@@ -235,16 +235,16 @@ class RemoteConversationRepository(
             }
             activeConversationChanged()
         }
-        val pageIds = acceptedPageIds + result.records.mapNotNull { record ->
+        val pageIds = acceptedPageIds + result.records.flatMap { record ->
             val event = record.at("event") ?: record
             val eventType = event.text("type")
-            val data = event.at("data") ?: return@mapNotNull null
+            val data = event.at("data") ?: return@flatMap emptyList()
             if (eventType == "tool/call" || eventType == "tool/result") {
-                extractToolCallId(data, allowRecordIdFallback = eventType == "tool/call")?.let { callId ->
+                extractToolCallIdsForDurableEvent(eventType, data).map { callId ->
                     synchronized(target) { target.ownerMessageIdForTool(callId) } ?: "history-tool:$callId"
                 }
             } else {
-                (data.at("message") ?: data).nonBlankText("id")
+                listOfNotNull((data.at("message") ?: data).nonBlankText("id"))
             }
         }.toSet()
         val (snapshotRows, snapshotMessages) = synchronized(target) {
