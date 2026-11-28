@@ -28,8 +28,8 @@ class NativePhoneScreen internal constructor(
 ) : NativePhoneScreenPort {
     constructor(context: Context, backend: ScreenBackend = AndroidScreenBackend(context)) :
         this(context, backend, AndroidSomFrameSource(context))
-    private data class Snapshot(val task: ControlTaskScope, val screen: ScreenSnapshot)
-    private val snapshots = ConcurrentHashMap<String, Snapshot>()
+    private data class SnapshotReference(val task: ControlTaskScope, val revision: String)
+    private val snapshots = ConcurrentHashMap<String, SnapshotReference>()
     @Volatile private var stopped = false
     override fun availability(): String? = when {
         stopped -> "REMOTE_EMERGENCY_STOPPED"
@@ -56,7 +56,7 @@ class NativePhoneScreen internal constructor(
                     // 本机批准会换成执行浮层。首次布局前保护范围为全屏，等待已有的窗口布局信号后再复核目标。
                     awaitControlLayout()
                     guard(revalidate)
-                    val result = backend.execute(saved.screen.revision, operation.action) { guard(revalidate) }
+                    val result = backend.execute(saved.revision, operation.action, observeAfterAction = false) { guard(revalidate) }
                     val settled = ScreenQuietWait(ScreenAccessibilityConnection.layoutEvents).await()
                     guard(revalidate)
                     val readAllowed = mayRead()
@@ -154,7 +154,8 @@ class NativePhoneScreen internal constructor(
         }
     }
     private fun snapshotMap(task: ControlTaskScope, screen: ScreenSnapshot): Map<String, Any?> {
-        val id = UUID.randomUUID().toString(); snapshots[id] = Snapshot(task, screen)
+        val id = UUID.randomUUID().toString()
+        snapshots[id] = SnapshotReference(task, screen.revision)
         return screen.toMap() + ("snapshotId" to id)
     }
     override fun stop() { stopped = true; snapshots.clear(); ScreenHostRegistry.controlLeases.revokeAll() }

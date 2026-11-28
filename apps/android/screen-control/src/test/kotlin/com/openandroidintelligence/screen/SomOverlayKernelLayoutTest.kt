@@ -65,7 +65,9 @@ class SomOverlayKernelLayoutTest {
             override fun availability(): String? = null
             override fun read(query: ScreenReadQuery) = ScreenSnapshot("stable", "hash", null, ScreenDisplay(400, 800, 0),
                 "target", 1, listOf(ScreenWindow(1, 1, 1, true, true, ScreenBounds(0, 0, 400, 800))), emptyList(), false)
-            override suspend fun execute(expectedRevision: String, action: ScreenAction, beforeDispatch: () -> Unit) = error("不执行动作")
+            override suspend fun execute(
+                expectedRevision: String, action: ScreenAction, observeAfterAction: Boolean, beforeDispatch: () -> Unit,
+            ) = error("不执行动作")
         }
         val provider = NativePhoneScreen(service, backend, SomFrameSource { snapshot ->
             captures++

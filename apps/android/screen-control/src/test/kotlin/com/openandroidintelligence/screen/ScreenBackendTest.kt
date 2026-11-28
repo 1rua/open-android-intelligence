@@ -329,7 +329,7 @@ class ScreenBackendTest {
         beforeDispatch: () -> Unit = {},
     ): ScreenActionResult = ScreenHostRegistry.controlLeases.withLease(
         java.util.UUID.randomUUID().toString(), System.currentTimeMillis() + 60_000L, {},
-    ) { execute(expectedRevision, action, beforeDispatch) }
+    ) { execute(expectedRevision, action, beforeDispatch = beforeDispatch) }
 
     @Test fun remoteNodeCoordinateAndCrossingGestureCannotHitLocalApprovalArea() = runTest {
         val localUi = object : com.openandroidintelligence.control.remote.PhoneLocalControlUi {

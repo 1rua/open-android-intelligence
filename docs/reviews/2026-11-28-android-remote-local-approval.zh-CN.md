@@ -48,6 +48,16 @@ DSH 手机的数据插件和原生屏幕曾只识别「允许只读」的免确�
 
 签名 APK `13831`（`5607b98b`）的通知读取在三档均完成。「每次手动」实际出现一张确认卡片并经本机批准，耗时 2.53 秒。「允许只读」和「自动允许」均没有 `approval/asked`，分别耗时 1.50 秒、0.95 秒。测试后恢复「自动允许」。原生与 Terra MCP 在自动允许档均成功读取通知、通话记录、短信和 UI 树。Terra 的 Home 请求保持本机确认，批准后实际离开计算器，返回 `performed:true`、`settled:true`。普通侧屏设置下，SoM 路径已跳过 OAI 确认并按遮蔽检查拒绝取帧。
 
+在 Note20 Ultra 签名 APK `13861`（`7067e593`）上再次切换通知读取的三档设置。下表记录六次真实 `notifications.query` 的完成耗时，包含会话与回执等待。手动档包含本机操作时间。六次均成功，测试后恢复「自动允许」。
+
+| 通知读取设置 | DSH 原生 | MCP 桥接 |
+| --- | --- | --- |
+| 每次手动 | 1 次确认，7.37 秒 | 等待并完成本机批准，12.05 秒 |
+| 允许只读 | 0 次确认，5.85 秒 | 直接完成，9.22 秒 |
+| 自动允许 | 0 次确认，5.31 秒 | 直接完成，8.96 秒 |
+
+三档按能力分别保存。SoM 同时检查屏幕读取和图像采集两项授权。已获准的原生屏幕请求会显示「正在执行远程手机操作」状态胶囊，无需点击。[设置保存](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/capabilities/CapabilitySettingsScreen.kt#L332) · [本机确认分支](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/plugins/RemotePhoneControlComposition.kt#L180) · [执行状态](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/PhoneControlOverlay.kt#L147)
+
 窗口事件补采样显示，三星状态栏先报告网速叶节点的纯文本事件，也会另发以 `status_bar` 为源的子树变化。该变化使正在采集的截图过期。操控在新旧窗口和节点均完整、前后一致时可继续，否则仍拒绝旧引用。系统声明却无法取得的子节点会明确标记为截断。[窗口事件复核](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/ScreenAccessibilityService.kt#L198)
 
 ## 主线程开销
@@ -55,6 +65,8 @@ DSH 手机的数据插件和原生屏幕曾只识别「允许只读」的免确�
 屏幕树曾为选入的每个节点重新编码整份结果。Java 21 下用含中文、转义字符和表情的同一份 512 节点样本测量了 65 次回执选点。改用逐节点字节计数后，中位耗时从约 17.8 毫秒降到 0.84 毫秒，每次中位分配量从约 66.2 MB 降到 2.3 MB。两份回执均为 115 节点及 47,723 字节，SHA-256 一致。带包名的外部应用内容事件直接使快照失效。若没有其他待复核的浮层窗口 ID，可省去主线程逐窗查询根节点。两条路径共享这一实现。[回执选点](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/ScreenTreeReader.kt#L109) · [窗口事件](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/ScreenAccessibilityService.kt#L198)
 
 样本计时来自本机 JVM。新包的 Note20 Ultra 帧表现和双路径操控仍待验证。调试端口拒绝连接，已登录的 DSH 设备目录也未返回该手机为在线主机。
+
+动作完成后，底层曾在主线程即时重读整棵树。原生入口只使用窗口稳定后的另一次读取，兼容入口在无读权限时也会丢弃即时结果。现在两条入口显式选择需要的读取。自动化验证原生动作无读权限时只采集一次树用于派发前校验，有独立读权限时再采集一次用于稳定后的回执。快照 ID 的索引只保留完整任务范围和修订号，同一任务中尚有效的旧 ID 仍可使用。控屏、控制端口、设备原语和授权内核共 366 项回归通过。[动作后观察](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/NativePhoneScreen.kt#L59) · [回归用例](../../apps/android/screen-control/src/test/kotlin/com/openandroidintelligence/screen/ScreenSnapshotInvalidationTest.kt#L209)
 
 ## 操控派发回执
 

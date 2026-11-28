@@ -206,6 +206,33 @@ class ScreenSnapshotInvalidationTest {
         assertEquals(1, dispatches)
     }
 
+    @Test fun 操控只在独立读取获准时采集稳定后的屏幕树() = runTest {
+        val backend = GenerationBackend()
+        val port = NativePhoneScreen(RuntimeEnvironment.getApplication(), backend, unownedFrameSource())
+        installTargetWindow()
+        val dump = ControlOperation.DumpTree(ScreenReadQuery())
+        val first = snapshotId(port.execute(request("observe-first-snapshot"), dump, {}, { true }))
+        val second = snapshotId(port.execute(request("observe-second-snapshot"), dump, {}, { true }))
+        assertTrue(first != second)
+
+        val action = ControlOperation.Screen(first, ScreenAction.Global("back"))
+        val initialCaptures = backend.captures
+        val withoutRead = port.execute(request("observe-action-without-read"), action, {}, { false })
+        assertEquals(1, backend.captures - initialCaptures)
+        assertEquals(ControlValue.Boolean(true), withoutRead.result.values["performed"])
+        val deniedUi = checkNotNull(withoutRead.ui).values
+        assertEquals(ControlValue.Null, deniedUi["snapshotId"])
+        assertEquals(ControlValue.Text("SCREEN_READ_PERMISSION_REQUIRED"), deniedUi["observationError"])
+
+        val capturesAfterFirstAction = backend.captures
+        val withRead = port.execute(request("observe-action-with-read"), action, {}, { true })
+        assertEquals(2, backend.captures - capturesAfterFirstAction)
+        assertEquals(listOf("back", "back"), backend.effects)
+        val observedUi = checkNotNull(withRead.ui).values
+        assertEquals(ControlValue.Boolean(true), observedUi["settled"])
+        assertTrue(observedUi["snapshotId"] is ControlValue.Text)
+    }
+
     @Test
     fun 本机浮层的延迟状态事件和重复无包名事件不使同一个目标失效() {
         installTargetWindow()
@@ -691,6 +718,7 @@ class ScreenSnapshotInvalidationTest {
         private val delegate = AndroidScreenBackend(runtime)
         var reads = 0
         val effects get() = runtime.effects
+        val captures get() = runtime.captures
 
         override fun availability(): String? = null
 
@@ -699,9 +727,9 @@ class ScreenSnapshotInvalidationTest {
             return delegate.read(query).also { onRead(count) }
         }
 
-        override suspend fun execute(expectedRevision: String, action: ScreenAction, beforeDispatch: () -> Unit): ScreenActionResult {
-            return delegate.execute(expectedRevision, action, beforeDispatch)
-        }
+        override suspend fun execute(
+            expectedRevision: String, action: ScreenAction, observeAfterAction: Boolean, beforeDispatch: () -> Unit,
+        ): ScreenActionResult = delegate.execute(expectedRevision, action, observeAfterAction, beforeDispatch)
     }
 
     private inner class TestRuntime(
@@ -710,12 +738,15 @@ class ScreenSnapshotInvalidationTest {
         private val beforeNative: () -> Unit,
     ) : ScreenRuntime {
         val effects = mutableListOf<String>()
+        var captures = 0
+            private set
 
         override fun availability(): String? = null
         override fun generation(): Long = ScreenAccessibilityConnection.generation
         override fun display(): ScreenDisplay = ScreenDisplay(100, 200, 0)
         var observedOverride: ObservedWindows? = observedWindows
         override fun windows(): ScreenWindowCapture {
+            captures++
             val windows = listOf(ScreenTreeWindow(
                 ScreenWindow(TARGET_WINDOW_ID, AccessibilityWindowInfo.TYPE_APPLICATION, 1, true, true,
                     ScreenBounds(0, 0, 100, 200)),

@@ -39,7 +39,9 @@ class SomCaptureSafetyTest {
         var reads = 0
         override fun availability(): String? = null
         override fun read(query: ScreenReadQuery): ScreenSnapshot { reads++; return snapshot }
-        override suspend fun execute(expectedRevision: String, action: ScreenAction, beforeDispatch: () -> Unit) = error("本测试不执行动作")
+        override suspend fun execute(
+            expectedRevision: String, action: ScreenAction, observeAfterAction: Boolean, beforeDispatch: () -> Unit,
+        ) = error("本测试不执行动作")
     }
     private class LocalUi(var protection: LocalUiCaptureProtection) : PhoneLocalControlUi {
         override val protectedBounds: ScreenBounds? = protection.maskedRegions.lastOrNull()

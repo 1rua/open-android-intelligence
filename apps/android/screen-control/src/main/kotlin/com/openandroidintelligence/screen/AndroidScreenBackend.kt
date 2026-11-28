@@ -85,7 +85,9 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
         finally { windows.forEach { it.root.close() } }
     }
 
-    override suspend fun execute(expectedRevision: String, action: ScreenAction, beforeDispatch: () -> Unit): ScreenActionResult {
+    override suspend fun execute(
+        expectedRevision: String, action: ScreenAction, observeAfterAction: Boolean, beforeDispatch: () -> Unit,
+    ): ScreenActionResult {
         val lease = currentCoroutineContext()[ScreenControlLease]
             ?: throw ScreenOperationException("SCREEN_CONTROL_LEASE_REQUIRED")
         lease.ensureCurrent()
@@ -206,6 +208,7 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
                     }
                 }
                 if (!performed) throw ScreenOperationException("SCREEN_ACTION_REJECTED")
+                if (!observeAfterAction) return@withContext ScreenActionResult(true, null)
                 // Android acceptance is reported separately from the observed post-action state.
                 // No sleep, retry or invented guarantee that the target app has finished rendering.
                 try {
