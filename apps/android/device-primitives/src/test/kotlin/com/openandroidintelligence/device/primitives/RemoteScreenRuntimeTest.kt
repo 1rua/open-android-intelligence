@@ -93,9 +93,25 @@ class RemoteScreenRuntimeTest {
         assertEquals("SCREEN_READ_PERMISSION_REQUIRED", JsonFields.string(result, "stateError"))
         assertTrue(fixture.backend.sawLease)
         assertEquals(1, fixture.backend.actions)
+        assertEquals(0, fixture.backend.reads)
         assertNull(fixture.runtime.authorization.status(fixture.runtime.binding()!!).session)
         fixture.runtime.finishRequest("request", fixture.runtime.binding()!!)
         assertEquals("SCREEN_REQUEST_AUTHORIZATION_REQUIRED", code { fixture.invoke(ScreenPermission.CONTROL, controlInput) })
+    }
+
+    @Test fun 兼容操控仍返回独立读取权限覆盖的动作后屏幕树() = runTest {
+        val fixture = Fixture()
+        fixture.runtime.installRequestAuthorization("request", setOf(ScreenPermission.CONTROL, ScreenPermission.READ),
+            61_000, Json.sha256(Json.parse(controlInput))) {}
+
+        val result = fixture.invoke(ScreenPermission.CONTROL, controlInput)
+        val screen = JsonFields.obj(JsonFields.field(result, "screen"))
+        assertEquals("revision", JsonFields.string(screen, "revision"))
+        assertEquals(JsonValue.JNull, JsonFields.field(result, "stateError"))
+        assertEquals(true, JsonFields.bool(result, "performed"))
+        assertEquals(1, fixture.backend.actions)
+        assertEquals(1, fixture.backend.reads)
+        fixture.runtime.finishRequest("request", fixture.runtime.binding()!!)
     }
 
     @Test fun oldSessionExpiryAndReplacementCannotVetoCurrentGlobalPolicyDecision() = runTest {
@@ -689,13 +705,15 @@ class RemoteScreenRuntimeTest {
             return ScreenSnapshot("revision", "hash", null, ScreenDisplay(100, 200, 0), "com.example.app", 1,
                 listOf(ScreenWindow(1, 1, 1, true, true, ScreenBounds(0, 0, 100, 200))), emptyList(), false)
         }
-        override suspend fun execute(expectedRevision: String, action: ScreenAction, beforeDispatch: () -> Unit): ScreenActionResult {
+        override suspend fun execute(
+            expectedRevision: String, action: ScreenAction, observeAfterAction: Boolean, beforeDispatch: () -> Unit,
+        ): ScreenActionResult {
             sawLease = currentCoroutineContext()[ScreenControlLease] != null
             actionBlock()
             onDispatch(); beforeDispatch()
             currentCoroutineContext()[ScreenControlLease]?.beforeSystemEffect()
             actions++
-            val result = ScreenActionResult(true, read(ScreenReadQuery()))
+            val result = ScreenActionResult(true, if (observeAfterAction) read(ScreenReadQuery()) else null)
             onResult()
             return result
         }

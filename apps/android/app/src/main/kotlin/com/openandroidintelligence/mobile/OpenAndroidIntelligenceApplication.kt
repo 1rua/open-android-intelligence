@@ -1,9 +1,14 @@
 package com.openandroidintelligence.mobile
 
 import android.app.Application
+import android.content.Context
+import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.openandroidintelligence.control.remote.PhoneControlOverlayColors
+import com.openandroidintelligence.control.remote.PhoneControlOverlayTheme
+import com.openandroidintelligence.conversation.theme.resolveAppColorScheme
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.CapabilityProviderSelector
@@ -30,11 +35,27 @@ import kotlinx.coroutines.launch
  * 2. 零插件状态下仍具备完整的 Gateway v2 连接、多账号与对话附件支持；
  * 3. 平台内核（PluginKernel）独立初始化并管理受保护插件与审计。
  */
-class OpenAndroidIntelligenceApplication : Application(), RemoteStandbyOwner {
+class OpenAndroidIntelligenceApplication : Application(), RemoteStandbyOwner, PhoneControlOverlayTheme {
 
     /** User controlled shell appearance, kept outside all Gateway secrets. */
     val appearancePreferences: AppearancePreferences by lazy {
         AppearancePreferences(this)
+    }
+
+    override fun phoneControlOverlayColors(context: Context): PhoneControlOverlayColors {
+        val appearance = appearancePreferences.settings.value
+        val scheme = resolveAppColorScheme(context, context.appearanceIsDark(appearance), appearance.dynamicColor, appearance.palette)
+        return PhoneControlOverlayColors(
+            surfaceContainerHigh = scheme.surfaceContainerHigh.toArgb(),
+            onSurface = scheme.onSurface.toArgb(),
+            onSurfaceVariant = scheme.onSurfaceVariant.toArgb(),
+            primary = scheme.primary.toArgb(),
+            onPrimary = scheme.onPrimary.toArgb(),
+            secondaryContainer = scheme.secondaryContainer.toArgb(),
+            onSecondaryContainer = scheme.onSecondaryContainer.toArgb(),
+            errorContainer = scheme.errorContainer.toArgb(),
+            onErrorContainer = scheme.onErrorContainer.toArgb(),
+        )
     }
 
     /**

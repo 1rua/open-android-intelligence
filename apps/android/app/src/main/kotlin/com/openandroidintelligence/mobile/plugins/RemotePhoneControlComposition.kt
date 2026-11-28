@@ -82,7 +82,8 @@ class RemotePhoneControlComposition(
     }
 
     override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
-        val connection = connection(context.access)
+        val access = context.access
+        val connection = connection(access)
         if (operation is ControlOperation.Delivery) {
             val app=this.context.applicationContext as? com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
                 ?: fail("PUSH_RUNTIME_UNAVAILABLE")
@@ -95,8 +96,9 @@ class RemotePhoneControlComposition(
                     push.delivery(context.access,operation)
                 }
                 connection(context.access)
-                return PhoneControlResult(value(result) as ControlValue.Object,requireContentAccess={
-                    connection(context.access);push.requireDeliveryContent(context.access,operation)
+                return PhoneControlResult(value(result) as ControlValue.Object, requireContentAccess = { deliveryAccess ->
+                    deliveryBinding(access, deliveryAccess)
+                    push.requireDeliveryContent(deliveryAccess, operation)
                 })
             } finally { PhoneLocalControlUiRegistry.current?.finish(context.scope.key.storageKey) }
         }
@@ -127,16 +129,23 @@ class RemotePhoneControlComposition(
                 if (isBackground() && grants.currentKernelGrant(connection.binding.id)?.backgroundSync != true) fail("BACKGROUND_PERMISSION_REQUIRED")
             }
             revalidate()
+            val requireContentAccess: ((ControlAccessBinding) -> Unit)? =
+                pluginHost.remoteReadContentCheck(entry, connection.binding, ::isBackground)?.let { check ->
+                    { deliveryAccess ->
+                        val binding = deliveryBinding(access, deliveryAccess)
+                        try { check(binding) } catch (failure: CapabilityDenied) { fail(phonePermissionCode(failure)) }
+                    }
+                }
             if (entry.id != "org.openandroidintelligence.sms.send") context.beforeDispatch()
             val output = runInterruptible(Dispatchers.IO) { pluginHost.invokeRemote(entry, parameters, id, connection.binding,
                 context.parameterDigest, isBackground(), beforeSystemEffect = context.consumeSmsSendEffect) }
-            revalidate()
             val result = Json.parse(output.decodeToString())
-            return phonePluginResult(entry, result)
+            revalidate()
+            requireContentAccess?.invoke(access)
+            return phonePluginResult(entry, result).copy(requireContentAccess = requireContentAccess)
         } catch (failure: CapabilityDenied) {
             // 只公开可由本机处理的固定错误码，原语参数和插件异常正文不进入回执。
-            val code = failure.primitive.takeIf { it in phonePermissionErrors } ?: "CAPABILITY_DENIED"
-            fail(code)
+            fail(phonePermissionCode(failure))
         } catch (_: ProviderRejected) { fail("PROVIDER_UNAVAILABLE") }
           catch (_: BudgetExceeded) { fail("PLUGIN_BUDGET_EXCEEDED") }
           catch (_: com.openandroidintelligence.plugin.wasm.BudgetExceeded) { fail("PLUGIN_BUDGET_EXCEEDED") }
@@ -178,12 +187,18 @@ class RemotePhoneControlComposition(
                     context.awaitingConfirmation(false)
                 }
             }
-            return nativeKernel.execute(context, connection.binding, operation)
+            return nativeKernel.execute(context, connection.binding, operation) { access -> connection(access).binding }
         } finally {
             nativeContexts.remove(context.scope)
             nativeKernel.finish(context, connection.binding)
             PhoneLocalControlUiRegistry.current?.finish(context.scope.key.storageKey)
         }
+    }
+    private fun deliveryBinding(owner: ControlAccessBinding, access: ControlAccessBinding): RemoteCapabilityBinding {
+        if (owner.principal != access.principal || owner.authorizationEpoch != access.authorizationEpoch) {
+            fail("REMOTE_AUTHORIZATION_CHANGED")
+        }
+        return connection(access).binding
     }
     private fun connection(access: ControlAccessBinding) = connections[access]?.takeIf { !stopped && it.binding.isCurrent() } ?: fail("REMOTE_AUTHORIZATION_CHANGED")
     private fun isBackground(): Boolean = context.getSystemService(android.app.KeyguardManager::class.java)?.isKeyguardLocked != false ||
@@ -198,6 +213,11 @@ private val phonePermissionErrors = setOf(
     "BACKGROUND_PERMISSION_REQUIRED", "REMOTE_BACKGROUND_AUTHORIZATION_CHANGED", "READ_SMS_REQUIRED", "SEND_SMS_REQUIRED",
     "READ_CALL_LOG_REQUIRED", "SMS_SUBSCRIPTION_REQUIRED", "SMS_SUBSCRIPTION_CHANGED", "SMS_SUBSCRIPTION_UNAVAILABLE",
 )
+
+private fun phonePermissionCode(failure: CapabilityDenied): String =
+    failure.primitive.takeIf { it in phonePermissionErrors || it == "LOCAL_AUTHORIZATION_CHANGED" ||
+        it == "REMOTE_AUTHORIZATION_CHANGED" || it == "PROVIDER_UNAVAILABLE" }
+        ?: "CAPABILITY_DENIED"
 
 /** 仅已验证短信发送能力的未知结果可升级为控制未知终态；读取和其他插件保持原语义。 */
 internal fun phonePluginResult(entry: VerifiedCapability, result: JsonValue): PhoneControlResult {

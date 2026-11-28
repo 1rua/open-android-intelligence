@@ -21,8 +21,13 @@ DSH 通用路由继续完全由 `Connection.requestRejection` 保护，不受本
 长期保留下载文件仅由显式 `android_read_artifact` 触发。
 面向智能体的调用工作流与参数约束见 [OAI Phone Control Skill](../skills/oai-phone-control/SKILL.md)。
 
-调用 `android_list_devices` 确定手机目标，首次读树或截图可省略 taskSessionId 并返回新任务；
-后续必须传同一 taskSessionId，动作同时传 snapshotId。等待手机批准时返回
+调用 `android_list_devices` 确定手机目标。在 DSH 的 Remote 面板连接该手机，并在本机审批、
+执行和取回结果期间保持这个连接。使用 DSH 原生 `remote_send_message` 调用需执行的手机能力时，
+也使用同一个持续连接。固定版本 DSH Remote 会在单次后台工具调用结束时关闭其临时连接。
+发现工作区和 `phone.capabilities` 可通过临时连接完成，待审批的请求会随断线安全取消。
+
+首次读树或截图可省略 taskSessionId 并返回新任务。后续必须传同一 taskSessionId，动作同时传
+snapshotId。等待手机批准时返回
 `awaiting_confirmation`，通过 `android_request_result` 继续读取当前任务正文，
 通过 `android_request_status` 查询最小持久回执，或 `android_cancel_request` 精确取消原请求。
 停止观察、Stdio 退出和本机 HTTP 超时均不代表手机请求已取消。
@@ -53,9 +58,8 @@ Client/pin 与手机已保存的精确目标 Host/pin/backend/workspace/session�
 通过 `TYPE_ACCESSIBILITY_OVERLAY` 显示，所有远端节点、坐标与穿越胶囊的手势均拒绝。
 动作完成后保持手机全局执行权，等待 400ms 布局静默或 3000ms 硬期限后返回最新观测；
 动作执行结果与界面是否稳定分别报告，超时不会重试动作。自动观测仍要求独立的只读许可。
-SoM 使用 Android 34 起的窗口截图排除胶囊，并以本地 Canvas 标记真实可交互节点、输出 WebP；
-较低系统版本因无法证明可靠排除而返回 `SCREEN_OVERLAY_EXCLUSION_UNSUPPORTED`。该能力边界
-须在真机继续验收，不能以本地构建或隔离截图字节证明支持所有 Android 31–36 设备。
+SoM 使用 Android 34 起的窗口截图排除胶囊。较低系统版本仅在能核对安全浮层几何、位置和
+截图时序时使用整屏遮蔽，否则安全拒绝。标记与 WebP 编码均在手机端完成。
 
 固定上游互通探针由项目根目录的完整命令准备当前源码的 Android JVM 类再运行：
 

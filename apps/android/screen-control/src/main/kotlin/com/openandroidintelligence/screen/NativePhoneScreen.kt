@@ -23,11 +23,13 @@ class NativePhoneScreen internal constructor(
     private val backend: ScreenBackend,
     private val frameSource: SomFrameSource,
     private val nextLayoutFrame: suspend () -> Unit = { kotlinx.coroutines.android.awaitFrame(); Unit },
+    private val readDisplaySom: ((ScreenReadQuery, LocalUiCaptureProtection) -> ScreenSnapshot)? =
+        (backend as? AndroidScreenBackend)?.let { it::readForDisplaySom },
 ) : NativePhoneScreenPort {
     constructor(context: Context, backend: ScreenBackend = AndroidScreenBackend(context)) :
         this(context, backend, AndroidSomFrameSource(context))
-    private data class Snapshot(val task: ControlTaskScope, val screen: ScreenSnapshot)
-    private val snapshots = ConcurrentHashMap<String, Snapshot>()
+    private data class SnapshotReference(val task: ControlTaskScope, val revision: String)
+    private val snapshots = ConcurrentHashMap<String, SnapshotReference>()
     @Volatile private var stopped = false
     override fun availability(): String? = when {
         stopped -> "REMOTE_EMERGENCY_STOPPED"
@@ -45,12 +47,16 @@ class NativePhoneScreen internal constructor(
             ControlOperation.CaptureSom -> captureSom(context, revalidate)
             is ControlOperation.Screen -> {
                 val saved = snapshots[operation.snapshotId]?.takeIf { it.task == context.scope.task } ?: throw ControlRequestException("SNAPSHOT_STALE")
-                ScreenHostRegistry.controlLeases.withLease("remote:${context.scope.key.storageKey}", System.currentTimeMillis() + 5 * 60_000,
-                        { guard(revalidate) }) {
+                ScreenHostRegistry.controlLeases.withLease(
+                    requestId = "remote:${context.scope.key.storageKey}",
+                    expiresAtEpochMs = System.currentTimeMillis() + 5 * 60_000,
+                    revalidate = { guard(revalidate) },
+                    recordDispatch = context.beforeDispatch,
+                ) {
                     // 本机批准会换成执行浮层。首次布局前保护范围为全屏，等待已有的窗口布局信号后再复核目标。
                     awaitControlLayout()
                     guard(revalidate)
-                    val result = backend.execute(saved.screen.revision, operation.action) { guard(revalidate); context.beforeDispatch() }
+                    val result = backend.execute(saved.revision, operation.action, observeAfterAction = false) { guard(revalidate) }
                     val settled = ScreenQuietWait(ScreenAccessibilityConnection.layoutEvents).await()
                     guard(revalidate)
                     val readAllowed = mayRead()
@@ -85,26 +91,34 @@ class NativePhoneScreen internal constructor(
     }
     private suspend fun captureSom(request: PhoneExecutionContext, revalidate: () -> Unit): PhoneControlResult {
         val query = ScreenReadQuery(maxNodes = 512, maxDepth = 32)
+        val captureDisplay = Build.VERSION.SDK_INT < 34
         val localUi = PhoneLocalControlUiRegistry.current
         val protection = withContext(Dispatchers.Main.immediate) {
-            if (Build.VERSION.SDK_INT < 34) localUi?.awaitCaptureProtection(request.scope.key.storageKey)
+            if (captureDisplay) localUi?.awaitCaptureProtection(request.scope.key.storageKey)
             else localUi?.captureProtection()
         }
+        suspend fun readSnapshot(): Pair<ScreenSnapshot, Long?> = withContext(Dispatchers.Main.immediate) {
+            val rawGeneration = (backend as? AndroidScreenBackend)?.captureGeneration()
+            if (!captureDisplay) return@withContext backend.read(query) to rawGeneration
+            if (localUi == null || protection?.ready != true)
+                throw ControlRequestException("SCREEN_OVERLAY_EXCLUSION_UNSUPPORTED")
+            val read = readDisplaySom ?: throw ControlRequestException("SCREEN_REDACTION_UNPROVABLE")
+            val snapshot = read(query, protection)
+            if (PhoneLocalControlUiRegistry.current !== localUi || localUi.captureProtection() != protection)
+                throw ControlRequestException("SCREEN_LOCAL_UI_CHANGED")
+            snapshot to rawGeneration
+        }
         currentCoroutineContext().ensureActive(); guard(revalidate)
-        val snapshot = withContext(Dispatchers.Main.immediate) { backend.read(query) }
+        val baseline = readSnapshot()
+        val snapshot = baseline.first
         if (snapshot.truncated) throw ControlRequestException("SCREEN_REDACTION_UNPROVABLE")
-        if (Build.VERSION.SDK_INT < 34 && (localUi == null || protection?.ready != true || protection.display != snapshot.display))
+        if (captureDisplay && protection?.display != snapshot.display)
             throw ControlRequestException("SCREEN_OVERLAY_EXCLUSION_UNSUPPORTED")
         suspend fun finalGuard() {
             currentCoroutineContext().ensureActive()
             guard(revalidate)
-            val current = withContext(Dispatchers.Main.immediate) { backend.read(query) }
-            if (current != snapshot) throw ControlRequestException("SNAPSHOT_STALE")
-            if (Build.VERSION.SDK_INT < 34) {
-                val now = withContext(Dispatchers.Main.immediate) { localUi?.captureProtection() }
-                if (PhoneLocalControlUiRegistry.current !== localUi || now != protection || now?.ready != true)
-                    throw ControlRequestException("SCREEN_LOCAL_UI_CHANGED")
-            }
+            val current = readSnapshot()
+            if (current != baseline) throw ControlRequestException("SNAPSHOT_STALE")
         }
         request.beforeDispatch(); guard(revalidate)
         val requestedAt = SystemClock.uptimeMillis()
@@ -140,7 +154,8 @@ class NativePhoneScreen internal constructor(
         }
     }
     private fun snapshotMap(task: ControlTaskScope, screen: ScreenSnapshot): Map<String, Any?> {
-        val id = UUID.randomUUID().toString(); snapshots[id] = Snapshot(task, screen)
+        val id = UUID.randomUUID().toString()
+        snapshots[id] = SnapshotReference(task, screen.revision)
         return screen.toMap() + ("snapshotId" to id)
     }
     override fun stop() { stopped = true; snapshots.clear(); ScreenHostRegistry.controlLeases.revokeAll() }

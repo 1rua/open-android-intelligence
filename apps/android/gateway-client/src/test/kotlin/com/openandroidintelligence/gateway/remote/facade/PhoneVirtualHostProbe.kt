@@ -20,6 +20,10 @@ object PhoneVirtualHostProbe {
                 check(access.principal.accountId == "isolated-account")
             }
             override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
+                if (operation is ControlOperation.DumpTree && operation.query.text == "local-approval-probe") {
+                    context.awaitingConfirmation(true)
+                    awaitCancellation()
+                }
                 context.beforeDispatch()
                 if (operation is ControlOperation.DumpTree && operation.query.text == "oversized-receipt-probe") {
                     return PhoneControlResult(ControlValue.Object(mapOf(

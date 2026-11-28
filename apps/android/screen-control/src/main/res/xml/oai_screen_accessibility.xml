@@ -1,3 +1,4 @@
+<!-- 保留窗口增删的先后顺序，避免本机浮窗事件覆盖待交付的第三方窗口变化。 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeWindowsChanged|typeViewScrolled|typeViewTextChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
@@ -5,5 +6,5 @@
     android:canRetrieveWindowContent="true"
     android:canPerformGestures="true"
     android:canTakeScreenshot="true"
-    android:notificationTimeout="100"
+    android:notificationTimeout="0"
     android:isAccessibilityTool="false" />

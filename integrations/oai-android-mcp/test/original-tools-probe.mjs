@@ -9,6 +9,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { rename, mkdir, mkdtemp } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
+import { PhoneMcpBridge } from '../src/bridge.mjs';
 const root = resolve(process.argv[2] ?? '.');
 assert.ok(process.env.JAVA_HOME, '互通探针需要 JAVA_HOME 指向 JDK 21');
 const probeHome = await mkdtemp(join(tmpdir(), 'oai-phone-tools-probe-'));
@@ -125,5 +126,37 @@ try{
  assert.equal(statusEnvelope.result.taskSessionId,second.sessionId);
  assert.equal(statusEnvelope.result.state,'completed');
  assert.equal(statusEnvelope.result.resultAvailable,true);
+
+ const approvalTask = await tools.run('remote_create_session', { ...target, operationId: 'create-approval-task' }, signal);
+ assert.equal(approvalTask.status, 'accepted');
+ const binding = { ...target, taskSessionId: approvalTask.sessionId };
+ const session = { ...target, sessionId: approvalTask.sessionId };
+ const awaitingId = 'probe-approval-awaiting';
+ const queuedId = 'probe-approval-queued';
+ const bridge = new PhoneMcpBridge({
+   status: () => ({ connected: true, connectedTargetDeviceId: target.hostId, recoveryGeneration: 0 }),
+   discoverToolWorkspaces: async () => ({ workspaces: [target] }),
+   runSessionTool: (operation, args, active) => tools.run(operation, args, active),
+ }, { snapshot: async () => 'probe-epoch' });
+ const sentForApproval = await tools.run('remote_send_message', {
+   ...session, operationId: awaitingId,
+   message: JSON.stringify({ request_id: awaitingId, op: 'ui.dump_tree', args: { text: 'local-approval-probe' } }),
+ }, signal);
+ assert.equal(sentForApproval.status, 'accepted');
+ const waiting = await tools.run('remote_wait_sessions', { targets: [session], timeoutMs: 1000 }, signal);
+ assert.equal(waiting.sessions[0].status, 'needs_user_input');
+ const queued = await bridge.call('start', {
+   ...binding, request: { request_id: queuedId, op: 'ui.dump_tree', args: {} },
+ }, signal);
+ assert.equal(queued.state, 'accepted');
+ assert.equal(queued.request_id, queuedId);
+ assert.equal((await bridge.call('request_result', { ...binding, targetRequestId: awaitingId }, signal)).state, 'awaiting_confirmation');
+ await bridge.call('cancel', { ...binding, request_id: 'probe-approval-cancel', targetRequestId: awaitingId }, signal);
+ const drained = await tools.run('remote_wait_sessions', { targets: [session], timeoutMs: 1000 }, signal);
+ assert.equal(drained.sessions[0].status, 'idle');
+ assert.equal((await bridge.call('request_result', { ...binding, targetRequestId: awaitingId }, signal)).state, 'cancelled');
+ assert.equal((await bridge.call('request_result', { ...binding, targetRequestId: queuedId }, signal)).state, 'completed');
+ bridge.close();
+
  console.log(JSON.stringify({nativeTools:'PASS',sessionId,secondSessionId:second.sessionId,records:history.records.length,summaryRecordLength:summaryRecord.json.length,download:downloaded,artifact:{bytes:artifact.bytes,sha256:artifactSha256}}));
 }finally{clearTimeout(deadline);lines.close();child.stdin.end();child.kill();}

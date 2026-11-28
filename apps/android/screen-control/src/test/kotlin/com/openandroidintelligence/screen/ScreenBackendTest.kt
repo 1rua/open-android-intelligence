@@ -50,6 +50,37 @@ class ScreenBackendTest {
         assertEquals(runtime.created, runtime.closed)
     }
 
+    @Test fun 字节上限附近的选点与逐次完整序列化一致() {
+        val runtime = FakeRuntime().apply {
+            roots = listOf(Spec(children = List(36) { index ->
+                Spec(text = "控件\n\r\t\"\\🧭$index", resourceId = "fixture:id/control")
+            }), Spec(text = "第二个窗口"))
+        }
+        val reader = ScreenTreeReader()
+        val windows = runtime.windows().windows
+        val snapshot = try { reader.capture(windows, runtime.display(), runtime.generation(), "fixture", 1) }
+        finally { windows.forEach { it.root.close() } }
+        assertFalse(snapshot.truncated)
+        assertEquals(runtime.created, runtime.closed)
+
+        fun bytes(value: ScreenSnapshot) = Json.canonical(Json.of(value.toMap())).toByteArray(Charsets.UTF_8).size
+        for (truncated in listOf(false, true)) {
+            val base = snapshot.copy(changed = true, truncated = truncated)
+            val boundary = bytes(base.copy(nodes = base.nodes.take(15)))
+            for (maxBytes in (boundary - 1)..(boundary + 1)) {
+                val expectedNodes = (0..base.nodes.size).map { base.nodes.take(it) }
+                    .takeWhile { bytes(base.copy(nodes = it)) <= maxBytes }.last()
+                val expected = base.copy(nodes = expectedNodes, truncated = truncated || expectedNodes.size < base.nodes.size)
+                val actual = reader.select(base, ScreenReadQuery(maxNodes = 128, maxBytes = maxBytes, previousHash = "previous"))
+                assertEquals(expected, actual)
+                assertTrue(bytes(actual) <= maxBytes)
+            }
+        }
+        val nodeBound = reader.select(snapshot, ScreenReadQuery(maxNodes = 7))
+        assertEquals(snapshot.nodes.take(7), nodeBound.nodes)
+        assertTrue(nodeBound.truncated)
+    }
+
     @Test fun deeplyNestedAndInvisibleContainersHaveHardVisitAndDepthLimits() {
         var deep = Spec(text = "deep")
         repeat(200) { deep = Spec(children = listOf(deep), visible = false) }
@@ -65,6 +96,39 @@ class ScreenBackendTest {
         assertEquals(runtime.created, runtime.closed)
     }
 
+    @Test fun 状态栏网速刷新保留操控修订但仍报告观测内容变化() = runTest {
+        val meter = Spec(text = "1 KB/s", resourceId = "com.android.systemui:id/network_speed_contentview", interactive = false)
+        val target = Spec(text = "应用按钮")
+        val runtime = FakeRuntime().apply {
+            includeStatusBar = true
+            roots = listOf(target, meter)
+        }
+        val backend = AndroidScreenBackend(runtime)
+        val original = backend.read()
+        runtime.controlSequenceOverride = runtime.sequence
+        runtime.sequence++
+        runtime.roots = listOf(target, meter.copy(text = "9 KB/s"))
+        val refreshed = backend.read(ScreenReadQuery(previousHash = original.hash))
+        assertNotEquals(original.hash, refreshed.hash)
+        assertEquals(true, refreshed.changed)
+        assertEquals("9 KB/s", refreshed.nodes.last().text)
+        assertEquals(original.revision, refreshed.revision)
+        assertTrue(backend.executeLeased(original.revision, ScreenAction.Global("home")).performed)
+
+        runtime.roots = listOf(target.copy(text = "不同的应用按钮"), meter.copy(text = "9 KB/s"))
+        fails("SCREEN_STALE_REFERENCE") { backend.executeLeased(original.revision, ScreenAction.Global("home")) }
+        runtime.roots = listOf(target, meter.copy(text = "9 KB/s", interactive = true))
+        fails("SCREEN_STALE_REFERENCE") { backend.executeLeased(original.revision, ScreenAction.Global("home")) }
+        runtime.roots = listOf(target, meter.copy(text = "9 KB/s", bounds = ScreenBounds(25, 0, 75, 50)))
+        fails("SCREEN_STALE_REFERENCE") { backend.executeLeased(original.revision, ScreenAction.Global("home")) }
+        runtime.roots = listOf(target, meter.copy(text = "9 KB/s"))
+        runtime.includeStatusBar = false
+        val thirdParty = backend.read()
+        runtime.roots = listOf(target, meter.copy(text = "1 KB/s"))
+        fails("SCREEN_STALE_REFERENCE") { backend.executeLeased(thirdParty.revision, ScreenAction.Global("home")) }
+        assertEquals(listOf("global:home"), runtime.effects)
+    }
+
     @Test fun windowAndRotationChangesInvalidateReferencesEvenWhenNodeIdsMatch() = runTest {
         val runtime = FakeRuntime()
         val backend = AndroidScreenBackend(runtime)
@@ -74,6 +138,19 @@ class ScreenBackendTest {
         val rotated = backend.read()
         runtime.sequence++
         fails("SCREEN_STALE_REFERENCE") { backend.executeLeased(rotated.revision, ScreenAction.Global("back")) }
+        assertTrue(runtime.effects.isEmpty())
+    }
+
+    @Test fun 有缺失子节点的树必须按原始代次拦截旧操控引用() = runTest {
+        val runtime = FakeRuntime().apply { roots = listOf(Spec(children = listOf(null))) }
+        val backend = AndroidScreenBackend(runtime)
+        val partial = backend.read()
+        assertTrue(partial.truncated)
+        runtime.controlSequenceOverride = runtime.sequence
+        runtime.sequence++
+
+        assertEquals(partial.hash, backend.read().hash)
+        fails("SCREEN_STALE_REFERENCE") { backend.executeLeased(partial.revision, ScreenAction.Global("home")) }
         assertTrue(runtime.effects.isEmpty())
     }
 
@@ -252,7 +329,7 @@ class ScreenBackendTest {
         beforeDispatch: () -> Unit = {},
     ): ScreenActionResult = ScreenHostRegistry.controlLeases.withLease(
         java.util.UUID.randomUUID().toString(), System.currentTimeMillis() + 60_000L, {},
-    ) { execute(expectedRevision, action, beforeDispatch) }
+    ) { execute(expectedRevision, action, beforeDispatch = beforeDispatch) }
 
     @Test fun remoteNodeCoordinateAndCrossingGestureCannotHitLocalApprovalArea() = runTest {
         val localUi = object : com.openandroidintelligence.control.remote.PhoneLocalControlUi {
@@ -280,26 +357,33 @@ class ScreenBackendTest {
 
 private data class Spec(
     val text: String? = "target", val resourceId: String? = null, val password: Boolean = false,
-    val visible: Boolean = true, val children: List<Spec> = emptyList(),
+    val visible: Boolean = true, val children: List<Spec?> = emptyList(),
+    val interactive: Boolean = true, val bounds: ScreenBounds = ScreenBounds(0, 0, 50, 50),
 )
 
 private class FakeRuntime : ScreenRuntime {
     var roots = listOf(Spec())
+    var includeStatusBar = false
     var created = 0
     var closed = 0
     var denial: String? = null
     var sequence = 1L
+    var controlSequenceOverride: Long? = null
     var currentDisplay = ScreenDisplay(1080, 1920, 0)
     val effects = mutableListOf<String>()
     var gestureCompletion: CompletableDeferred<Boolean>? = null
     var beforeNative: () -> Unit = {}
     override fun availability() = denial
     override fun generation() = sequence
+    override fun controlGeneration() = controlSequenceOverride ?: sequence
     override fun display() = currentDisplay
     override fun windows(): ScreenWindowCapture {
         val packageName = "org.example.app"
         val windows = roots.mapIndexed { index, spec ->
-            ScreenTreeWindow(ScreenWindow(index + 1, 1, index, index == 0, index == 0, ScreenBounds(0, 0, 1080, 1920)), tree(spec), packageName)
+            val systemBar = includeStatusBar && index == 1
+            val window = ScreenWindow(index + 1, if (systemBar) 3 else 1, index, index == 0, index == 0,
+                if (systemBar) ScreenBounds(0, 0, 1080, 50) else ScreenBounds(0, 0, 1080, 1920))
+            ScreenTreeWindow(window, tree(spec), if (systemBar) "com.android.systemui" else packageName)
         }
         val states = windows.map {
             ScreenWindowState(it.window.id, it.window.type, it.window.layer, it.window.active, it.window.focused,
@@ -313,13 +397,13 @@ private class FakeRuntime : ScreenRuntime {
             override val text = spec.text
             override val description = if (spec.password) "secret description" else null
             override val resourceId = spec.resourceId
-            override val className = "android.widget.Button"
-            override val bounds = ScreenBounds(0, 0, 50, 50)
+            override val className = if (spec.interactive) "android.widget.Button" else "android.widget.TextView"
+            override val bounds = spec.bounds
             override val visible = spec.visible
-            override val clickable = true
-            override val longClickable = true
-            override val scrollable = true
-            override val editable = true
+            override val clickable = spec.interactive
+            override val longClickable = spec.interactive
+            override val scrollable = spec.interactive
+            override val editable = spec.interactive
             override val focused = false
             override val selected = false
             override val enabled = true

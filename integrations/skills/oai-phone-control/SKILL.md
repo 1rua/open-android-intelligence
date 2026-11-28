@@ -55,6 +55,10 @@ description: Read, observe, and control Android phones under the DSH Remote arch
 
 ### 2.2 创建任务会话并执行操作
 
+先请用户在 DSH Remote 面板连接目标手机，并在本机确认及取回结果期间保持连接。
+原生工具在没有选中该手机时使用一次性连接，`remote_send_message` 返回受理后即关闭。
+仍在执行或等待确认的请求会随断开取消。工作区发现和即时 `phone.capabilities` 查询可以使用一次性连接。
+
 1. 多步任务先调用 `remote_create_session` 创建独立任务（`operationId` 必须与后续消息不同）：
    ```json
    {
@@ -95,6 +99,7 @@ description: Read, observe, and control Android phones under the DSH Remote arch
 
 - 确保电脑 DSH 正在运行，且已安装仓库 `integrations/oai-android-mcp` Cordis 插件（配置 `privateConfigPath`，目录权限 `0700`、配置文件 `0600`），并将生成的 `mcpServers.oai-android` 加入外部 Agent 原生 MCP 配置。
 - 先调用 `android_bridge_status({})` 检查本地桥可用性；注销 DSH、切换服务地址或卸载插件后须重新生成配置。
+- `PHONE_TARGET_NOT_CONNECTED` 或 `PHONE_TARGET_CONNECTION_MISMATCH` 表示本次调用在发送前被拒绝。请用户在 DSH Remote 面板连接目标手机。
 
 ### 3.2 发现手机、读取能力与操作屏幕
 

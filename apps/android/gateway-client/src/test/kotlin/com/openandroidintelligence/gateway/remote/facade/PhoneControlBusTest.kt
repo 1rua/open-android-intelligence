@@ -44,6 +44,37 @@ class PhoneControlBusTest {
         JsonFields.string(JsonFields.obj(JsonFields.field(it, "chunk")), "type")
     }
 
+    @Test fun 本机拒绝会结束审批观察且从未进入执行栅栏() = runTest {
+        val decision = CompletableDeferred<Unit>()
+        val executor = object : Executor() {
+            override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
+                context.awaitingConfirmation(true)
+                decision.await()
+                throw ControlRequestException("LOCAL_USER_REJECTED")
+            }
+        }
+        val ledger = Ledger()
+        val owner = access()
+        val bus = PhoneControlBus(this, ledger, executor, phoneFacadeTestStrings)
+        val task = bus.create(owner)
+        val pending = request("local-rejected-001")
+        bus.submit(owner, task, pending)
+        runCurrent()
+        assertEquals(ControlRequestState.AWAITING_CONFIRMATION, ledger.rows.values.last().state)
+
+        decision.complete(Unit)
+        runCurrent()
+        val related = records(bus.history(owner, task)).filter { eventRequestId(it) == pending.requestId }
+        assertEquals(listOf("turn/start", "approval/asked", "approval/decided", "assistant/message", "turn/end"), related.map(::eventType))
+        assertEquals(JsonFields.string(eventData(related[1]), "id"), JsonFields.string(eventData(related[2]), "id"))
+        assertEquals(true, JsonFields.bool(eventData(related[2]), "localOnly"))
+        val row = ledger.rows.values.last()
+        assertEquals(ControlRequestState.DENIED, row.state)
+        assertEquals(ControlExecutionStatus.NOT_STARTED, row.execution)
+        assertEquals("LOCAL_USER_REJECTED", row.errorCode)
+        assertFalse(row.executionFence)
+    }
+
     @Test fun connectionClosedBeforeTurnPublishesMinimalClosedHistoryForSuccessorAccess() = runTest {
         val ledger = Ledger(); val executor = Executor(); val original = access()
         val bus = PhoneControlBus(this, ledger, executor, phoneFacadeTestStrings); val task = bus.create(original)

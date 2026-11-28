@@ -388,6 +388,25 @@ class ScreenControlLeaseTest {
         })
     }
 
+    @Test fun 记录派发期间撤权时不再调用系统() = runTest {
+        val manager = manager()
+        var allowed = true
+        var records = 0
+        var effects = 0
+        val failure = failureCode {
+            manager.withLease("remote-action", epoch + 60_000,
+                revalidate = { if (!allowed) throw ScreenAuthorizationException("SCREEN_CONTROL_REVOKED") },
+                recordDispatch = { records++; allowed = false },
+            ) { lease ->
+                lease.beforeSystemEffect()
+                effects++
+            }
+        }
+        assertEquals("SCREEN_ACTION_OUTCOME_UNKNOWN", failure)
+        assertEquals(1, records)
+        assertEquals(0, effects)
+    }
+
     @Test fun throwingActionAlwaysReleasesOwnership() = runTest {
         val manager = manager()
         assertEquals("TEST_FAILURE", failureCode {

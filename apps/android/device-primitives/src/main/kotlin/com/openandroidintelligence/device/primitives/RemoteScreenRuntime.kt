@@ -367,13 +367,15 @@ internal class RemoteScreenRuntime(
                     }
                     ScreenPermission.CONTROL -> {
                         val action = action(args)
+                        val canRead = ScreenPermission.READ in approval.permissions
                         val outcome = controlLeases.withLease(key.leaseId, approval.expiresAtEpochMs, ::guard) { lease ->
-                            val result = backend.execute(required(args, "expectedRevision"), action, lease::ensureCurrent)
+                            val result = backend.execute(required(args, "expectedRevision"), action,
+                                observeAfterAction = canRead, beforeDispatch = lease::ensureCurrent)
                             controlPerformed = result.performed
                             result
                         }
                         // CONTROL never grants semantic screen data implicitly.
-                        (if (ScreenPermission.READ in approval.permissions) outcome else
+                        (if (canRead) outcome else
                             outcome.copy(screen = null, stateError = "SCREEN_READ_PERMISSION_REQUIRED")).toMap()
                     }
                 }

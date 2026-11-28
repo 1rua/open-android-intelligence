@@ -140,7 +140,7 @@ class AndroidCallLogReader private constructor(
         private val date = cursor.getColumnIndexOrThrow("date")
         private val duration = cursor.getColumnIndexOrThrow("duration")
         private val number = cursor.getColumnIndexOrThrow("number")
-        private val numberPresentation = cursor.getColumnIndexOrThrow("number_presentation")
+        private val numberPresentation = cursor.getColumnIndexOrThrow(CallLog.Calls.NUMBER_PRESENTATION)
 
         fun read(cursor: Cursor): CallLogRow {
             val rawProviderId: Long
@@ -192,7 +192,7 @@ class AndroidCallLogReader private constructor(
     }
 
     private companion object {
-        val PROJECTION = arrayOf("_id", "type", "date", "duration", "number", "number_presentation")
+        val PROJECTION = arrayOf("_id", "type", "date", "duration", "number", CallLog.Calls.NUMBER_PRESENTATION)
         const val SORT_ORDER = "date DESC, _id DESC"
     }
 }

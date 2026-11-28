@@ -88,5 +88,11 @@ interface ScreenBackend {
     /** Null means the Android service is ready; local grants are checked by the caller. */
     fun availability(): String?
     fun read(query: ScreenReadQuery = ScreenReadQuery()): ScreenSnapshot
-    suspend fun execute(expectedRevision: String, action: ScreenAction, beforeDispatch: () -> Unit = {}): ScreenActionResult
+    /** observeAfterAction 仅控制动作完成后的即时观察，派发前仍校验当前目标。 */
+    suspend fun execute(
+        expectedRevision: String,
+        action: ScreenAction,
+        observeAfterAction: Boolean = true,
+        beforeDispatch: () -> Unit = {},
+    ): ScreenActionResult
 }

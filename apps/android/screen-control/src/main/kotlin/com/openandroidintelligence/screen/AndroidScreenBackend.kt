@@ -4,6 +4,7 @@ package com.openandroidintelligence.screen
 
 import android.content.Context
 import com.openandroidintelligence.control.*
+import com.openandroidintelligence.control.remote.LocalUiCaptureProtection
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -23,8 +24,11 @@ internal data class ScreenWindowCapture(
 internal interface ScreenRuntime {
     fun availability(): String?
     fun generation(): Long
+    fun controlGeneration(): Long = generation()
     fun display(): ScreenDisplay
     fun windows(): ScreenWindowCapture
+    fun windowsForDisplaySom(protection: LocalUiCaptureProtection): ScreenWindowCapture =
+        throw ScreenOperationException("SCREEN_REDACTION_UNPROVABLE")
     fun nodeAction(expected: ScreenNode, action: NativeNodeAction, text: String?, generation: Long, beforeDispatch: () -> Unit = {}): Boolean
     suspend fun gesture(points: List<Pair<Int, Int>>, durationMs: Long, generation: Long, beforeDispatch: () -> Unit, drag: Boolean = false): Boolean
     fun global(action: String, generation: Long, beforeDispatch: () -> Unit = {}): Boolean
@@ -42,13 +46,19 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
 
     override fun availability(): String? = runtime.availability()
 
+    internal fun captureGeneration(): Long = runtime.generation()
+
     override fun read(query: ScreenReadQuery): ScreenSnapshot = reader.select(capture().first, query)
 
-    private fun capture(): Pair<ScreenSnapshot, Long> {
+    internal fun readForDisplaySom(query: ScreenReadQuery, protection: LocalUiCaptureProtection): ScreenSnapshot =
+        reader.select(capture { runtime.windowsForDisplaySom(protection) }.first, query)
+
+    private fun capture(readWindows: () -> ScreenWindowCapture = runtime::windows): Pair<ScreenSnapshot, Long> {
         ready()
         val generation = runtime.generation()
+        val controlGeneration = runtime.controlGeneration()
         val display = runtime.display()
-        val windowCapture = runtime.windows()
+        val windowCapture = readWindows()
         val windows = windowCapture.windows
         try {
             if (windows.isEmpty()) throw ScreenOperationException("SCREEN_WINDOW_UNAVAILABLE")
@@ -56,11 +66,17 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
             val active = windows.singleOrNull { it.window.active }?.takeIf {
                 !it.packageName.isNullOrBlank() && it.window.id in 0 until Int.MAX_VALUE
             }
-            val snapshot = reader.capture(windows, display, generation, active?.packageName, active?.window?.id)
+            val observed = windowCapture.observed?.takeIf { it.matchesBusinessWindows(windows) }
+            val snapshot = reader.capture(windows, display, generation, active?.packageName, active?.window?.id,
+                controlGeneration.takeIf { observed != null })
             if (runtime.generation() != generation || runtime.display() != display) throw ScreenOperationException("SCREEN_CHANGED")
             ready()
-            val observed = windowCapture.observed?.takeIf { it.matchesBusinessWindows(windows) }
-            ScreenAccessibilityConnection.noteSnapshotWindows(windows.size, observed)
+            val statusIds = if (snapshot.truncated) emptySet() else observed?.targets.orEmpty()
+                .filter { isStatusBarWindow(it.type, it.packageName, it.bounds, it.active, it.focused) }
+                .mapNotNullTo(mutableSetOf()) { status ->
+                    status.id.takeIf { id -> snapshot.nodes.any { it.windowId == id && it.isNetworkSpeedLabel() } }
+                }
+            ScreenAccessibilityConnection.noteSnapshotWindows(windows.size, observed, statusIds)
             if (runtime.generation() != generation) throw ScreenOperationException("SCREEN_CHANGED")
             return snapshot to generation
         } catch (failure: ScreenOperationException) { throw failure }
@@ -69,7 +85,9 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
         finally { windows.forEach { it.root.close() } }
     }
 
-    override suspend fun execute(expectedRevision: String, action: ScreenAction, beforeDispatch: () -> Unit): ScreenActionResult {
+    override suspend fun execute(
+        expectedRevision: String, action: ScreenAction, observeAfterAction: Boolean, beforeDispatch: () -> Unit,
+    ): ScreenActionResult {
         val lease = currentCoroutineContext()[ScreenControlLease]
             ?: throw ScreenOperationException("SCREEN_CONTROL_LEASE_REQUIRED")
         lease.ensureCurrent()
@@ -190,6 +208,7 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
                     }
                 }
                 if (!performed) throw ScreenOperationException("SCREEN_ACTION_REJECTED")
+                if (!observeAfterAction) return@withContext ScreenActionResult(true, null)
                 // Android acceptance is reported separately from the observed post-action state.
                 // No sleep, retry or invented guarantee that the target app has finished rendering.
                 try {

@@ -50,6 +50,7 @@ internal class ScreenTreeReader {
     fun capture(
         windows: List<ScreenTreeWindow>, display: ScreenDisplay, generation: Long,
         foregroundPackage: String?, activeWindowId: Int?,
+        controlGeneration: Long? = null,
     ): ScreenSnapshot {
         val out = ArrayList<ScreenNode>()
         var visited = 0
@@ -71,7 +72,11 @@ internal class ScreenTreeReader {
             for (index in 0 until children) {
                 if (visited >= MAX_VISITED || out.size >= MAX_NODES) { truncated = true; return }
                 val child = node.child(index)
-                if (child == null) { visited++; continue }
+                if (child == null) {
+                    visited++
+                    truncated = true
+                    continue
+                }
                 try { walk(child, windowId, "$path.$index", depth + 1, nodeId) }
                 finally { child.close() }
             }
@@ -83,9 +88,20 @@ internal class ScreenTreeReader {
         val metadata = mapOf("display" to display.toMap(), "foregroundPackage" to foregroundPackage?.take(MAX_TEXT),
             "activeWindowId" to activeWindowId, "windows" to windows.take(MAX_WINDOWS).map { it.window.toMap() },
             "nodes" to out.map { it.toMap() }, "truncated" to truncated)
-        // Canonical JSON prevents text containing separators from creating fingerprint collisions.
+        // 观测仍保留实际文字。操控修订只忽略系统网速数值，几何和可交互状态照常比较。
         val hash = Json.sha256(Json.of(metadata))
-        val revision = Json.sha256(Json.of(mapOf("hash" to hash, "generation" to generation)))
+        val statusBars = windows.filter { isStatusBarWindow(it.window.type, it.packageName, it.window.bounds, it.window.active, it.window.focused) }
+            .mapTo(mutableSetOf()) { it.window.id }
+        val controlHash = if (out.any { it.windowId in statusBars && it.isNetworkSpeedLabel() }) {
+            val nodes = out.map { node ->
+                if (node.windowId in statusBars && node.isNetworkSpeedLabel()) node.copy(text = null).toMap() else node.toMap()
+            }
+            Json.sha256(Json.of(metadata + ("nodes" to nodes)))
+        } else hash
+        // 无法完整读取时，旧动作引用仍绑定全部窗口事件。
+        val verifiedGeneration = controlGeneration?.takeUnless { truncated }
+        val revision = Json.sha256(Json.of(mapOf("hash" to controlHash, "generation" to (verifiedGeneration ?: generation),
+            "statusRecheck" to (verifiedGeneration != null))))
         return ScreenSnapshot(revision, hash, null, display, foregroundPackage?.take(MAX_TEXT), activeWindowId,
             windows.take(MAX_WINDOWS).map { it.window }, out, truncated)
     }
@@ -100,21 +116,25 @@ internal class ScreenTreeReader {
                 (query.resourceId == null || node.resourceId == query.resourceId) &&
                 (description == null || node.description?.contains(description, ignoreCase = true) == true)
         }
-        val selected = ArrayList<ScreenNode>()
-        var result = snapshot.copy(nodes = emptyList(), changed = query.previousHash?.let { it != snapshot.hash })
-        for (node in candidates.take(query.maxNodes)) {
+        val base = snapshot.copy(nodes = emptyList(), changed = query.previousHash?.let { it != snapshot.hash })
+        val limit = minOf(candidates.size, query.maxNodes)
+        val selected = ArrayList<ScreenNode>(limit)
+        var replyBytes = if (limit > 0) encodedSize(base.toMap()) else 0
+        for (index in 0 until limit) {
+            val node = candidates[index]
+            // 空数组已计入元数据，每个节点只增加自身字节数和前面的逗号。
+            val addedBytes = encodedSize(node.toMap()) + if (index == 0) 0 else 1
+            if (replyBytes + addedBytes > query.maxBytes) break
+            replyBytes += addedBytes
             selected += node
-            val next = result.copy(nodes = selected.toList())
-            if (encodedSize(next) > query.maxBytes) { selected.removeAt(selected.lastIndex); break }
-            result = next
         }
-        result = result.copy(truncated = snapshot.truncated ||
+        val result = base.copy(nodes = selected, truncated = snapshot.truncated ||
             (query.operation != "state" && (selected.size < candidates.size || snapshot.nodes.any { it.depth > query.maxDepth })))
-        if (encodedSize(result) > query.maxBytes) throw ScreenOperationException("SCREEN_RESULT_TOO_LARGE")
+        if (encodedSize(result.toMap()) > query.maxBytes) throw ScreenOperationException("SCREEN_RESULT_TOO_LARGE")
         return result
     }
 
-    private fun encodedSize(snapshot: ScreenSnapshot) = Json.canonical(Json.of(snapshot.toMap())).toByteArray(Charsets.UTF_8).size
+    private fun encodedSize(fields: Map<String, Any?>) = Json.canonical(Json.of(fields)).toByteArray(Charsets.UTF_8).size
 
     internal fun describe(node: ScreenTreeNode, id: String, window: Int, parent: String?, depth: Int): ScreenNode =
         ScreenNode(id, window, parent, depth,

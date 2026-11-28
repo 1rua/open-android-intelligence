@@ -21,6 +21,7 @@ class ScreenControlLease internal constructor(
     val requestId: String,
     private val check: () -> Unit,
     private val renew: () -> Long,
+    private val recordDispatch: (() -> Unit)?,
 ) : AbstractCoroutineContextElement(Key) {
     companion object Key : CoroutineContext.Key<ScreenControlLease>
     @Volatile internal var dispatchStarted = false
@@ -29,7 +30,10 @@ class ScreenControlLease internal constructor(
     /** Called only by the native backend at its last guard before a system effect. */
     fun beforeSystemEffect() {
         ensureCurrent()
+        recordDispatch?.invoke()
         dispatchStarted = true
+        // 回执写入期间授权仍可能变化，随后再验一次租约。
+        if (recordDispatch != null) ensureCurrent()
     }
 
     /** Rechecks ownership, expiry and local authorization immediately before a system effect. */
@@ -89,6 +93,7 @@ class ScreenControlLeaseManager(
         requestId: String,
         expiresAtEpochMs: Long,
         revalidate: () -> Unit,
+        recordDispatch: (() -> Unit)? = null,
         action: suspend (ScreenControlLease) -> T,
     ): T {
         require(requestId.isNotBlank())
@@ -134,7 +139,7 @@ class ScreenControlLeaseManager(
                         entry.renewedAtEpochMs = clock()
                         active = entry
                     }
-                    val lease = ScreenControlLease(requestId, { ensureCurrent(entry) }, { heartbeat(entry) })
+                    val lease = ScreenControlLease(requestId, { ensureCurrent(entry) }, { heartbeat(entry) }, recordDispatch)
                     heldLease = lease
                     expiryJob = launch {
                         while (true) {
