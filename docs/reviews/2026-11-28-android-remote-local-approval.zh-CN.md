@@ -45,3 +45,7 @@ Note20 Ultra（Android 33）安装签名 APK `13821`，签名与 APK 内记录�
 ## 三档本机授权
 
 DSH 手机的数据插件和原生屏幕曾只识别「允许只读」的免确认模式，把「自动允许」降为「每次手动」。数据插件的进入判断与执行复核同时使用同一策略。两种免确认模式均只作用于已授权的读取，截图还要求读取与图像采集各自获准。屏幕操控与短信发送继续本机确认。[数据能力策略](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/plugins/ProductionPluginHost.kt#L652) · [屏幕授权](../../apps/android/platform-kernel/src/main/kotlin/com/openandroidintelligence/kernel/NativePhoneControlKernel.kt#L22)
+
+签名 APK `13831`（`5607b98b`）的通知读取在三档均完成。「每次手动」实际出现一张确认卡片并经本机批准，耗时 2.53 秒。「允许只读」和「自动允许」均没有 `approval/asked`，分别耗时 1.50 秒、0.95 秒。测试后恢复「自动允许」。原生与 Terra MCP 在自动允许档均成功读取通知、通话记录、短信和 UI 树。Terra 的 Home 请求保持本机确认，批准后实际离开计算器，返回 `performed:true`、`settled:true`。普通侧屏设置下，SoM 路径已跳过 OAI 确认并按遮蔽检查拒绝取帧。
+
+窗口事件补采样显示，三星状态栏先报告网速叶节点的纯文本事件，也会另发以 `status_bar` 为源的子树变化。后者可令随后批准的控制引用过期。该事件含义超出纯网速文本，保留对真实界面变化的拦截。

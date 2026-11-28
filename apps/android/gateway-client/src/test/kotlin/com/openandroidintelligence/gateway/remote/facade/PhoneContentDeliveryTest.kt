@@ -28,13 +28,15 @@ class PhoneContentDeliveryTest {
         var current = true
         var contentCurrent = true
         val contentCurrentByRequest = mutableMapOf<String, Boolean>()
+        var lastContentAccess: ControlAccessBinding? = null
         override fun requireCurrentAccess(access: ControlAccessBinding) {
             if (!current) throw ControlRequestException("REMOTE_AUTHORIZATION_CHANGED")
         }
         override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
             context.beforeDispatch()
             return PhoneControlResult(ControlValue.Object(mapOf("secret" to ControlValue.Text(SECRET))),
-                listOf(ControlArtifact(artifactIdForRequest(context.scope.key.requestId), "image/webp", "version", SECRET.toByteArray())), requireContentAccess = {
+                listOf(ControlArtifact(artifactIdForRequest(context.scope.key.requestId), "image/webp", "version", SECRET.toByteArray())), requireContentAccess = { access ->
+                    lastContentAccess = access
                     if (!contentCurrent || contentCurrentByRequest[context.scope.key.requestId] == false) throw ControlRequestException("PUSH_DELIVERY_REVOKED")
                 })
         }
@@ -88,6 +90,29 @@ class PhoneContentDeliveryTest {
         assertFalse(events.contains(SECRET));assertTrue(events.contains("resultAvailable"))
         denied("CONTROL_ARTIFACT_UNAVAILABLE") { bus.artifact(access, task, artifactId()) }
         assertFalse(Json.canonical(bus.receipt(access,task,"content-request-00001")).contains(SECRET))
+    }
+
+    @Test fun 同一拥有者重连后用当前连接复核撤权状态和产物() = runTest {
+        val executor = Executor()
+        val bus = PhoneControlBus(this, Ledger(), executor, phoneFacadeTestStrings)
+        val task = bus.create(access)
+        val original = request()
+        bus.submit(access, task, original)
+        runCurrent()
+        bus.connectionClosed(access)
+
+        val reconnected = access.copy(connectionId = "new-connection", connectionGeneration = 2)
+        assertEquals(SECRET, bus.artifact(reconnected, task, artifactId()).bytes.decodeToString())
+        assertEquals(reconnected, executor.lastContentAccess)
+        executor.contentCurrent = false
+        val status = ControlRequestParser.parse(Json.canonical(Json.of(mapOf("request_id" to "content-status-000002", "op" to "request.status",
+            "args" to mapOf("targetRequestId" to original.requestId, "targetTaskSessionId" to task)))))
+        val statusReply = Json.canonical(bus.submit(reconnected, "control-bus", status))
+        assertTrue(statusReply.contains("\"resultAvailable\":false"))
+        assertTrue(statusReply.contains("\"status\":\"succeeded\""))
+        executor.contentCurrent = true
+        assertFalse(Json.canonical(bus.history(reconnected, task)).contains(SECRET))
+        denied("CONTROL_ARTIFACT_UNAVAILABLE") { bus.artifact(reconnected, task, artifactId()) }
     }
 
     @Test fun 只失效一个请求时controlBus回执能力与同任务其他请求仍可读()=runTest {

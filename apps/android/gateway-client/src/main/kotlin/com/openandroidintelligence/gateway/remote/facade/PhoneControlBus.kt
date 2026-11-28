@@ -38,7 +38,7 @@ class PhoneControlBus(
         val artifacts = mutableMapOf<String, Pair<String, ControlArtifact>>()
         // 正文撤权后也保留已分配的标识，避免旧回执的路径指向新请求。
         val publishedArtifactIds = mutableSetOf<String>()
-        val contentChecks = mutableMapOf<String,() -> Unit>()
+        val contentChecks = mutableMapOf<String,(ControlAccessBinding) -> Unit>()
         var revision = 0L
     }
     private val lock = Any()
@@ -195,7 +195,7 @@ class PhoneControlBus(
                     return
                 }
                 val contentCheck = result.requireContentAccess
-                contentCheck?.invoke()
+                contentCheck?.invoke(access)
                 val seenArtifactIds = mutableSetOf<String>()
                 // 整批通过校验后才写入，冲突时保留原产物及其请求归属。
                 result.artifacts.forEach { artifact ->
@@ -269,7 +269,7 @@ class PhoneControlBus(
             task.jobs[op.targetRequestId]?.cancel()
             finish(access, task, op.targetRequestId)
         }
-        task.results[request.requestId] = Json.of(mapOf("result" to minimal(target, task.results.containsKey(target.requestId))))
+        task.results[request.requestId] = Json.of(mapOf("result" to minimal(target, resultAvailable(access, task, target.requestId))))
         finish(access, task, request.requestId)
         return receipt(access, task.scope.taskSessionId, request.requestId)
     }
@@ -280,7 +280,7 @@ class PhoneControlBus(
         val old = find(access, op.targetTaskSessionId, op.targetRequestId)
         val active = tasks[key(access, op.targetTaskSessionId)]
         val result = Json.of(mapOf("request_id" to request.requestId, "taskSessionId" to "control-bus", "state" to "completed",
-            "execution" to mapOf("status" to "succeeded"), "result" to minimal(old, !stopped && active?.results?.containsKey(old.requestId) == true)))
+            "execution" to mapOf("status" to "succeeded"), "result" to minimal(old, resultAvailable(access, active, old.requestId))))
         // 查询自身不再递归写持久历史，但须可由原生 Session 读取该结构化答案。
         event(task, "assistant/message", mapOf("request_id" to request.requestId,
             "message" to mapOf("id" to request.requestId, "role" to "assistant", "content" to listOf(mapOf("type" to "text", "text" to Json.canonical(result)))),
@@ -403,8 +403,7 @@ class PhoneControlBus(
         executor.requireCurrentAccess(access)
         val row = find(access, taskId, requestId)
         val task = tasks[key(access, taskId)]
-        val hasContent=task == null || contentCurrent(task,requestId)
-        val available=!stopped && hasContent && task?.results?.containsKey(requestId) == true
+        val available = resultAvailable(access, task, requestId)
         val fields = minimal(row, available).toMutableMap()
         if (available) (task?.results?.get(requestId) as? JsonValue.JObject)?.fields?.forEach { fields[it.first] = it.second }
         Json.of(fields)
@@ -432,7 +431,7 @@ class PhoneControlBus(
         requireOutput(access, deliveryEpoch)
         val task = task(access, taskId)
         val (requestId,found) = task.artifacts[artifactId] ?: fail("CONTROL_ARTIFACT_UNAVAILABLE")
-        if (!contentCurrent(task,requestId)) fail("CONTROL_ARTIFACT_UNAVAILABLE")
+        if (!contentCurrent(access,task,requestId)) fail("CONTROL_ARTIFACT_UNAVAILABLE")
         found.copy(bytes = found.bytes.copyOf())
     }
 
@@ -443,10 +442,13 @@ class PhoneControlBus(
         task.records.drop((seq + 1).toInt()).map { sanitizeRecord(access,task,it) }
     }
 
-    /** 每条记录只受自身请求许可约束；失效正文擦除为最小回执，不封锁同任务的新元数据。 */
-    private fun contentCurrent(task: Task,id: String): Boolean {
+    private fun resultAvailable(access: ControlAccessBinding, task: Task?, id: String): Boolean =
+        !stopped && task?.results?.containsKey(id) == true && contentCurrent(access, task, id)
+
+    /** 每条记录只受自身请求许可约束，失效正文擦除为最小回执。 */
+    private fun contentCurrent(access: ControlAccessBinding,task: Task,id: String): Boolean {
         val check=task.contentChecks[id] ?: return true
-        if (runCatching(check).isSuccess) return true
+        if (id in task.results && runCatching { check(access) }.isSuccess) return true
         task.results.remove(id)
         task.artifacts.entries.filter { it.value.first == id }.forEach { (artifactId,artifact) ->
             artifact.second.bytes.fill(0);task.artifacts.remove(artifactId)
@@ -457,15 +459,17 @@ class PhoneControlBus(
     private fun sanitizeRecord(access: ControlAccessBinding,task: Task,record: JsonValue): JsonValue {
         val root=record as? JsonValue.JObject ?: return record
         val event=JsonFields.obj(JsonFields.field(root,"event")) ?: return record
+        if (JsonFields.string(event, "type") != "assistant/message") return record
         val data=JsonFields.obj(JsonFields.field(event,"data")) ?: return record
         val id=JsonFields.string(data,"request_id") ?: return record
-        if (contentCurrent(task,id)) return record
+        if (contentCurrent(access,task,id)) return record
         val row=find(access,task.scope.taskSessionId,id)
         val receipt=Json.canonical(Json.of(minimal(row,false)))
         val safeData=mapOf("request_id" to id,"message" to mapOf("id" to id,"role" to "assistant",
             "content" to listOf(mapOf("type" to "text","text" to receipt))))
         return Json.of(mapOf("type" to "event","event" to mapOf("seq" to JsonFields.field(event,"seq"),
-            "time" to JsonFields.field(event,"time"),"type" to "assistant/message","data" to safeData)))
+            "time" to JsonFields.field(event,"time"),"type" to "assistant/message",
+            "data" to safeData + mapOf("turn" to JsonFields.field(data, "turn"), "step" to JsonFields.field(data, "step")))))
     }
 
     /** 组装后和缓冲出队时再次逐条脱敏，不能依赖组装入口时的旧许可。 */
@@ -477,7 +481,7 @@ class PhoneControlBus(
             key to if (key == "records") JsonValue.JArray(records.items.map { sanitizeRecord(access,task,it) }) else item
         })
         val id=JsonFields.string(objectValue,"request_id")
-        if (id != null && !contentCurrent(task,id)) {
+        if (id != null && !contentCurrent(access,task,id)) {
             // 流式块不再携带旧text；后续新的projection、ACK与能力结果照常可达。
             return@synchronized Json.of(mapOf("type" to "projection","key" to "execution",
                 "value" to executionProjection(ledger.transaction { rows -> rows.values.filter {
@@ -490,7 +494,7 @@ class PhoneControlBus(
     fun requireArtifactContent(access: ControlAccessBinding,taskId: String,artifactId: String) = synchronized(lock) {
         val task=task(access,taskId)
         val requestId=task.artifacts[artifactId]?.first ?: fail("CONTROL_ARTIFACT_UNAVAILABLE")
-        if (!contentCurrent(task,requestId)) fail("CONTROL_ARTIFACT_UNAVAILABLE")
+        if (!contentCurrent(access,task,requestId)) fail("CONTROL_ARTIFACT_UNAVAILABLE")
     }
 
     private fun task(access: ControlAccessBinding, id: String): Task {

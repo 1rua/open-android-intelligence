@@ -33,6 +33,7 @@ data class CapabilitySnapshot(val bindings: List<Map<String,Any?>>, val inventor
     val inventoryComplete: Boolean = true)
 
 private val remoteDataPlugins = setOf(NOTIFICATION_PLUGIN_ID, CALL_LOG_PLUGIN_ID, SMS_PLUGIN_ID)
+private val recordReadPrimitives = setOf("kernel.notifications.read", "kernel.call-log.read", "kernel.sms.read")
 
 /** Installed code is reverified once before registration; invocations use immutable verified bytes. */
 class ProductionPluginHost(private val context: Context, private val grants: PairingGrantStateHolder,
@@ -713,6 +714,48 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             requireRemoteAuthorization(correlationId, entry, parameters, binding, controlDigest)
             output
         } finally { if (previous == null) activeAuthorization.remove() else activeAuthorization.set(previous) }
+    }
+
+    /** 保留读取时的许可范围，交付时用已核实归属的当前连接复核。 */
+    internal fun remoteReadContentCheck(entry: VerifiedCapability, initialBinding: RemoteCapabilityBinding,
+        isBackground: () -> Boolean): ((RemoteCapabilityBinding) -> Unit)? {
+        val pluginId = entry.identity.pluginId
+        if (pluginId !in remoteDataPlugins || entry.risk != "read") return null
+        val revision = grants.currentKernelGrant(initialBinding.id)?.revision ?: throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+        val selection = selector.select(entry.key, initialBinding.id)
+        val primitives = entry.primitives.intersect(recordReadPrimitives)
+        fun notificationScope() = if ("kernel.notifications.read" in primitives) {
+            NotificationControlRegistry.policyPort().snapshot().let { Triple(it.installed, it.granted, it.revision) }
+        } else null
+        val sourceScope = notificationScope()
+        val revoked = java.util.concurrent.atomic.AtomicBoolean(false)
+        return { deliveryBinding ->
+            if (revoked.get()) throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+            // 连接状态与本机撤权分别核对。同主体后继连接仍可重新检查许可。
+            if (!deliveryBinding.isCurrent()) throw CapabilityDenied("REMOTE_AUTHORIZATION_CHANGED")
+            val grant = grants.currentKernelGrant(deliveryBinding.id) ?: throw CapabilityDenied("REMOTE_AUTHORIZATION_CHANGED")
+            try {
+                if (grant.revision != revision || kernel.isEmergencyStopped() ||
+                    !isEnabled(pluginId) || entry !in entries(pluginId) || !capabilityPolicy(pluginId, entry.key).enabled ||
+                    selection.identity != entry.identity || selector.select(entry.key, deliveryBinding.id) != selection) {
+                    throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+                }
+                if (isBackground() && (!grant.backgroundSync || "kernel.background.run" !in entry.primitives ||
+                        !isBackgroundEnabled(pluginId))) {
+                    throw CapabilityDenied("BACKGROUND_PERMISSION_REQUIRED")
+                }
+                if (notificationScope() != sourceScope) throw CapabilityDenied("POLICY_REVISION_STALE")
+                for (primitive in primitives) {
+                    val provider = KernelPrimitiveRegistry.provider(primitive) ?: throw CapabilityDenied("PROVIDER_UNAVAILABLE")
+                    provider.availability()?.let { throw CapabilityDenied(it) }
+                }
+            } catch (failure: Exception) {
+                // 已拒绝的历史正文不能在系统权限恢复后重新出现。
+                revoked.set(true)
+                throw failure
+            }
+            if (!deliveryBinding.isCurrent()) throw CapabilityDenied("REMOTE_AUTHORIZATION_CHANGED")
+        }
     }
 
     /** 原生目录复用用户可见的对应屏幕开关；缺失真实安装策略时默认拒绝。 */
