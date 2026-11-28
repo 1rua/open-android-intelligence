@@ -71,7 +71,7 @@ class SomOverlayKernelLayoutTest {
             captures++
             SomFrame(Bitmap.createBitmap(400, 800, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.GREEN) },
                 SystemClock.uptimeMillis(), snapshot.display, ScreenBounds(0, 0, 400, 800), android.os.Build.VERSION.SDK_INT >= 34)
-        })
+        }, readDisplaySom = { query, _ -> backend.read(query) })
         val primitives = setOf("kernel.screen.read", "kernel.screen.capture")
         val kernel = NativePhoneControlKernel(grants, grants.authorization, { primitives }, { primitives },
             { CapabilityPolicy(mode = CapabilityAuthorizationMode.READ_ONLY) }, { false })

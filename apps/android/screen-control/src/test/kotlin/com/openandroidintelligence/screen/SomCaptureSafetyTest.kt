@@ -55,6 +55,9 @@ class SomCaptureSafetyTest {
         ControlTaskScope(access.principal, "task", 1, "process"), "som-capture-request-01"), access, "sha256:" + "c".repeat(64), {}, {}) }
     private fun protection() = LocalUiCaptureProtection(3, display, 0,
         listOf(ScreenBounds(0, 0, 120, 60)), true)
+    private fun port(backend: Backend, frameSource: SomFrameSource) =
+        NativePhoneScreen(app, backend, frameSource, readDisplaySom = { query, _ -> backend.read(query) })
+
     private fun frame(snapshot: ScreenSnapshot, excluded: Boolean): SomFrame {
         val b = if (excluded) snapshot.windows.single().bounds else ScreenBounds(0, 0, 120, 200)
         return SomFrame(Bitmap.createBitmap(b.right - b.left, b.bottom - b.top, Bitmap.Config.ARGB_8888).apply {
@@ -66,7 +69,7 @@ class SomCaptureSafetyTest {
         PhoneLocalControlUiRegistry.current = LocalUi(protection())
         var captured: SomFrame? = null
         val excluded = android.os.Build.VERSION.SDK_INT >= 34
-        val port = NativePhoneScreen(app, backend, SomFrameSource { snapshot -> frame(snapshot, excluded).also { captured = it } })
+        val port = port(backend) { snapshot -> frame(snapshot, excluded).also { captured = it } }
         val result = port.execute(request(), ControlOperation.CaptureSom, {}, { true })
         assertTrue(captured!!.bitmap.isRecycled)
         val artifact = result.artifacts.single()
@@ -96,7 +99,7 @@ class SomCaptureSafetyTest {
             val backend = Backend(screen())
             PhoneLocalControlUiRegistry.current = LocalUi(protection())
             lateinit var owned: SomFrame
-            val port = NativePhoneScreen(app, backend, SomFrameSource { snapshot ->
+            val port = port(backend) { snapshot ->
                 val original = frame(snapshot, android.os.Build.VERSION.SDK_INT >= 34)
                 owned = when (fault) {
                     "geometry" -> SomFrame(original.bitmap, original.capturedAtUptimeMs, snapshot.display,
@@ -105,11 +108,18 @@ class SomCaptureSafetyTest {
                     else -> original.also { backend.snapshot = snapshot.copy(display = ScreenDisplay(200, 120, 1)) }
                 }
                 owned
-            })
+            }
             val result = runCatching { port.execute(request(), ControlOperation.CaptureSom, {}, { true }) }
             assertTrue(fault, result.isFailure)
             assertTrue(owned.bitmap.isRecycled)
         }
+    }
+    @Test fun 截断的树在取帧前拒绝截图() = runTest {
+        val backend = Backend(screen().copy(truncated = true))
+        PhoneLocalControlUiRegistry.current = LocalUi(protection())
+        val port = port(backend) { error("树已截断，不能取帧") }
+        val failure = runCatching { port.execute(request(), ControlOperation.CaptureSom, {}, { true }) }.exceptionOrNull()
+        assertEquals("SCREEN_REDACTION_UNPROVABLE", (failure as? ControlRequestException)?.code)
     }
     @Test fun stableRotatedFrameUsesCapturedScreenCoordinatesWithoutDoubleRotation() = runTest {
         val rotated = screen().copy(display = ScreenDisplay(200, 120, 1),
@@ -138,12 +148,12 @@ class SomCaptureSafetyTest {
             if (fault == "not-ready") local.protection = local.protection.copy(ready = false)
             PhoneLocalControlUiRegistry.current = local
             var owned: SomFrame? = null
-            val port = NativePhoneScreen(app, backend, SomFrameSource { snapshot ->
+            val port = port(backend) { snapshot ->
                 frame(snapshot, false).also {
                     owned = it
                     if (fault == "relayout") local.protection = local.protection.copy(generation = 4, changedAtUptimeMs = SystemClock.uptimeMillis())
                 }
-            })
+            }
             assertTrue(fault, runCatching { port.execute(request(), ControlOperation.CaptureSom, {}, { true }) }.isFailure)
             assertTrue(owned == null || owned!!.bitmap.isRecycled)
         }
@@ -152,9 +162,9 @@ class SomCaptureSafetyTest {
         val backend = Backend(screen()); PhoneLocalControlUiRegistry.current = LocalUi(protection())
         var captured = false
         lateinit var owned: SomFrame
-        val port = NativePhoneScreen(app, backend, SomFrameSource { snapshot ->
+        val port = port(backend) { snapshot ->
             frame(snapshot, android.os.Build.VERSION.SDK_INT >= 34).also { owned = it; captured = true }
-        })
+        }
         var output: PhoneControlResult? = null
         val running = async {
             val executing = currentCoroutineContext()[Job]!!

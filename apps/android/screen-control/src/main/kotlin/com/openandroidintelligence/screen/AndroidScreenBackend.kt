@@ -4,6 +4,7 @@ package com.openandroidintelligence.screen
 
 import android.content.Context
 import com.openandroidintelligence.control.*
+import com.openandroidintelligence.control.remote.LocalUiCaptureProtection
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -25,6 +26,8 @@ internal interface ScreenRuntime {
     fun generation(): Long
     fun display(): ScreenDisplay
     fun windows(): ScreenWindowCapture
+    fun windowsForDisplaySom(protection: LocalUiCaptureProtection): ScreenWindowCapture =
+        throw ScreenOperationException("SCREEN_REDACTION_UNPROVABLE")
     fun nodeAction(expected: ScreenNode, action: NativeNodeAction, text: String?, generation: Long, beforeDispatch: () -> Unit = {}): Boolean
     suspend fun gesture(points: List<Pair<Int, Int>>, durationMs: Long, generation: Long, beforeDispatch: () -> Unit, drag: Boolean = false): Boolean
     fun global(action: String, generation: Long, beforeDispatch: () -> Unit = {}): Boolean
@@ -44,11 +47,14 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
 
     override fun read(query: ScreenReadQuery): ScreenSnapshot = reader.select(capture().first, query)
 
-    private fun capture(): Pair<ScreenSnapshot, Long> {
+    internal fun readForDisplaySom(query: ScreenReadQuery, protection: LocalUiCaptureProtection): ScreenSnapshot =
+        reader.select(capture { runtime.windowsForDisplaySom(protection) }.first, query)
+
+    private fun capture(readWindows: () -> ScreenWindowCapture = runtime::windows): Pair<ScreenSnapshot, Long> {
         ready()
         val generation = runtime.generation()
         val display = runtime.display()
-        val windowCapture = runtime.windows()
+        val windowCapture = readWindows()
         val windows = windowCapture.windows
         try {
             if (windows.isEmpty()) throw ScreenOperationException("SCREEN_WINDOW_UNAVAILABLE")

@@ -23,6 +23,8 @@ class NativePhoneScreen internal constructor(
     private val backend: ScreenBackend,
     private val frameSource: SomFrameSource,
     private val nextLayoutFrame: suspend () -> Unit = { kotlinx.coroutines.android.awaitFrame(); Unit },
+    private val readDisplaySom: ((ScreenReadQuery, LocalUiCaptureProtection) -> ScreenSnapshot)? =
+        (backend as? AndroidScreenBackend)?.let { it::readForDisplaySom },
 ) : NativePhoneScreenPort {
     constructor(context: Context, backend: ScreenBackend = AndroidScreenBackend(context)) :
         this(context, backend, AndroidSomFrameSource(context))
@@ -85,26 +87,32 @@ class NativePhoneScreen internal constructor(
     }
     private suspend fun captureSom(request: PhoneExecutionContext, revalidate: () -> Unit): PhoneControlResult {
         val query = ScreenReadQuery(maxNodes = 512, maxDepth = 32)
+        val captureDisplay = Build.VERSION.SDK_INT < 34
         val localUi = PhoneLocalControlUiRegistry.current
         val protection = withContext(Dispatchers.Main.immediate) {
-            if (Build.VERSION.SDK_INT < 34) localUi?.awaitCaptureProtection(request.scope.key.storageKey)
+            if (captureDisplay) localUi?.awaitCaptureProtection(request.scope.key.storageKey)
             else localUi?.captureProtection()
         }
+        suspend fun readSnapshot(): ScreenSnapshot = withContext(Dispatchers.Main.immediate) {
+            if (!captureDisplay) return@withContext backend.read(query)
+            if (localUi == null || protection?.ready != true)
+                throw ControlRequestException("SCREEN_OVERLAY_EXCLUSION_UNSUPPORTED")
+            val read = readDisplaySom ?: throw ControlRequestException("SCREEN_REDACTION_UNPROVABLE")
+            val snapshot = read(query, protection)
+            if (PhoneLocalControlUiRegistry.current !== localUi || localUi.captureProtection() != protection)
+                throw ControlRequestException("SCREEN_LOCAL_UI_CHANGED")
+            snapshot
+        }
         currentCoroutineContext().ensureActive(); guard(revalidate)
-        val snapshot = withContext(Dispatchers.Main.immediate) { backend.read(query) }
+        val snapshot = readSnapshot()
         if (snapshot.truncated) throw ControlRequestException("SCREEN_REDACTION_UNPROVABLE")
-        if (Build.VERSION.SDK_INT < 34 && (localUi == null || protection?.ready != true || protection.display != snapshot.display))
+        if (captureDisplay && protection?.display != snapshot.display)
             throw ControlRequestException("SCREEN_OVERLAY_EXCLUSION_UNSUPPORTED")
         suspend fun finalGuard() {
             currentCoroutineContext().ensureActive()
             guard(revalidate)
-            val current = withContext(Dispatchers.Main.immediate) { backend.read(query) }
+            val current = readSnapshot()
             if (current != snapshot) throw ControlRequestException("SNAPSHOT_STALE")
-            if (Build.VERSION.SDK_INT < 34) {
-                val now = withContext(Dispatchers.Main.immediate) { localUi?.captureProtection() }
-                if (PhoneLocalControlUiRegistry.current !== localUi || now != protection || now?.ready != true)
-                    throw ControlRequestException("SCREEN_LOCAL_UI_CHANGED")
-            }
         }
         request.beforeDispatch(); guard(revalidate)
         val requestedAt = SystemClock.uptimeMillis()

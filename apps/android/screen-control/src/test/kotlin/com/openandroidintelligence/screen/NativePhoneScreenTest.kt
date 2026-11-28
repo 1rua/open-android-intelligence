@@ -101,6 +101,6 @@ class NativePhoneScreenTest {
         val backend = Backend(); val port = NativePhoneScreen(app, backend)
         try { port.execute(request("native-request-00006"), ControlOperation.CaptureSom, {}, { true }); fail("低版本不能伪称排除胶囊") }
         catch (failure: ControlRequestException) { assertEquals("SCREEN_OVERLAY_EXCLUSION_UNSUPPORTED", failure.code) }
-        assertEquals(1, backend.reads)
+        assertEquals(0, backend.reads)
     }
 }
