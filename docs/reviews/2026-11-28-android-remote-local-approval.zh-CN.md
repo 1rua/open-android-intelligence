@@ -66,7 +66,7 @@ DSH 手机的数据插件和原生屏幕曾只识别「允许只读」的免确�
 
 样本计时来自本机 JVM。新包的 Note20 Ultra 帧表现和双路径操控仍待验证。调试端口拒绝连接，已登录的 DSH 设备目录也未返回该手机为在线主机。
 
-动作完成后，底层曾在主线程即时重读整棵树。原生入口只使用窗口稳定后的另一次读取，兼容入口在无读权限时也会丢弃即时结果。现在两条入口显式选择需要的读取。自动化验证原生动作无读权限时只采集一次树用于派发前校验，有独立读权限时再采集一次用于稳定后的回执。快照 ID 的索引只保留完整任务范围和修订号，同一任务中尚有效的旧 ID 仍可使用。控屏、控制端口、设备原语和授权内核共 366 项回归通过。[动作后观察](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/NativePhoneScreen.kt#L59) · [回归用例](../../apps/android/screen-control/src/test/kotlin/com/openandroidintelligence/screen/ScreenSnapshotInvalidationTest.kt#L209)
+动作完成后，底层曾在主线程即时重读整棵树。原生入口只使用窗口稳定后的另一次读取，兼容入口在无读权限时也会丢弃即时结果。现在两条入口显式选择需要的读取。自动化验证原生动作无读权限时只采集一次树用于派发前校验，有独立读权限时等满 400 毫秒静默窗，再采集一次用于回执。兼容入口同时获准操控和读取时继续返回动作后的树。快照 ID 的索引只保留完整任务范围和修订号，同一任务中尚有效的旧 ID 仍可使用。控屏、控制端口、设备原语和授权内核共 367 项回归通过。[动作后观察](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/NativePhoneScreen.kt#L59) · [回归用例](../../apps/android/screen-control/src/test/kotlin/com/openandroidintelligence/screen/ScreenSnapshotInvalidationTest.kt#L212)
 
 ## 操控派发回执
 

@@ -99,6 +99,21 @@ class RemoteScreenRuntimeTest {
         assertEquals("SCREEN_REQUEST_AUTHORIZATION_REQUIRED", code { fixture.invoke(ScreenPermission.CONTROL, controlInput) })
     }
 
+    @Test fun 兼容操控仍返回独立读取权限覆盖的动作后屏幕树() = runTest {
+        val fixture = Fixture()
+        fixture.runtime.installRequestAuthorization("request", setOf(ScreenPermission.CONTROL, ScreenPermission.READ),
+            61_000, Json.sha256(Json.parse(controlInput))) {}
+
+        val result = fixture.invoke(ScreenPermission.CONTROL, controlInput)
+        val screen = JsonFields.obj(JsonFields.field(result, "screen"))
+        assertEquals("revision", JsonFields.string(screen, "revision"))
+        assertEquals(JsonValue.JNull, JsonFields.field(result, "stateError"))
+        assertEquals(true, JsonFields.bool(result, "performed"))
+        assertEquals(1, fixture.backend.actions)
+        assertEquals(1, fixture.backend.reads)
+        fixture.runtime.finishRequest("request", fixture.runtime.binding()!!)
+    }
+
     @Test fun oldSessionExpiryAndReplacementCannotVetoCurrentGlobalPolicyDecision() = runTest {
         val fixture = Fixture()
         fixture.runtime.authorization.start(fixture.runtime.binding()!!, setOf(ScreenPermission.READ), ttlMillis = 1)

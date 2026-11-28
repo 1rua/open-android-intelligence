@@ -11,8 +11,11 @@ import android.view.accessibility.AccessibilityWindowInfo
 import com.openandroidintelligence.control.*
 import com.openandroidintelligence.control.remote.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
@@ -225,10 +228,16 @@ class ScreenSnapshotInvalidationTest {
         assertEquals(ControlValue.Text("SCREEN_READ_PERMISSION_REQUIRED"), deniedUi["observationError"])
 
         val capturesAfterFirstAction = backend.captures
-        val withRead = port.execute(request("observe-action-with-read"), action, {}, { true })
-        assertEquals(2, backend.captures - capturesAfterFirstAction)
+        val withRead = async { port.execute(request("observe-action-with-read"), action, {}, { true }) }
+        runCurrent()
         assertEquals(listOf("back", "back"), backend.effects)
-        val observedUi = checkNotNull(withRead.ui).values
+        advanceTimeBy(399)
+        runCurrent()
+        assertEquals(1, backend.captures - capturesAfterFirstAction)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(2, backend.captures - capturesAfterFirstAction)
+        val observedUi = checkNotNull(withRead.await().ui).values
         assertEquals(ControlValue.Boolean(true), observedUi["settled"])
         assertTrue(observedUi["snapshotId"] is ControlValue.Text)
     }
