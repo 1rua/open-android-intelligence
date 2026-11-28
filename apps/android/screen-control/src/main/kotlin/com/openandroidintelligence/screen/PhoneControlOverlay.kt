@@ -94,6 +94,8 @@ class PhoneControlOverlay(
             .takeIf { it.widthPixels > 0 && it.heightPixels > 0 }
     } catch (_: RuntimeException) { geometryProvable = false; null }
     private fun recordBounds(actual: ScreenBounds, display: ScreenDisplay) {
+        // 内容触发重新布局时，只有实际保护区域或显示变化才淘汰在途截图。
+        if (bounds == actual && historyDisplay == display) return
         if (historyDisplay == null) historyDisplay = display
         if (historyDisplay != display || actual.left < 0 || actual.top < 0 || actual.right > display.widthPixels ||
             actual.bottom > display.heightPixels || actual.right <= actual.left || actual.bottom <= actual.top) geometryProvable = false

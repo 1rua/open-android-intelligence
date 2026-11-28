@@ -366,6 +366,27 @@ class PhoneControlOverlayTest {
         } finally { overlay.close() }
     }
 
+    @Test fun 相同浮窗位置的重复布局保留截图保护代次() = runTest {
+        val service = Robolectric.buildService(ScreenAccessibilityService::class.java).create().get()
+        val manager = RecordingWindow(service.getSystemService(WindowManager::class.java))
+        val overlay = PhoneControlOverlay(service, manager)
+        try {
+            overlay.executing("capture-repeated-layout")
+            val window = manager.registered.single()
+            var layouts = 0
+            window.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> layouts++ }
+            manager.layout(200)
+            val before = requireNotNull(overlay.captureProtection())
+            assertTrue(before.ready)
+
+            window.forceLayout()
+            manager.layout(200)
+            val after = requireNotNull(overlay.captureProtection())
+            assertEquals(2, layouts)
+            assertEquals(before, after)
+        } finally { overlay.close() }
+    }
+
     @Test fun protectionHistoryRetainsOldTopBandAndRejectsShadowOrTransformChanges() = runTest {
         val service = Robolectric.buildService(ScreenAccessibilityService::class.java).create().get()
         val real = service.getSystemService(android.view.WindowManager::class.java)

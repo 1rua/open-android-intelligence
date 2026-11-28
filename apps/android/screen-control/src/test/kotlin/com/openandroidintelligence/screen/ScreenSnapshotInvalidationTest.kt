@@ -1,5 +1,6 @@
 package com.openandroidintelligence.screen
 
+import android.accessibilityservice.AccessibilityService
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
@@ -84,7 +85,7 @@ class ScreenSnapshotInvalidationTest {
 
     @Test fun 观察浮层卸载时仍由系统提供显示尺寸() {
         val manager = service.getSystemService(android.view.WindowManager::class.java)
-        val observed = LocalOverlayWindowObserver(manager)
+        val observed = LocalOverlayWindowObserver(manager) {}
         assertEquals(manager.maximumWindowMetrics.bounds, observed.maximumWindowMetrics.bounds)
         assertEquals(manager.currentWindowMetrics.bounds, observed.currentWindowMetrics.bounds)
     }
@@ -128,6 +129,89 @@ class ScreenSnapshotInvalidationTest {
         assertTrue(!invalid(AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, OVERLAY_WINDOW_ID, removed))
         assertTrue(invalid(AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, FOREIGN_WINDOW_ID, removed))
         assertTrue(invalid(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, TARGET_WINDOW_ID, removed))
+    }
+
+    @Test
+    @Config(sdk = [33])
+    fun 本机浮层根节点消失和迟到内容事件均不使同一目标的主页动作失效() = runTest {
+        val port = realScreenPort()
+        installTargetAndOverlayWindows()
+        val initial = port.execute(request("dump-before-overlay-removal"), ControlOperation.DumpTree(ScreenReadQuery()), {}, { true })
+        assertBusinessTreeOnly(initial)
+        val generation = ScreenAccessibilityConnection.generation
+
+        installTargetAndRootlessOverlay(OVERLAY_WINDOW_ID)
+        dispatchEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, service.packageName, OVERLAY_WINDOW_ID)
+        assertEquals(generation, ScreenAccessibilityConnection.generation)
+
+        // 列表里仍有已卸载浮层时的新一次采样也须建立目标窗口基线。
+        ScreenAccessibilityConnection.overlayDetached(OVERLAY_WINDOW_ID)
+        installTargetAndRootlessOverlay(OVERLAY_WINDOW_ID)
+        val duringRemoval = port.execute(request("dump-during-overlay-removal"), ControlOperation.DumpTree(ScreenReadQuery()), {}, { true })
+        assertBusinessTreeOnly(duringRemoval)
+        installTargetWindow()
+        dispatchEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, null, OVERLAY_WINDOW_ID)
+        installTargetWindow()
+        dispatchEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, service.packageName, OVERLAY_WINDOW_ID)
+        assertEquals(generation, ScreenAccessibilityConnection.generation)
+
+        installTargetWindow()
+        val result = port.execute(request("home-after-overlay-removal"),
+            ControlOperation.Screen(snapshotId(duringRemoval), ScreenAction.Global("home")), {}, { false })
+        assertEquals(ControlValue.Boolean(true), result.result.values["performed"])
+        assertEquals(listOf(AccessibilityService.GLOBAL_ACTION_HOME), shadowService.globalActionsPerformed)
+    }
+
+    @Test
+    @Config(sdk = [33])
+    fun 事件包名为本机也不能让未知无根浮层通过快照复核() = runTest {
+        val port = realScreenPort()
+        val request = request("unknown-rootless-overlay")
+        installTargetWindow()
+        val baseline = port.execute(request, ControlOperation.DumpTree(ScreenReadQuery()), {}, { true })
+        ScreenAccessibilityConnection.overlayDetached(OVERLAY_WINDOW_ID)
+
+        installTargetAndRootlessOverlay(THIRD_PARTY_OVERLAY_WINDOW_ID)
+        dispatchEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, service.packageName, THIRD_PARTY_OVERLAY_WINDOW_ID)
+        installTargetAndRootlessOverlay(THIRD_PARTY_OVERLAY_WINDOW_ID)
+        assertTapStale(port, request, snapshotId(baseline))
+        assertTrue(shadowService.globalActionsPerformed.isEmpty())
+    }
+
+    @Test
+    @Config(sdk = [33])
+    fun 本机浮层根节点缺失期间的目标焦点变化仍使快照失效() = runTest {
+        val port = realScreenPort()
+        val request = request("focus-changes-with-rootless-overlay")
+        installTargetAndOverlayWindows()
+        val baseline = port.execute(request, ControlOperation.DumpTree(ScreenReadQuery()), {}, { true })
+
+        installTargetAndRootlessOverlay(OVERLAY_WINDOW_ID, focused = false)
+        dispatchEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, service.packageName, OVERLAY_WINDOW_ID)
+        installTargetAndRootlessOverlay(OVERLAY_WINDOW_ID, focused = false)
+        assertTapStale(port, request, snapshotId(baseline))
+        assertTrue(shadowService.globalActionsPerformed.isEmpty())
+    }
+
+    @Test
+    @Config(sdk = [33])
+    fun 同号第三方浮层出现后不能沿用本机卸载记录() = runTest {
+        val port = realScreenPort()
+        val request = request("third-party-reuses-held-window-id")
+        installTargetAndOverlayWindows()
+        port.execute(request, ControlOperation.DumpTree(ScreenReadQuery()), {}, { true })
+        ScreenAccessibilityConnection.overlayDetached(OVERLAY_WINDOW_ID)
+
+        installTargetAndThirdPartyOverlayWindows(id = OVERLAY_WINDOW_ID)
+        dispatchWindowsChanged(OVERLAY_WINDOW_ID)
+        installTargetWindow()
+        val baseline = port.execute(request, ControlOperation.DumpTree(ScreenReadQuery()), {}, { true })
+
+        installTargetAndRootlessOverlay(OVERLAY_WINDOW_ID)
+        dispatchEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, null, OVERLAY_WINDOW_ID)
+        installTargetAndRootlessOverlay(OVERLAY_WINDOW_ID)
+        assertTapStale(port, request, snapshotId(baseline))
+        assertTrue(shadowService.globalActionsPerformed.isEmpty())
     }
 
     @Test
@@ -269,6 +353,14 @@ class ScreenSnapshotInvalidationTest {
         shadowService.setWindows(listOf(target, overlay))
     }
 
+    private fun installTargetAndRootlessOverlay(id: Int, focused: Boolean = true) {
+        val target = window(TARGET_WINDOW_ID, AccessibilityWindowInfo.TYPE_APPLICATION,
+            active = true, focused = focused, packageName = TARGET_PACKAGE)
+        val overlay = window(id, AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY,
+            active = false, focused = false, packageName = null)
+        shadowService.setWindows(listOf(target, overlay))
+    }
+
     private fun installTargetAndToastWindows() {
         val target = window(TARGET_WINDOW_ID, AccessibilityWindowInfo.TYPE_APPLICATION,
             active = true, focused = true, packageName = TARGET_PACKAGE)
@@ -355,10 +447,13 @@ class ScreenSnapshotInvalidationTest {
         assertTrue(ScreenAccessibilityConnection.generation > generation)
     }
 
-    private fun installTargetAndThirdPartyOverlayWindows(bounds: Rect = Rect(10, 10, 60, 60)) {
+    private fun installTargetAndThirdPartyOverlayWindows(
+        bounds: Rect = Rect(10, 10, 60, 60),
+        id: Int = THIRD_PARTY_OVERLAY_WINDOW_ID,
+    ) {
         val target = window(TARGET_WINDOW_ID, AccessibilityWindowInfo.TYPE_APPLICATION,
             active = true, focused = true, packageName = TARGET_PACKAGE)
-        val thirdPartyOverlay = window(THIRD_PARTY_OVERLAY_WINDOW_ID,
+        val thirdPartyOverlay = window(id,
             AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY, active = false, focused = false,
             packageName = THIRD_PARTY_OVERLAY_PACKAGE, bounds = bounds,
             text = THIRD_PARTY_OVERLAY_TEXT, clickable = true)
@@ -377,16 +472,9 @@ class ScreenSnapshotInvalidationTest {
         shadowService.setWindows(listOf(target, ownOverlay, thirdPartyOverlay))
     }
 
-    private fun window(id: Int, type: Int, active: Boolean, focused: Boolean, packageName: String,
+    private fun window(id: Int, type: Int, active: Boolean, focused: Boolean, packageName: String?,
         bounds: Rect = Rect(0, 0, 100, 200), text: String? = null, clickable: Boolean = false): AccessibilityWindowInfo =
         AccessibilityWindowInfo.obtain().also { window ->
-            val root = AccessibilityNodeInfo.obtain().apply {
-                this.packageName = packageName
-                this.text = text
-                isClickable = clickable
-                isVisibleToUser = true
-                setBoundsInScreen(bounds)
-            }
             Shadow.extract<ShadowAccessibilityWindowInfo>(window).apply {
                 setId(id)
                 setType(type)
@@ -394,7 +482,13 @@ class ScreenSnapshotInvalidationTest {
                 setFocused(focused)
                 setLayer(if (type == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) 2 else 1)
                 setBoundsInScreen(bounds)
-                setRoot(root)
+                if (packageName != null) setRoot(AccessibilityNodeInfo.obtain().apply {
+                    this.packageName = packageName
+                    this.text = text
+                    isClickable = clickable
+                    isVisibleToUser = true
+                    setBoundsInScreen(bounds)
+                })
             }
         }
 

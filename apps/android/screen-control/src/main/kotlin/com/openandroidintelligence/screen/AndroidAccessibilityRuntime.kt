@@ -55,16 +55,11 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
         val service = service()
         val result = ArrayList<ScreenTreeWindow>()
         val states = ArrayList<ScreenWindowState>()
-        var metadataComplete = true
         try {
             val windows = service.windows
             try {
                 for (window in windows) {
-                    val root = try { window.root } catch (_: RuntimeException) {
-                        metadataComplete = false
-                        null
-                    }
-                    if (root == null) metadataComplete = false
+                    val root = try { window.root } catch (_: RuntimeException) { null }
                     var adopted = false
                     try {
                         val id = window.id
@@ -74,10 +69,7 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
                         val focused = window.isFocused
                         val rect = Rect()
                         window.getBoundsInScreen(rect)
-                        val packageName = try { root?.packageName?.toString() } catch (_: RuntimeException) {
-                            metadataComplete = false
-                            null
-                        }
+                        val packageName = try { root?.packageName?.toString() } catch (_: RuntimeException) { null }
                         val bounds = rect.toScreenBounds()
                         states += ScreenWindowState(id, type, layer, active, focused, bounds, packageName)
                         if (type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY && root != null &&
@@ -111,9 +103,12 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
                     }
                 }
                 // 活跃窗口回退不是同一轮系统窗口枚举，不能据此建立乐观指纹基线。
-                metadataComplete = false
+                return ScreenWindowCapture(result, observed = null)
             }
-            val observed = if (metadataComplete) buildObservedWindows(states, service.packageName) else null
+            val observed = ScreenAccessibilityConnection.classifyWindows(service, states).takeUnless { observation ->
+                // 已确认的本机浮层允许暂时无根。其他窗口身份未知时仍不建立目标基线。
+                observation.targets.any { it.packageName.isNullOrBlank() }
+            }
             return ScreenWindowCapture(result, observed)
         } catch (_: SecurityException) {
             result.forEach { it.root.close() }
