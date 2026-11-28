@@ -1,6 +1,7 @@
 package com.openandroidintelligence.calls
 
 import android.database.Cursor
+import android.provider.CallLog
 import com.openandroidintelligence.capability.CallDirection
 import com.openandroidintelligence.capability.CallHistoryPolicy
 import com.openandroidintelligence.capability.CallNumberPresentation
@@ -36,7 +37,7 @@ class AndroidCallLogReaderTest {
         assertEquals(CallLogProviderTarget.CALLS, query.target)
         assertEquals(3, query.limit)
         assertArrayEquals(
-            arrayOf("_id", "type", "date", "duration", "number", "number_presentation"),
+            arrayOf("_id", "type", "date", "duration", "number", CallLog.Calls.NUMBER_PRESENTATION),
             query.projection,
         )
         assertEquals(
@@ -421,6 +422,6 @@ class AndroidCallLogReaderTest {
     }
 
     private companion object {
-        val COLUMNS = listOf("_id", "type", "date", "duration", "number", "number_presentation")
+        val COLUMNS = listOf("_id", "type", "date", "duration", "number", CallLog.Calls.NUMBER_PRESENTATION)
     }
 }
