@@ -83,9 +83,17 @@ internal class ScreenTreeReader {
         val metadata = mapOf("display" to display.toMap(), "foregroundPackage" to foregroundPackage?.take(MAX_TEXT),
             "activeWindowId" to activeWindowId, "windows" to windows.take(MAX_WINDOWS).map { it.window.toMap() },
             "nodes" to out.map { it.toMap() }, "truncated" to truncated)
-        // Canonical JSON prevents text containing separators from creating fingerprint collisions.
+        // 观测仍保留实际文字。操控修订只忽略系统网速数值，几何和可交互状态照常比较。
         val hash = Json.sha256(Json.of(metadata))
-        val revision = Json.sha256(Json.of(mapOf("hash" to hash, "generation" to generation)))
+        val statusBars = windows.filter { isStatusBarWindow(it.window.type, it.packageName, it.window.bounds, it.window.active, it.window.focused) }
+            .mapTo(mutableSetOf()) { it.window.id }
+        val controlHash = if (out.any { it.windowId in statusBars && it.isNetworkSpeedLabel() }) {
+            val nodes = out.map { node ->
+                if (node.windowId in statusBars && node.isNetworkSpeedLabel()) node.copy(text = null).toMap() else node.toMap()
+            }
+            Json.sha256(Json.of(metadata + ("nodes" to nodes)))
+        } else hash
+        val revision = Json.sha256(Json.of(mapOf("hash" to controlHash, "generation" to generation)))
         return ScreenSnapshot(revision, hash, null, display, foregroundPackage?.take(MAX_TEXT), activeWindowId,
             windows.take(MAX_WINDOWS).map { it.window }, out, truncated)
     }

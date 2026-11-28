@@ -65,6 +65,37 @@ class ScreenBackendTest {
         assertEquals(runtime.created, runtime.closed)
     }
 
+    @Test fun 状态栏网速刷新保留操控修订但仍报告观测内容变化() = runTest {
+        val meter = Spec(text = "1 KB/s", resourceId = "com.android.systemui:id/network_speed_contentview", interactive = false)
+        val target = Spec(text = "应用按钮")
+        val runtime = FakeRuntime().apply {
+            includeStatusBar = true
+            roots = listOf(target, meter)
+        }
+        val backend = AndroidScreenBackend(runtime)
+        val original = backend.read()
+        runtime.roots = listOf(target, meter.copy(text = "9 KB/s"))
+        val refreshed = backend.read(ScreenReadQuery(previousHash = original.hash))
+        assertNotEquals(original.hash, refreshed.hash)
+        assertEquals(true, refreshed.changed)
+        assertEquals("9 KB/s", refreshed.nodes.last().text)
+        assertEquals(original.revision, refreshed.revision)
+        assertTrue(backend.executeLeased(original.revision, ScreenAction.Global("home")).performed)
+
+        runtime.roots = listOf(target.copy(text = "不同的应用按钮"), meter.copy(text = "9 KB/s"))
+        fails("SCREEN_STALE_REFERENCE") { backend.executeLeased(original.revision, ScreenAction.Global("home")) }
+        runtime.roots = listOf(target, meter.copy(text = "9 KB/s", interactive = true))
+        fails("SCREEN_STALE_REFERENCE") { backend.executeLeased(original.revision, ScreenAction.Global("home")) }
+        runtime.roots = listOf(target, meter.copy(text = "9 KB/s", bounds = ScreenBounds(25, 0, 75, 50)))
+        fails("SCREEN_STALE_REFERENCE") { backend.executeLeased(original.revision, ScreenAction.Global("home")) }
+        runtime.roots = listOf(target, meter.copy(text = "9 KB/s"))
+        runtime.includeStatusBar = false
+        val thirdParty = backend.read()
+        runtime.roots = listOf(target, meter.copy(text = "1 KB/s"))
+        fails("SCREEN_STALE_REFERENCE") { backend.executeLeased(thirdParty.revision, ScreenAction.Global("home")) }
+        assertEquals(listOf("global:home"), runtime.effects)
+    }
+
     @Test fun windowAndRotationChangesInvalidateReferencesEvenWhenNodeIdsMatch() = runTest {
         val runtime = FakeRuntime()
         val backend = AndroidScreenBackend(runtime)
@@ -281,10 +312,12 @@ class ScreenBackendTest {
 private data class Spec(
     val text: String? = "target", val resourceId: String? = null, val password: Boolean = false,
     val visible: Boolean = true, val children: List<Spec> = emptyList(),
+    val interactive: Boolean = true, val bounds: ScreenBounds = ScreenBounds(0, 0, 50, 50),
 )
 
 private class FakeRuntime : ScreenRuntime {
     var roots = listOf(Spec())
+    var includeStatusBar = false
     var created = 0
     var closed = 0
     var denial: String? = null
@@ -299,7 +332,10 @@ private class FakeRuntime : ScreenRuntime {
     override fun windows(): ScreenWindowCapture {
         val packageName = "org.example.app"
         val windows = roots.mapIndexed { index, spec ->
-            ScreenTreeWindow(ScreenWindow(index + 1, 1, index, index == 0, index == 0, ScreenBounds(0, 0, 1080, 1920)), tree(spec), packageName)
+            val systemBar = includeStatusBar && index == 1
+            val window = ScreenWindow(index + 1, if (systemBar) 3 else 1, index, index == 0, index == 0,
+                if (systemBar) ScreenBounds(0, 0, 1080, 50) else ScreenBounds(0, 0, 1080, 1920))
+            ScreenTreeWindow(window, tree(spec), if (systemBar) "com.android.systemui" else packageName)
         }
         val states = windows.map {
             ScreenWindowState(it.window.id, it.window.type, it.window.layer, it.window.active, it.window.focused,
@@ -313,13 +349,13 @@ private class FakeRuntime : ScreenRuntime {
             override val text = spec.text
             override val description = if (spec.password) "secret description" else null
             override val resourceId = spec.resourceId
-            override val className = "android.widget.Button"
-            override val bounds = ScreenBounds(0, 0, 50, 50)
+            override val className = if (spec.interactive) "android.widget.Button" else "android.widget.TextView"
+            override val bounds = spec.bounds
             override val visible = spec.visible
-            override val clickable = true
-            override val longClickable = true
-            override val scrollable = true
-            override val editable = true
+            override val clickable = spec.interactive
+            override val longClickable = spec.interactive
+            override val scrollable = spec.interactive
+            override val editable = spec.interactive
             override val focused = false
             override val selected = false
             override val enabled = true

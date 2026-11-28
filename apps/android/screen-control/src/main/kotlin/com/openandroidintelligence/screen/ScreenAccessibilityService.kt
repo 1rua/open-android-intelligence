@@ -43,7 +43,8 @@ class ScreenAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null || ScreenAccessibilityConnection.service !== this) return
         // 只保留窗口 ID、类型、状态和包名等失效判定所需信息，不保留事件源或界面文本。
-        ScreenAccessibilityConnection.onWindowEvent(event.eventType, event.packageName?.toString(), event.windowId) {
+        ScreenAccessibilityConnection.onWindowEvent(event.eventType, event.packageName?.toString(), event.windowId,
+            isStatusTextEvent = event::isNetworkSpeedTextEvent) {
             ScreenAccessibilityConnection.observeWindows(this)
         }
     }
@@ -193,12 +194,16 @@ object ScreenAccessibilityConnection {
         eventType: Int,
         eventPackage: String?,
         windowId: Int,
+        isStatusTextEvent: () -> Boolean = { false },
         observe: () -> ObservedWindows?,
     ) {
         // 没有可继续使用的快照时，窗口指纹无法豁免这次失效。
         // 仍通知布局观察者，但跳过主线程上的逐窗无障碍查询。
         val hasSnapshot = synchronized(windowStateLock) { snapshotTargets != null }
-        if (!hasSnapshot || requiresInvalidation(eventType, eventPackage, windowId, observe())) {
+        val observed = if (hasSnapshot) observe() else null
+        val statusWindow = observed?.targets?.any { it.id == windowId && it.isStatusBar() } == true
+        val statusText = statusWindow && isStatusTextEvent()
+        if (requiresInvalidation(eventType, eventPackage, windowId, observed, statusText)) {
             synchronized(windowStateLock) {
                 snapshotTargets = null
                 observedAuxiliary = null
@@ -216,6 +221,7 @@ object ScreenAccessibilityConnection {
         eventPackage: String?,
         windowId: Int,
         observed: ObservedWindows?,
+        statusText: Boolean = false,
     ): Boolean {
         val currentServicePackage = service?.packageName
         return synchronized(windowStateLock) {
@@ -237,13 +243,13 @@ object ScreenAccessibilityConnection {
                 (windowId !in 1 until Int.MAX_VALUE || previousAuxiliary?.any { it.id == windowId } == true ||
                     observed.auxiliary.any { it.id == windowId })
             observedAuxiliary = observed.auxiliary
-            val invalidate = !targetUnchanged || !(ownedOverlayEvent || auxiliaryEvent)
+            val invalidate = !targetUnchanged || !(ownedOverlayEvent || auxiliaryEvent || statusText)
             if (snapshotTargets != null && Log.isLoggable(SCREEN_TRACE, Log.DEBUG)) {
                 val rootlessTargets = observed.targets.count { it.packageName == null }
                 val rootlessOverlays = observed.auxiliary.count { it.packageName == null }
                 Log.d(SCREEN_TRACE, "WINDOW_EVENT type=$eventType sameTargets=$targetUnchanged ownedOverlay=$ownedOverlayEvent " +
                     "liveOverlay=$liveOverlay detachedOverlay=$detachedOverlay auxiliaryChanged=$auxiliaryChanged " +
-                    "rootlessOwned=$rootlessOverlays rootlessTargets=$rootlessTargets invalidate=$invalidate")
+                    "rootlessOwned=$rootlessOverlays rootlessTargets=$rootlessTargets statusText=$statusText invalidate=$invalidate")
             }
             invalidate
         }
@@ -346,6 +352,8 @@ internal fun buildObservedWindows(
         ownOverlayIds = ownOverlayIds.toSet(),
     )
 }
+
+private fun ScreenWindowState.isStatusBar(): Boolean = isStatusBarWindow(type, packageName, bounds, active, focused)
 
 private fun ScreenWindowState.isCompatibleOwnOverlay(ownPackage: String): Boolean =
     type == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY && id in 0 until Int.MAX_VALUE &&

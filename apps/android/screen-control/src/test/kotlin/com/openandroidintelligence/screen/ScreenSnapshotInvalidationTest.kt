@@ -83,6 +83,30 @@ class ScreenSnapshotInvalidationTest {
         assertEquals(2, enumerations)
     }
 
+    @Test fun 已确认的状态栏文字事件不隐藏真实窗口或业务内容变化() {
+        val app = ScreenWindowState(TARGET_WINDOW_ID, AccessibilityWindowInfo.TYPE_APPLICATION, 1, true, true,
+            ScreenBounds(0, 0, 100, 200), TARGET_PACKAGE)
+        val bar = ScreenWindowState(11, AccessibilityWindowInfo.TYPE_SYSTEM, 2, false, false,
+            ScreenBounds(0, 0, 100, 10), "com.android.systemui")
+        val windows = buildObservedWindows(listOf(app, bar), service.packageName)
+        ScreenAccessibilityConnection.noteSnapshotWindows(2, windows)
+        val generation = ScreenAccessibilityConnection.generation
+        fun event(window: ScreenWindowState, observed: ObservedWindows = windows, knownText: Boolean = true) {
+            ScreenAccessibilityConnection.onWindowEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+                window.packageName, window.id, isStatusTextEvent = { knownText }) { observed }
+        }
+        event(bar)
+        assertEquals(generation, ScreenAccessibilityConnection.generation)
+        event(bar, knownText = false)
+        assertEquals(generation + 1, ScreenAccessibilityConnection.generation)
+        ScreenAccessibilityConnection.noteSnapshotWindows(2, windows)
+        event(app)
+        assertEquals(generation + 2, ScreenAccessibilityConnection.generation)
+        ScreenAccessibilityConnection.noteSnapshotWindows(2, windows)
+        event(bar, buildObservedWindows(listOf(app.copy(focused = false), bar), service.packageName))
+        assertEquals(generation + 3, ScreenAccessibilityConnection.generation)
+    }
+
     @Test fun 观察浮层卸载时仍由系统提供显示尺寸() {
         val manager = service.getSystemService(android.view.WindowManager::class.java)
         val observed = LocalOverlayWindowObserver(manager) {}
