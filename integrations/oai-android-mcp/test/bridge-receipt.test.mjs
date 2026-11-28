@@ -18,6 +18,13 @@ function assistantRecord(payload, truncated = false) {
   };
 }
 
+function localApprovalRecord(request_id, type = 'approval/asked', id = `local-${request_id}`) {
+  return {
+    truncated: false,
+    json: JSON.stringify({ event: { type, data: { request_id, id, localOnly: true } } }),
+  };
+}
+
 function receiptRuntime({
   taskHistory = [],
   taskStatus = 'idle',
@@ -126,7 +133,7 @@ test('普通历史缺失或遇到 truncated:true 时回查 control-bus request.s
 
 test('pending 与权限失败只返回原状态，不回退 request.status', async () => {
   for (const [status, records] of [
-    ['needs_user_input', []],
+    ['needs_user_input', [localApprovalRecord('target-pending-0001')]],
     ['running', []],
     ['idle', [assistantRecord({ request_id: 'target-pending-0001', taskSessionId: 'task-1', state: 'denied', execution: { status: 'not_started' }, error: { code: 'PERMISSION_DENIED', message: 'denied' } })]],
   ]) {
@@ -136,6 +143,83 @@ test('pending 与权限失败只返回原状态，不回退 request.status', asy
     assert.equal(runtime.calls.some(call => call.operation === 'remote_send_message'), false);
     if (status === 'needs_user_input') assert.equal(result.state, 'awaiting_confirmation');
     if (status === 'idle') assert.equal(result.state, 'denied');
+  }
+});
+
+test('同一任务的多个请求按各自 ID 读取本机确认', async () => {
+  const awaiting = 'target-awaiting-0001';
+  const queued = 'target-queued-000001';
+  const runtime = receiptRuntime({ taskStatus: 'needs_user_input', taskHistory: [
+    localApprovalRecord(awaiting),
+    localApprovalRecord(queued, 'approval/asked', `local-${awaiting}`),
+  ] });
+  const bridge = new PhoneMcpBridge(runtime, authority);
+  const results = await Promise.all([awaiting, queued].map(targetRequestId => bridge.call('request_result', {
+    ...fixed, taskSessionId: 'task-1', targetRequestId,
+  })));
+  assert.deepEqual(results.map(({ request_id, state }) => [request_id, state]), [
+    [awaiting, 'awaiting_confirmation'], [queued, 'accepted'],
+  ]);
+  assert.equal(runtime.calls.some(call => call.operation === 'remote_send_message'), false);
+});
+
+test('翻页时新一页的本机决定覆盖更早的确认请求', async () => {
+  const decided = 'target-decided-00001';
+  const awaiting = 'target-awaiting-0001';
+  const nextCursor = { throughSeq: 31, beforeSeq: 29 };
+  const runtime = receiptRuntime();
+  const originalRun = runtime.runSessionTool;
+  let paged = false;
+  runtime.runSessionTool = async (operation, args) => {
+    if (operation !== 'remote_read_session') return originalRun(operation, args);
+    if (args.cursor) {
+      assert.deepEqual(args.cursor, nextCursor);
+      paged = true;
+      return { status: 'running', records: [localApprovalRecord(decided)] };
+    }
+    return { status: 'needs_user_input', nextCursor, records: [
+      localApprovalRecord(decided, 'approval/decided'), localApprovalRecord(awaiting),
+    ] };
+  };
+  const bridge = new PhoneMcpBridge(runtime, authority);
+  const result = await bridge.call('request_result', { ...fixed, taskSessionId: 'task-1', targetRequestId: decided });
+  assert.equal(paged, true);
+  assert.equal(result.state, 'accepted');
+  assert.equal(runtime.calls.some(call => call.operation === 'remote_send_message'), false);
+});
+
+test('旧页的本机确认事件需要以同请求的当前账本复核', async () => {
+  const requestId = 'target-paged-000001';
+  const nextCursor = { throughSeq: 31, beforeSeq: 29 };
+  for (const taskId of ['task-1', 'control-bus']) {
+    const runtime = receiptRuntime({ busStatusReply: (query) => ({
+      request_id: query.request_id,
+      taskSessionId: 'control-bus',
+      state: 'completed',
+      result: { request_id: requestId, taskSessionId: taskId, state: 'completed', resultAvailable: false },
+    }) });
+    const originalRun = runtime.runSessionTool;
+    let paged = false;
+    runtime.runSessionTool = async (operation, args) => {
+      if (operation !== 'remote_read_session' || args.sessionId !== taskId
+        || runtime.calls.some(call => call.operation === 'remote_send_message')) return originalRun(operation, args);
+      if (args.cursor) {
+        assert.deepEqual(args.cursor, nextCursor);
+        paged = true;
+        return { status: 'idle', records: [localApprovalRecord(requestId)] };
+      }
+      return { status: 'running', nextCursor, records: [] };
+    };
+    const bridge = new PhoneMcpBridge(runtime, authority);
+    const result = await bridge.call('request_result', { ...fixed, taskSessionId: taskId, targetRequestId: requestId });
+    assert.equal(paged, true);
+    assert.equal(result.state, 'completed');
+    const checks = runtime.calls.filter(call => call.operation === 'remote_send_message');
+    assert.equal(checks.length, 1);
+    assert.equal(runtime.calls.some(call => call.operation === 'remote_wait_sessions'), false);
+    const query = JSON.parse(checks[0].args.message);
+    assert.equal(query.op, 'request.status');
+    assert.deepEqual(query.args, { targetRequestId: requestId, targetTaskSessionId: taskId });
   }
 });
 

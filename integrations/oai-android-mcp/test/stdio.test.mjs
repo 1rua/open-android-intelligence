@@ -18,7 +18,12 @@ test('真实 Stdio SDK tools/list 与 tools/call 严格保持 android 命名和�
       calls.push({ operation, args });
       if (operation === 'remote_create_session') return { status: 'accepted', sessionId: 'task-explicit' };
       if (operation === 'remote_send_message') return { status: 'accepted' };
-      if (operation === 'remote_read_session') return { status: 'needs_user_input', records: [] };
+      if (operation === 'remote_read_session') return { status: 'needs_user_input', records: [{
+        truncated: false,
+        json: JSON.stringify({ event: { type: 'approval/asked', data: {
+          id: 'local-request-tree-000001', request_id: 'request-tree-000001', localOnly: true,
+        } } }),
+      }] };
       return { sessions: [] };
     },
   }, { snapshot: () => 'isolated-authority-1' });
@@ -55,6 +60,11 @@ test('真实 Stdio SDK tools/list 与 tools/call 严格保持 android 命名和�
     connectedTargetDeviceId = 'phone-1';
     const tree = await client.callTool(startTree);
     assert.equal(tree.structuredContent.taskSessionId, 'task-explicit');
+    assert.equal(tree.structuredContent.state, 'awaiting_confirmation');
+    const queued = await client.callTool({ name: 'android_get_ui_tree', arguments: {
+      ...fixed, taskSessionId: 'task-explicit', request_id: 'request-queued-00001', args: {},
+    } });
+    assert.equal(queued.structuredContent.state, 'accepted');
     const missing = await client.callTool({ name: 'android_tap', arguments: { ...fixed, request_id: 'request-tap-0000001', args: { snapshotId: 's1', nodeId: 'n1' } } });
     assert.equal(missing.isError, true);
     await client.callTool({ name: 'android_cancel_request', arguments: { ...fixed, taskSessionId: 'task-explicit', request_id: 'cancel-request-00001', targetRequestId: 'request-tree-000001' } });

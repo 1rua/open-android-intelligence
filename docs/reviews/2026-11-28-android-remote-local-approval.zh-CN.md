@@ -59,3 +59,9 @@ DSH 手机的数据插件和原生屏幕曾只识别「允许只读」的免确�
 ## 操控派发回执
 
 `13861` 仍出现长按以 `outcome_unknown/SNAPSHOT_STALE` 结束的样本。自动化在原生端口复现了相同错误码，且该样本在 Android 接收动作前便写了一次派发记录。现在由原生控制租约紧邻系统调用写入派发记录。回归分别验证了派发前目标失效时不写记录，以及确认派发时写入一次记录。真实长按的后续复测需要恢复真机连接。[原生端口](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/NativePhoneScreen.kt#L48) · [派发检查](../../apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/ScreenControlLease.kt#L30)
+
+## MCP 并发审批关联
+
+同一任务的第一个请求待审批时，上游会话返回 `needs_user_input`。旧桥接将同一状态用于排队请求。桥接现在按 `request_id` 匹配手机本机确认事件，并在同一页确认仍处于等待状态。旧页中的确认记录通过同一请求的当前账本复核。手机在受理 `request.status` 时同步写出回执，桥接可直接读取。[桥接实现](../../integrations/oai-android-mcp/src/bridge.mjs#L360)
+
+用固定版本上游工具和 Kotlin 手机门面验证了本机确认、同任务排队和按请求取消。首个请求保留待确认，第二个请求保持已受理，精确取消首个请求后第二个请求完成。该探针使用隔离的系统能力替身。真机延迟与能力矩阵仍需复测。[互通探针](../../integrations/oai-android-mcp/test/original-tools-probe.mjs#L131)

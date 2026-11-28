@@ -249,8 +249,12 @@ export class PhoneMcpBridge {
     const receipt = await this.#tool('remote_send_message', { ...fixed, sessionId: taskSessionId,
       operationId: request.request_id, message: JSON.stringify(request) }, signal, fence);
     if (receipt.status !== 'accepted') return { ...fixed, taskSessionId, request_id: request.request_id, state: 'outcome_unknown', receipt };
-    await this.#tool('remote_wait_sessions', { targets: [{ ...fixed, sessionId: taskSessionId }], timeoutMs: 30000 }, signal, fence);
-    return this.#readResult(fixed, taskSessionId, request.request_id, signal, fence);
+    // 手机在同步受理状态查询时写出回执，可以直接读，不等待同一总线的其他请求。
+    const statusQuery = request.op === 'request.status';
+    if (!statusQuery) {
+      await this.#tool('remote_wait_sessions', { targets: [{ ...fixed, sessionId: taskSessionId }], timeoutMs: 30000 }, signal, fence);
+    }
+    return this.#readResult(fixed, taskSessionId, request.request_id, signal, fence, !statusQuery);
   }
   async #readResultArtifactBytes(fixed, taskSessionId, path, expectedBytes, expectedVersion, signal, fence) {
     const runtime = await this.#current(signal, fence);
@@ -353,10 +357,11 @@ export class PhoneMcpBridge {
     }
     return { ...fixed, taskSessionId, ...full, resultArtifact: ref };
   }
-  async #readResult(fixed, taskSessionId, request_id, signal, fence) {
+  async #readResult(fixed, taskSessionId, request_id, signal, fence, allowStatusLookup = true) {
     let cursor;
     let history;
     let initialStatus;
+    let localApprovalPending;
     let sawTruncated = false;
     let sessionMissing = false;
     do {
@@ -376,8 +381,20 @@ export class PhoneMcpBridge {
       for (const record of [...(history.records ?? [])].reverse()) {
         if (record.truncated) { sawTruncated = true; continue; }
         let event; try { event = JSON.parse(record.json).event; } catch { continue; }
+        const data = event?.data;
+        // 历史从新到旧读取，只用同一请求的最后一条确认或轮次事件。
+        if (localApprovalPending === undefined && data?.request_id === request_id) {
+          if (event.type === 'turn/start' || event.type === 'turn/end') localApprovalPending = false;
+          if (data.localOnly === true && data.id === `local-${request_id}`
+            && (event.type === 'approval/asked' || event.type === 'approval/decided')) {
+            localApprovalPending = event.type === 'approval/asked';
+            if (allowStatusLookup && !cursor && !sawTruncated && history.status === 'needs_user_input' && localApprovalPending) {
+              return { ...fixed, taskSessionId, request_id, state: 'awaiting_confirmation', resultAvailable: false };
+            }
+          }
+        }
         if (event?.type !== 'assistant/message') continue;
-        const content = event.data?.message?.content;
+        const content = data?.message?.content;
         const text = content?.find(block => block.type === 'text')?.text;
         let result; try { result = JSON.parse(text); } catch { continue; }
         if (result?.request_id !== request_id) continue;
@@ -391,9 +408,10 @@ export class PhoneMcpBridge {
     if (!sessionMissing) {
       const status = initialStatus ?? history.status;
       const settled = status === 'idle' || status === 'failed';
-      // 控制总线自身不再递归查询状态；未见截断且会话未进入终态（running/needs_user_input 等）时只返回原状态，不回退 request.status。
-      if (taskSessionId === 'control-bus' || (!sawTruncated && !settled)) {
-        return { ...fixed, taskSessionId, request_id, state: status === 'needs_user_input' ? 'awaiting_confirmation' : 'accepted', resultAvailable: false };
+      // 只有首页的快照同时提供会话状态和事件。旧页的确认记录须回查该请求的当前账本。
+      const needsRecoveryLookup = taskSessionId !== 'control-bus' && (sawTruncated || settled);
+      if (!allowStatusLookup || (!needsRecoveryLookup && localApprovalPending !== true)) {
+        return { ...fixed, taskSessionId, request_id, state: 'accepted', resultAvailable: false };
       }
     }
     const fallbackId = `receipt-${randomUUID()}`;
