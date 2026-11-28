@@ -83,6 +83,22 @@ class ScreenSnapshotInvalidationTest {
         assertEquals(2, enumerations)
     }
 
+    @Test fun 业务内容事件直接使操控快照失效而无需逐窗读取() {
+        installTargetWindow()
+        for (type in listOf(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED, AccessibilityEvent.TYPE_VIEW_SCROLLED)) {
+            GenerationBackend().read()
+            val generation = ScreenAccessibilityConnection.generation
+            val controlGeneration = ScreenAccessibilityConnection.controlGeneration
+            ScreenAccessibilityConnection.onWindowEvent(type, TARGET_PACKAGE, TARGET_WINDOW_ID) {
+                fail("已确认的外部业务内容变更无需同步读取窗口根节点")
+                null
+            }
+            assertEquals(generation + 1, ScreenAccessibilityConnection.generation)
+            assertEquals(controlGeneration + 1, ScreenAccessibilityConnection.controlGeneration)
+        }
+    }
+
     @Test fun 已确认的状态栏文字事件不隐藏真实窗口或业务内容变化() {
         val app = ScreenWindowState(TARGET_WINDOW_ID, AccessibilityWindowInfo.TYPE_APPLICATION, 1, true, true,
             ScreenBounds(0, 0, 100, 200), TARGET_PACKAGE)
@@ -246,6 +262,18 @@ class ScreenSnapshotInvalidationTest {
     @Test
     @Config(sdk = [33])
     fun 同号第三方浮层出现后不能沿用本机卸载记录() = runTest {
+        assertOverlayReuseInvalidatesTap { dispatchWindowsChanged(OVERLAY_WINDOW_ID) }
+    }
+
+    @Test
+    @Config(sdk = [33])
+    fun 其他业务内容事件也复核待确认的本机卸载记录() = runTest {
+        assertOverlayReuseInvalidatesTap {
+            dispatchEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, TARGET_PACKAGE, TARGET_WINDOW_ID)
+        }
+    }
+
+    private suspend fun assertOverlayReuseInvalidatesTap(onReuse: () -> Unit) {
         val port = realScreenPort()
         val request = request("third-party-reuses-held-window-id")
         installTargetAndOverlayWindows()
@@ -253,7 +281,7 @@ class ScreenSnapshotInvalidationTest {
         ScreenAccessibilityConnection.overlayDetached(OVERLAY_WINDOW_ID)
 
         installTargetAndThirdPartyOverlayWindows(id = OVERLAY_WINDOW_ID)
-        dispatchWindowsChanged(OVERLAY_WINDOW_ID)
+        onReuse()
         installTargetWindow()
         val baseline = port.execute(request, ControlOperation.DumpTree(ScreenReadQuery()), {}, { true })
 

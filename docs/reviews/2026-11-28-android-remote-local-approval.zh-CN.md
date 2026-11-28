@@ -49,3 +49,9 @@ DSH 手机的数据插件和原生屏幕曾只识别「允许只读」的免确�
 签名 APK `13831`（`5607b98b`）的通知读取在三档均完成。「每次手动」实际出现一张确认卡片并经本机批准，耗时 2.53 秒。「允许只读」和「自动允许」均没有 `approval/asked`，分别耗时 1.50 秒、0.95 秒。测试后恢复「自动允许」。原生与 Terra MCP 在自动允许档均成功读取通知、通话记录、短信和 UI 树。Terra 的 Home 请求保持本机确认，批准后实际离开计算器，返回 `performed:true`、`settled:true`。普通侧屏设置下，SoM 路径已跳过 OAI 确认并按遮蔽检查拒绝取帧。
 
 窗口事件补采样显示，三星状态栏先报告网速叶节点的纯文本事件，也会另发以 `status_bar` 为源的子树变化。该变化使正在采集的截图过期。操控在新旧窗口和节点均完整、前后一致时可继续，否则仍拒绝旧引用。系统声明却无法取得的子节点会明确标记为截断。[窗口事件复核](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/ScreenAccessibilityService.kt#L198)
+
+## 主线程开销
+
+屏幕树曾为选入的每个节点重新编码整份结果。Java 21 下用含中文、转义字符和表情的同一份 512 节点样本测量了 65 次回执选点。改用逐节点字节计数后，中位耗时从约 17.8 毫秒降到 0.84 毫秒，每次中位分配量从约 66.2 MB 降到 2.3 MB。两份回执均为 115 节点及 47,723 字节，SHA-256 一致。带包名的外部应用内容事件直接使快照失效。若没有其他待复核的浮层窗口 ID，可省去主线程逐窗查询根节点。两条路径共享这一实现。[回执选点](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/ScreenTreeReader.kt#L109) · [窗口事件](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/ScreenAccessibilityService.kt#L198)
+
+样本计时来自本机 JVM。新包的 Note20 Ultra 帧表现和双路径操控仍待验证。调试端口拒绝连接，已登录的 DSH 设备目录也未返回该手机为在线主机。

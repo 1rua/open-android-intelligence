@@ -6,7 +6,7 @@ import android.view.accessibility.AccessibilityWindowInfo
 import com.openandroidintelligence.control.ScreenBounds
 import com.openandroidintelligence.control.ScreenNode
 
-private const val SYSTEM_UI = "com.android.systemui"
+internal const val SYSTEM_UI = "com.android.systemui"
 private const val NETWORK_SPEED_LABEL = "$SYSTEM_UI:id/network_speed_contentview"
 private const val STATUS_BAR_ROOT = "$SYSTEM_UI:id/status_bar"
 private const val TEXT_VIEW = "android.widget.TextView"

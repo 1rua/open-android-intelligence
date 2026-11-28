@@ -50,6 +50,37 @@ class ScreenBackendTest {
         assertEquals(runtime.created, runtime.closed)
     }
 
+    @Test fun 字节上限附近的选点与逐次完整序列化一致() {
+        val runtime = FakeRuntime().apply {
+            roots = listOf(Spec(children = List(36) { index ->
+                Spec(text = "控件\n\r\t\"\\🧭$index", resourceId = "fixture:id/control")
+            }), Spec(text = "第二个窗口"))
+        }
+        val reader = ScreenTreeReader()
+        val windows = runtime.windows().windows
+        val snapshot = try { reader.capture(windows, runtime.display(), runtime.generation(), "fixture", 1) }
+        finally { windows.forEach { it.root.close() } }
+        assertFalse(snapshot.truncated)
+        assertEquals(runtime.created, runtime.closed)
+
+        fun bytes(value: ScreenSnapshot) = Json.canonical(Json.of(value.toMap())).toByteArray(Charsets.UTF_8).size
+        for (truncated in listOf(false, true)) {
+            val base = snapshot.copy(changed = true, truncated = truncated)
+            val boundary = bytes(base.copy(nodes = base.nodes.take(15)))
+            for (maxBytes in (boundary - 1)..(boundary + 1)) {
+                val expectedNodes = (0..base.nodes.size).map { base.nodes.take(it) }
+                    .takeWhile { bytes(base.copy(nodes = it)) <= maxBytes }.last()
+                val expected = base.copy(nodes = expectedNodes, truncated = truncated || expectedNodes.size < base.nodes.size)
+                val actual = reader.select(base, ScreenReadQuery(maxNodes = 128, maxBytes = maxBytes, previousHash = "previous"))
+                assertEquals(expected, actual)
+                assertTrue(bytes(actual) <= maxBytes)
+            }
+        }
+        val nodeBound = reader.select(snapshot, ScreenReadQuery(maxNodes = 7))
+        assertEquals(snapshot.nodes.take(7), nodeBound.nodes)
+        assertTrue(nodeBound.truncated)
+    }
+
     @Test fun deeplyNestedAndInvisibleContainersHaveHardVisitAndDepthLimits() {
         var deep = Spec(text = "deep")
         repeat(200) { deep = Spec(children = listOf(deep), visible = false) }

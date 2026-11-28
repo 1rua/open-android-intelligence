@@ -203,10 +203,16 @@ object ScreenAccessibilityConnection {
         isStatusSubtreeEvent: () -> Boolean = { false },
         observe: () -> ObservedWindows?,
     ) {
-        // 没有可继续使用的快照时，窗口指纹无法豁免这次失效。
-        // 仍通知布局观察者，但跳过主线程上的逐窗无障碍查询。
-        val hasSnapshot = synchronized(windowStateLock) { snapshotTargets != null }
-        val observed = if (hasSnapshot) observe() else null
+        // 外部应用的内容变化不满足本机浮层或系统状态栏例外，直接使旧快照失效。
+        val foreignContentChange = eventType != AccessibilityEvent.TYPE_WINDOWS_CHANGED &&
+            eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && eventPackage != null &&
+            eventPackage != SYSTEM_UI && eventPackage != service?.packageName
+        val shouldObserve = synchronized(windowStateLock) {
+            // 曾卸载的另一个窗口可能已被第三方复用，有待核实的 ID 时仍检查归属。
+            val otherDetachedWindow = detachedOverlayId?.let { it != windowId } == true
+            snapshotTargets != null && (!foreignContentChange || otherDetachedWindow)
+        }
+        val observed = if (shouldObserve) observe() else null
         val statusWindow = observed?.targets?.any { it.id == windowId && it.isStatusBar() } == true
         val statusText = statusWindow && isStatusTextEvent()
         if (requiresInvalidation(eventType, eventPackage, windowId, observed, statusText)) {
@@ -218,6 +224,7 @@ object ScreenAccessibilityConnection {
                 snapshotTargets = null
                 observedAuxiliary = null
                 snapshotNetworkSpeedWindows = emptySet()
+                if (foreignContentChange && detachedOverlayId == windowId) detachedOverlayId = null
             }
             changed(eventType, deferControlCheck = canDefer)
         }

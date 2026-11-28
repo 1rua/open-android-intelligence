@@ -116,21 +116,25 @@ internal class ScreenTreeReader {
                 (query.resourceId == null || node.resourceId == query.resourceId) &&
                 (description == null || node.description?.contains(description, ignoreCase = true) == true)
         }
-        val selected = ArrayList<ScreenNode>()
-        var result = snapshot.copy(nodes = emptyList(), changed = query.previousHash?.let { it != snapshot.hash })
-        for (node in candidates.take(query.maxNodes)) {
+        val base = snapshot.copy(nodes = emptyList(), changed = query.previousHash?.let { it != snapshot.hash })
+        val limit = minOf(candidates.size, query.maxNodes)
+        val selected = ArrayList<ScreenNode>(limit)
+        var replyBytes = if (limit > 0) encodedSize(base.toMap()) else 0
+        for (index in 0 until limit) {
+            val node = candidates[index]
+            // 空数组已计入元数据，每个节点只增加自身字节数和前面的逗号。
+            val addedBytes = encodedSize(node.toMap()) + if (index == 0) 0 else 1
+            if (replyBytes + addedBytes > query.maxBytes) break
+            replyBytes += addedBytes
             selected += node
-            val next = result.copy(nodes = selected.toList())
-            if (encodedSize(next) > query.maxBytes) { selected.removeAt(selected.lastIndex); break }
-            result = next
         }
-        result = result.copy(truncated = snapshot.truncated ||
+        val result = base.copy(nodes = selected, truncated = snapshot.truncated ||
             (query.operation != "state" && (selected.size < candidates.size || snapshot.nodes.any { it.depth > query.maxDepth })))
-        if (encodedSize(result) > query.maxBytes) throw ScreenOperationException("SCREEN_RESULT_TOO_LARGE")
+        if (encodedSize(result.toMap()) > query.maxBytes) throw ScreenOperationException("SCREEN_RESULT_TOO_LARGE")
         return result
     }
 
-    private fun encodedSize(snapshot: ScreenSnapshot) = Json.canonical(Json.of(snapshot.toMap())).toByteArray(Charsets.UTF_8).size
+    private fun encodedSize(fields: Map<String, Any?>) = Json.canonical(Json.of(fields)).toByteArray(Charsets.UTF_8).size
 
     internal fun describe(node: ScreenTreeNode, id: String, window: Int, parent: String?, depth: Int): ScreenNode =
         ScreenNode(id, window, parent, depth,
