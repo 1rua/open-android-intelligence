@@ -195,7 +195,21 @@ class PhoneControlBus(
                     return
                 }
                 val contentCheck = result.requireContentAccess
-                contentCheck?.invoke(access)
+                try {
+                    contentCheck?.invoke(access)
+                } catch (failure: ControlRequestException) {
+                    // 原生动作已返回已知结果，附带观察失权只丢弃正文和像素。
+                    val performed = result.result.values["performed"] as? ControlValue.Boolean
+                    if (request.operation !is ControlOperation.Screen || performed == null) throw failure
+                    requireOutput(access, deliveryEpoch)
+                    result.artifacts.forEach { it.bytes.fill(0) }
+                    update(access, task.scope.taskSessionId, request.requestId) {
+                        it.copy(state = ControlRequestState.COMPLETED, execution = ControlExecutionStatus.SUCCEEDED)
+                    }
+                    task.results[request.requestId] = Json.of(mapOf("result" to mapOf("performed" to performed.value)))
+                    finish(access, task, request.requestId)
+                    return
+                }
                 val seenArtifactIds = mutableSetOf<String>()
                 // 整批通过校验后才写入，冲突时保留原产物及其请求归属。
                 result.artifacts.forEach { artifact ->
@@ -443,12 +457,14 @@ class PhoneControlBus(
     }
 
     private fun resultAvailable(access: ControlAccessBinding, task: Task?, id: String): Boolean =
-        !stopped && task?.results?.containsKey(id) == true && contentCurrent(access, task, id)
+        !stopped && task != null && task.scope.permits(access, processEpoch) && id in task.results && contentCurrent(access, task, id)
 
     /** 每条记录只受自身请求许可约束，失效正文擦除为最小回执。 */
     private fun contentCurrent(access: ControlAccessBinding,task: Task,id: String): Boolean {
         val check=task.contentChecks[id] ?: return true
         if (id in task.results && runCatching { check(access) }.isSuccess) return true
+        // 旧连接在回读期间失效时，断开这次交付，同一拥有者重连后仍可重新复核本机许可。
+        executor.requireCurrentAccess(access)
         task.results.remove(id)
         task.artifacts.entries.filter { it.value.first == id }.forEach { (artifactId,artifact) ->
             artifact.second.bytes.fill(0);task.artifacts.remove(artifactId)

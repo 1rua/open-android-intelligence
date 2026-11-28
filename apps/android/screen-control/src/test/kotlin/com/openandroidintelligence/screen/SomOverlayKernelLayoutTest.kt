@@ -76,7 +76,7 @@ class SomOverlayKernelLayoutTest {
         val kernel = NativePhoneControlKernel(grants, grants.authorization, { primitives }, { primitives },
             { CapabilityPolicy(mode = CapabilityAuthorizationMode.READ_ONLY) }, { false })
         init { PhoneLocalControlUiRegistry.current = overlay; NativePhoneScreenRegistry.current = provider }
-        suspend fun capture() = kernel.execute(request, binding, ControlOperation.CaptureSom).also { returned = it }
+        suspend fun capture() = kernel.execute(request, binding, ControlOperation.CaptureSom) { binding }.also { returned = it }
         override fun close() { overlay.close(); connection.close() }
     }
     @Test fun freshExecutingWindowWaitsForActualLayoutBeforeCapturingOnlyOnLegacyApis() = runTest {
@@ -129,7 +129,7 @@ class SomOverlayKernelLayoutTest {
                 assertEquals(0, fixture.captures); assertNull(fixture.returned)
                 assertNull(fixture.overlay.protectedBounds)
             }
-            val read = fixture.kernel.execute(fixture.request, fixture.binding, ControlOperation.DumpTree(ScreenReadQuery()))
+            val read = fixture.kernel.execute(fixture.request, fixture.binding, ControlOperation.DumpTree(ScreenReadQuery())) { fixture.binding }
             assertNotNull(read.result.values["snapshotId"])
         }
     }

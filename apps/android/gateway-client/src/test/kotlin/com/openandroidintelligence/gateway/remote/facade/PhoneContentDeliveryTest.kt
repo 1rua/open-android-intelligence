@@ -27,6 +27,7 @@ class PhoneContentDeliveryTest {
     private class Executor(private val artifactIdForRequest: (String) -> String = { artifactId(it) }) : PhoneControlExecutor {
         var current = true
         var contentCurrent = true
+        var disconnectInCheck = false
         val contentCurrentByRequest = mutableMapOf<String, Boolean>()
         var lastContentAccess: ControlAccessBinding? = null
         override fun requireCurrentAccess(access: ControlAccessBinding) {
@@ -34,11 +35,17 @@ class PhoneContentDeliveryTest {
         }
         override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
             context.beforeDispatch()
-            return PhoneControlResult(ControlValue.Object(mapOf("secret" to ControlValue.Text(SECRET))),
+            val screenAction = operation is ControlOperation.Screen
+            return PhoneControlResult(ControlValue.Object(if (screenAction) mapOf("performed" to ControlValue.Boolean(true))
+                    else mapOf("secret" to ControlValue.Text(SECRET))),
                 listOf(ControlArtifact(artifactIdForRequest(context.scope.key.requestId), "image/webp", "version", SECRET.toByteArray())), requireContentAccess = { access ->
                     lastContentAccess = access
+                    if (disconnectInCheck) {
+                        current = false
+                        throw ControlRequestException("REMOTE_AUTHORIZATION_CHANGED")
+                    }
                     if (!contentCurrent || contentCurrentByRequest[context.scope.key.requestId] == false) throw ControlRequestException("PUSH_DELIVERY_REVOKED")
-                })
+                }, ui = if (screenAction) ControlValue.Object(mapOf("secret" to ControlValue.Text(SECRET))) else null)
         }
         override fun cancel(scope: ControlRequestScope) {}
         override fun capabilities(access: ControlAccessBinding): ControlValue.Object {
@@ -102,6 +109,14 @@ class PhoneContentDeliveryTest {
         bus.connectionClosed(access)
 
         val reconnected = access.copy(connectionId = "new-connection", connectionGeneration = 2)
+        val newEpoch = reconnected.copy(authorizationEpoch = access.authorizationEpoch + 1)
+        val beforeRecheck = executor.lastContentAccess
+        assertFalse(Json.canonical(bus.receipt(newEpoch, task, original.requestId)).contains(SECRET))
+        assertEquals(beforeRecheck, executor.lastContentAccess)
+        executor.disconnectInCheck = true
+        denied("REMOTE_AUTHORIZATION_CHANGED") { bus.artifact(reconnected, task, artifactId()) }
+        executor.disconnectInCheck = false
+        executor.current = true
         assertEquals(SECRET, bus.artifact(reconnected, task, artifactId()).bytes.decodeToString())
         assertEquals(reconnected, executor.lastContentAccess)
         executor.contentCurrent = false
@@ -113,6 +128,23 @@ class PhoneContentDeliveryTest {
         executor.contentCurrent = true
         assertFalse(Json.canonical(bus.history(reconnected, task)).contains(SECRET))
         denied("CONTROL_ARTIFACT_UNAVAILABLE") { bus.artifact(reconnected, task, artifactId()) }
+    }
+
+    @Test fun 动作成功后只撤销附带观察时仍回传确认的动作结果() = runTest {
+        val executor = Executor().apply { contentCurrent = false }
+        val bus = PhoneControlBus(this, Ledger(), executor, phoneFacadeTestStrings)
+        val task = bus.create(access)
+        val request = ControlRequestParser.parse("""{
+            "request_id":"act-content-000001", "op":"ui.global_action",
+            "args":{"snapshotId":"test-snapshot", "globalAction":"home"}}""")
+        bus.submit(access, task, request)
+        runCurrent()
+        val receipt = Json.canonical(bus.receipt(access, task, request.requestId))
+        assertTrue(receipt.contains("\"status\":\"succeeded\""))
+        assertTrue(receipt.contains("\"performed\":true"))
+        assertFalse(receipt.contains(SECRET))
+        assertFalse(receipt.contains("\"ui\":"))
+        denied("CONTROL_ARTIFACT_UNAVAILABLE") { bus.artifact(access, task, artifactId(request.requestId)) }
     }
 
     @Test fun 只失效一个请求时controlBus回执能力与同任务其他请求仍可读()=runTest {
