@@ -354,7 +354,9 @@
     <string name="conv_tool_toast_copied">已复制到剪贴板</string>
     <string name="conv_tool_btn_copied">已复制</string>
     <string name="conv_tool_btn_copy">复制</string>
-    <string name="conv_turn_process_tool_calls">%1$d 次工具调用</string>
+    <plurals name="conv_turn_process_tool_calls">
+        <item quantity="other">%1$d 次工具调用</item>
+    </plurals>
     <string name="conv_turn_process_thought_only">思考过程</string>
     <string name="conv_turn_process_expand_label">展开过程详情</string>
     <string name="conv_turn_process_collapse_label">收起过程详情</string>

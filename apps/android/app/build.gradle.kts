@@ -255,8 +255,8 @@ android {
     }
     androidResources {
         generateLocaleConfig = true
-        // AAPT2 -c 参数要求资源限定符必须带区域前缀 'r' (即 zh-rCN)，而非纯短横线 zh-CN
-        localeFilters += listOf("zh-rCN")
+        // AAPT2 -c 参数要求资源限定符必须带区域前缀 'r' (即 zh-rCN)，而非纯短横线 zh-CN；同时保留英文资源
+        localeFilters += listOf("zh-rCN", "en")
     }
     signingConfigs {
         create("release") {

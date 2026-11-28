@@ -353,8 +353,16 @@ class TimelineDisplayModel(
                     } else {
                         val analysis = analyse(stripped, emptyList(), generation)
                         turnSegment += TurnSegmentItem(stripped, emptyList(), nativeOnly = false, analysis = analysis)
-                        if ((!stripped.isStreaming || generation?.isTerminal() == true || stripped.executionGenerationState?.isTerminal() == true) &&
-                            analysis.finalVisible &&
+                        val strippedTerminal = !stripped.isStreaming ||
+                            generation?.isTerminal() == true ||
+                            stripped.executionGenerationState?.isTerminal() == true
+                        val strippedEffectiveGeneration = stripped.executionGenerationState ?: generation
+                        val strippedCompletedAttachmentAnswer = strippedTerminal &&
+                            !strippedEffectiveGeneration.isActiveExecution() &&
+                            stripped.attachments.isNotEmpty() &&
+                            analysis.executionCount == 0
+                        if (strippedTerminal &&
+                            (analysis.finalVisible || strippedCompletedAttachmentAnswer) &&
                             !hasTrailingExecutionInSameGeneration(index, resolvedGenerationId)
                         ) {
                             flushTurnSegment()
@@ -403,12 +411,21 @@ class TimelineDisplayModel(
                 nativeOnly = false,
                 analysis = analysis,
             )
-            // 已完成且有正常正文的消息在其后不存在同回合执行事实时才作为回答边界收口，
+            // 已完成且有正常正文或纯附件最终回答的消息在其后不存在同回合执行事实时才作为回答边界收口，
             // 防止同回合多段工具与中间叙述被拆成多张折叠卡片或排到最终回答下方。
             val entryTerminal = !cleanedEntry.isStreaming ||
                 generation?.isTerminal() == true ||
                 cleanedEntry.executionGenerationState?.isTerminal() == true
-            if (entryTerminal && analysis.finalVisible && !hasTrailingExecutionInSameGeneration(index, resolvedGenerationId)) {
+            val entryEffectiveGeneration = cleanedEntry.executionGenerationState ?: generation
+            val completedAttachmentAnswer = entryTerminal &&
+                !entryEffectiveGeneration.isActiveExecution() &&
+                cleanedEntry.attachments.isNotEmpty() &&
+                sourceSteps.isEmpty() &&
+                analysis.executionCount == 0
+            if (entryTerminal &&
+                (analysis.finalVisible || completedAttachmentAnswer) &&
+                !hasTrailingExecutionInSameGeneration(index, resolvedGenerationId)
+            ) {
                 flushTurnSegment()
             }
         }
@@ -566,14 +583,30 @@ class TimelineDisplayModel(
             }
         }
 
-        val finalItem = if (allNativeOnly) {
-            resolved.first()
-        } else {
-            resolved.lastOrNull { it.analysis?.finalVisible == true } ?: resolved.last()
+        // 回合结束时若段尾是已完成的纯附件最终回答（不含思考/工具步骤），
+        // 优先将其选为最终回答（独立呈现在折叠过程卡外），并将更早的中间正文归入过程步骤。
+        val lastItem = resolved.last()
+        val lastIsCompletedAttachmentAnswer = !allNativeOnly &&
+            !streamActive &&
+            !effectiveGenerationState.isActiveExecution() &&
+            !lastItem.nativeOnly &&
+            lastItem.entry.attachments.isNotEmpty() &&
+            lastItem.sourceSteps.isEmpty() &&
+            (lastItem.analysis?.executionCount ?: 0) == 0 &&
+            lastItem.analysis?.finalVisible != true
+        val finalItem = when {
+            allNativeOnly -> resolved.first()
+            lastIsCompletedAttachmentAnswer -> lastItem
+            else -> resolved.lastOrNull { it.analysis?.finalVisible == true } ?: lastItem
         }
         val finalEntry = finalItem.entry
-        val hasFinalAnswer = !allNativeOnly && finalItem.analysis?.finalVisible == true
-        val finalBlocks = if (hasFinalAnswer) finalItem.analysis?.finalBlocks.orEmpty() else emptyList()
+        val hasFinalAnswer = !allNativeOnly &&
+            (lastIsCompletedAttachmentAnswer || finalItem.analysis?.finalVisible == true)
+        val finalBlocks = if (hasFinalAnswer && !lastIsCompletedAttachmentAnswer) {
+            finalItem.analysis?.finalBlocks.orEmpty()
+        } else {
+            emptyList()
+        }
         val taskKey = generationId?.let { "execution:$it" }
 
         val steps = mutableListOf<ExecutionStep>()
@@ -1013,6 +1046,12 @@ internal fun GenerationState.isTerminal(): Boolean =
     this == GenerationState.COMPLETED ||
         this == GenerationState.FAILED ||
         this == GenerationState.CANCELLED
+
+/** 是否仍处于运行、排队或取消确认中的活跃生成态。 */
+private fun GenerationState?.isActiveExecution(): Boolean =
+    this == GenerationState.RUNNING ||
+        this == GenerationState.QUEUED ||
+        this == GenerationState.CANCEL_REQUESTED
 
 /** 只有助手消息或明确的执行事实能进入执行段，审批与系统导航行始终独立。 */
 private fun isExecutionEligible(entry: TimelineEntry): Boolean =

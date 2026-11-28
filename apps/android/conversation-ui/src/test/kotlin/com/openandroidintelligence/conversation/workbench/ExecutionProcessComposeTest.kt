@@ -390,7 +390,7 @@ class ExecutionProcessComposeTest {
         val attachment = TimelineAttachment(draftId = "att-1", filename = "log.txt", mediaType = "text/plain")
         val run = runOf(
             assistantEntry("a1", "<think>思考</think>"),
-            assistantEntry("a2", "", attachments = listOf(attachment)),
+            assistantEntry("a2", "", streaming = true, attachments = listOf(attachment)),
         )
 
         compose.setContent {
@@ -583,5 +583,109 @@ class ExecutionProcessComposeTest {
         compose.onNodeWithText("2 次工具调用").performClick()
         compose.onNodeWithText("[read_file]").assertIsDisplayed()
         compose.onNodeWithText("[grep_code]").assertIsDisplayed()
+    }
+
+    @Test
+    @Config(qualifiers = "+w411dp-h891dp-420dpi")
+    fun thinkingToolsIntermediateNarrativeSecondToolThenAttachmentOnlyFinalAnswerShowsAttachmentOutsideCollapsedCard() {
+        val finalFile = TimelineAttachment(draftId = "att-pdf", filename = "report.pdf", mediaType = "application/pdf")
+        val finalImage = TimelineAttachment(draftId = "att-img", filename = "result.png", mediaType = "image/png")
+        val entries = listOf(
+            assistantEntry(
+                key = "step-1",
+                text = "",
+                generationId = "g-att-mid",
+                reasoning = listOf(MessageReasoning("r1", "先读取原始指标", 0, complete = true)),
+                executionSteps = listOf(
+                    NativeExecutionStep("s1", "ev1", "read_file", "{}", "metrics", NativeExecutionStatus.COMPLETED),
+                ),
+                executionGenerationState = GenerationState.COMPLETED,
+            ),
+            assistantEntry(
+                key = "mid-body",
+                text = "中间进度说明：正在导出附件。",
+                generationId = "g-att-mid",
+                executionGenerationState = GenerationState.COMPLETED,
+            ),
+            assistantEntry(
+                key = "step-2",
+                text = "",
+                generationId = "g-att-mid",
+                executionSteps = listOf(
+                    NativeExecutionStep("s2", "ev2", "bash", "render", "done", NativeExecutionStatus.COMPLETED),
+                ),
+                executionGenerationState = GenerationState.COMPLETED,
+            ),
+            assistantEntry(
+                key = "final-att",
+                text = "",
+                attachments = listOf(finalFile, finalImage),
+                generationId = "g-att-mid",
+                executionGenerationState = GenerationState.COMPLETED,
+            ),
+        )
+
+        compose.setContent {
+            MaterialTheme {
+                MessageTimeline(entries, generation = GenerationState.COMPLETED)
+            }
+        }
+
+        // 过程卡默认收起，最终附件在过程卡外直接可见，而中间正文与思考/工具都收在过程卡内
+        compose.onNodeWithText("2 次工具调用").assertIsDisplayed()
+        compose.onNodeWithText("report.pdf").assertIsDisplayed()
+        compose.onNodeWithContentDescription("查看大图：result.png").assertIsDisplayed()
+        compose.onNodeWithText("中间进度说明：正在导出附件。").assertDoesNotExist()
+        compose.onNodeWithText("[read_file]").assertDoesNotExist()
+        compose.onNodeWithText("[bash]").assertDoesNotExist()
+        compose.onNodeWithText("已思考", substring = true).assertDoesNotExist()
+
+        // 展开过程卡后可按原顺序查看思考、第一次工具、中间正文与第二次工具
+        compose.onNodeWithText("2 次工具调用").performClick()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("[read_file]").assertIsDisplayed()
+        compose.onNodeWithText("中间进度说明：正在导出附件。").assertIsDisplayed()
+        compose.onNodeWithText("[bash]").assertIsDisplayed()
+        compose.onNodeWithText("report.pdf").assertIsDisplayed()
+    }
+
+    @Test
+    fun thinkingAndToolThenAttachmentOnlyFinalAnswerWithoutIntermediateNarrativeCollapsesAndShowsAttachmentOutsideCard() {
+        val finalImage = TimelineAttachment(draftId = "att-chart", filename = "chart.png", mediaType = "image/png")
+        val entries = listOf(
+            assistantEntry(
+                key = "step-1",
+                text = "",
+                generationId = "g-att-only",
+                reasoning = listOf(MessageReasoning("r1", "直接生成图表", 0, complete = true)),
+                executionSteps = listOf(
+                    NativeExecutionStep("s1", "ev1", "render_chart", "{}", "ok", NativeExecutionStatus.COMPLETED),
+                ),
+                executionGenerationState = GenerationState.COMPLETED,
+            ),
+            assistantEntry(
+                key = "final-att",
+                text = "",
+                attachments = listOf(finalImage),
+                generationId = "g-att-only",
+                executionGenerationState = GenerationState.COMPLETED,
+            ),
+        )
+
+        compose.setContent {
+            MaterialTheme {
+                MessageTimeline(entries, generation = GenerationState.COMPLETED)
+            }
+        }
+
+        compose.onNodeWithText("1 次工具调用").assertIsDisplayed()
+        compose.onNodeWithContentDescription("查看大图：chart.png").assertIsDisplayed()
+        compose.onNodeWithText("[render_chart]").assertDoesNotExist()
+        compose.onNodeWithText("已思考", substring = true).assertDoesNotExist()
+
+        compose.onNodeWithText("1 次工具调用").performClick()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("[render_chart]").assertIsDisplayed()
+        compose.onNodeWithContentDescription("查看大图：chart.png").assertIsDisplayed()
     }
 }

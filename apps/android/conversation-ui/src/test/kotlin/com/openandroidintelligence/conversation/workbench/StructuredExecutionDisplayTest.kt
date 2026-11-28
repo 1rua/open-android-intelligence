@@ -1,6 +1,7 @@
 package com.openandroidintelligence.conversation.workbench
 
 import com.openandroidintelligence.conversation.model.GenerationState
+import com.openandroidintelligence.conversation.model.MessageReasoning
 import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.model.NativeExecutionStep
 import com.openandroidintelligence.conversation.model.TimelineAttachment
@@ -433,6 +434,95 @@ class StructuredExecutionDisplayTest {
         assertEquals(2, items.size)
         val run = (items[0] as TimelineDisplayItem.Execution).run
         assertTrue(run.hasCompletedFinalAnswer, "纯原生工具段紧跟仅含附件的最终回答也应允许折叠")
+    }
+
+    @Test
+    fun thinkingToolsIntermediateNarrativeSecondToolThenAttachmentOnlyFinalAnswerSelectsAttachmentAsFinal() {
+        val finalAttachment = TimelineAttachment(draftId = "att-final", filename = "result.png", mediaType = "image/png")
+        val items = TimelineDisplayModel().build(
+            listOf(
+                entry("step-1", "g-att-mid", text = "", steps = listOf(step("tool-1"))).copy(
+                    reasoning = listOf(MessageReasoning("r1", "先分析日志", 0, complete = true)),
+                ),
+                entry("mid-body", "g-att-mid", text = "已完成第一阶段排查，继续生成结果图。"),
+                entry("step-2", "g-att-mid", text = "", steps = listOf(step("tool-2"))).copy(executionFact = true),
+                entry("final-att", "g-att-mid", text = "").copy(attachments = listOf(finalAttachment)),
+            ),
+            generation = GenerationState.COMPLETED,
+        )
+
+        assertEquals(1, items.size, "含思考、中间正文、二次工具与纯附件终答的同一回合必须聚合为唯一执行段")
+        val run = (items.single() as TimelineDisplayItem.Execution).run
+        assertEquals("final-att", run.finalEntry.key, "段内最终回答必须指向末尾纯附件消息，而非前序中间正文")
+        assertEquals(listOf(finalAttachment), run.finalEntry.attachments)
+        assertTrue(run.hasFinalAnswer)
+        assertTrue(run.hasCompletedFinalAnswer)
+        assertTrue(run.finalBlocks.isEmpty())
+        assertTrue(shouldCollapseTurnProcessCard(run), "回合结束且存在纯附件最终回答时应进入默认折叠")
+        assertTrue(
+            run.steps.filterIsInstance<ExecutionStep.Attachments>().isEmpty(),
+            "最终附件不得进入 ExecutionStep.Attachments 被过程折叠卡隐藏",
+        )
+        assertEquals(
+            listOf("tool-1", "tool-2"),
+            run.steps.filterIsInstance<ExecutionStep.ToolCall>().map { it.nativeStepId },
+        )
+        assertTrue(run.steps.any { it is ExecutionStep.Thought })
+        assertTrue(
+            run.steps.filterIsInstance<ExecutionStep.Narrative>().any {
+                (it.block as? TimelineBlock.Paragraph)?.text?.contains("第一阶段排查") == true
+            },
+            "前序中间正文必须收进过程步骤内，而非被误选为最终回答",
+        )
+    }
+
+    @Test
+    fun thinkingAndToolThenAttachmentOnlyFinalAnswerWithoutIntermediateNarrativeCollapses() {
+        val finalAttachment = TimelineAttachment(draftId = "att-only", filename = "chart.png", mediaType = "image/png")
+        val items = TimelineDisplayModel().build(
+            listOf(
+                entry("step-1", "g-att-direct", text = "", steps = listOf(step("tool-1"))).copy(
+                    reasoning = listOf(MessageReasoning("r1", "直接生成图表", 0, complete = true)),
+                ),
+                entry("final-att", "g-att-direct", text = "").copy(attachments = listOf(finalAttachment)),
+            ),
+            generation = GenerationState.COMPLETED,
+        )
+
+        assertEquals(1, items.size)
+        val run = (items.single() as TimelineDisplayItem.Execution).run
+        assertEquals("final-att", run.finalEntry.key)
+        assertTrue(run.hasFinalAnswer)
+        assertTrue(run.hasCompletedFinalAnswer)
+        assertTrue(run.finalBlocks.isEmpty())
+        assertTrue(shouldCollapseTurnProcessCard(run), "无中间正文时，思考+工具+纯附件终答也必须正常折叠过程卡")
+        assertTrue(run.steps.filterIsInstance<ExecutionStep.Attachments>().isEmpty())
+        assertEquals(listOf("tool-1"), run.steps.filterIsInstance<ExecutionStep.ToolCall>().map { it.nativeStepId })
+        assertTrue(run.steps.any { it is ExecutionStep.Thought })
+    }
+
+    @Test
+    fun streamingAttachmentOnlyTrailingEntryDoesNotPrematurelyFoldTurn() {
+        val attachment = TimelineAttachment(draftId = "att-live", filename = "draft.png", mediaType = "image/png")
+        val items = TimelineDisplayModel().build(
+            listOf(
+                entry("step-1", "g-att-live", text = "", steps = listOf(step("tool-1"))).copy(
+                    reasoning = listOf(MessageReasoning("r1", "生成中", 0, complete = true)),
+                ),
+                entry("live-att", "g-att-live", text = "").copy(
+                    attachments = listOf(attachment),
+                    isStreaming = true,
+                ),
+            ),
+            generation = GenerationState.RUNNING,
+        )
+
+        assertEquals(1, items.size)
+        val run = (items.single() as TimelineDisplayItem.Execution).run
+        assertFalse(run.hasFinalAnswer)
+        assertFalse(run.hasCompletedFinalAnswer)
+        assertFalse(shouldCollapseTurnProcessCard(run))
+        assertEquals(listOf("live-att"), run.steps.filterIsInstance<ExecutionStep.Attachments>().map { it.entry.key })
     }
 
 }

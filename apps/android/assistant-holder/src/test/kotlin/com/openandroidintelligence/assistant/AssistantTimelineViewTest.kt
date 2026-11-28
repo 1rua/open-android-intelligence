@@ -52,7 +52,7 @@ import org.robolectric.annotation.GraphicsMode
  * 4. 智能跟随：用户翻历史时新消息不拽走阅读位置，「回到最新」能恢复跟随。
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], qualifiers = "w411dp-h891dp-420dpi")
+@Config(sdk = [34], qualifiers = "+w411dp-h891dp-420dpi")
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AssistantTimelineViewTest {
     @get:Rule val compose = createComposeRule()

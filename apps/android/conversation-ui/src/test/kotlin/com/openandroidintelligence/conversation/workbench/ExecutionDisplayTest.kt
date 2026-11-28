@@ -465,9 +465,9 @@ class ExecutionDisplayTest {
     fun finalEntryAttachmentsBecomeProcessStepsWhenNoFinalAnswer() {
         val attachment = TimelineAttachment(draftId = "att-1", filename = "log.txt", mediaType = "text/plain")
         val thought = assistantEntry("a1", "<think>思考</think>")
-        val attachmentOnly = assistantEntry("a2", "", attachments = listOf(attachment))
+        val attachmentOnlyStreaming = assistantEntry("a2", "", streaming = true, attachments = listOf(attachment))
 
-        val run = executionRun(TimelineDisplayModel().build(listOf(thought, attachmentOnly)))
+        val run = executionRun(TimelineDisplayModel().build(listOf(thought, attachmentOnlyStreaming)))
 
         assertFalse(run.hasFinalAnswer)
         assertEquals("a2", run.finalEntry.key)
@@ -475,6 +475,22 @@ class ExecutionDisplayTest {
         val attachmentStep = run.steps.filterIsInstance<ExecutionStep.Attachments>().single()
         assertEquals("a2", attachmentStep.entry.key)
         assertEquals(listOf(attachment), attachmentStep.entry.attachments)
+    }
+
+    @Test
+    fun completedAttachmentOnlyTrailingEntryCountsAsFinalAnswer() {
+        val attachment = TimelineAttachment(draftId = "att-1", filename = "log.txt", mediaType = "text/plain")
+        val thought = assistantEntry("a1", "<think>思考</think>")
+        val attachmentOnly = assistantEntry("a2", "", attachments = listOf(attachment))
+
+        val run = executionRun(TimelineDisplayModel().build(listOf(thought, attachmentOnly)))
+
+        assertTrue(run.hasFinalAnswer)
+        assertTrue(run.hasCompletedFinalAnswer)
+        assertEquals("a2", run.finalEntry.key)
+        assertTrue(run.finalBlocks.isEmpty())
+        assertEquals(1, run.stepCount)
+        assertTrue(run.steps.filterIsInstance<ExecutionStep.Attachments>().isEmpty())
     }
 
     @Test

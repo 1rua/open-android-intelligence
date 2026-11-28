@@ -31,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import com.openandroidintelligence.conversation.components.M3ExpandableExpressiveCard
@@ -131,7 +132,7 @@ fun AssistantMessageContent(
     }
     val collapseIntoSummaryCard = shouldCollapseTurnProcessCard(
         isStreaming = entryStreaming,
-        hasCompletedFinalAnswer = !entryStreaming && finalBlocks.isNotEmpty(),
+        hasCompletedFinalAnswer = !entryStreaming && (finalBlocks.isNotEmpty() || entry.attachments.isNotEmpty()),
         toolCallCount = toolCallCount,
         thoughtCount = thoughtCount,
         otherProcessCount = otherProcessCount,
@@ -281,7 +282,7 @@ private fun TurnProcessCollapseCard(
     var expanded by rememberSaveable(segmentKey) { mutableStateOf(false) }
 
     val title = if (toolCallCount >= 1) {
-        stringResource(UiR.string.conv_turn_process_tool_calls, toolCallCount)
+        pluralStringResource(UiR.plurals.conv_turn_process_tool_calls, toolCallCount, toolCallCount)
     } else {
         stringResource(UiR.string.conv_turn_process_thought_only)
     }

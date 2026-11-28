@@ -5,6 +5,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
@@ -549,9 +550,33 @@ class WorkspaceConversationBrowserTest {
         }
         compose.waitForIdle()
 
-        // 在 Reduce Motion 150ms 全高淡出期间，子项尚在树中但处于 collapsed == true：必须禁用点击、菜单与无障碍重排
+        val firstBoundsBeforeDrag = compose.onNodeWithTag("workspace-thread:ws-one:t1")
+            .fetchSemanticsNode().boundsInRoot
+        val secondBoundsBeforeDrag = compose.onNodeWithTag("workspace-thread:ws-one:t2")
+            .fetchSemanticsNode().boundsInRoot
+        val dragDelta = secondBoundsBeforeDrag.center.y - firstBoundsBeforeDrag.center.y
+
+        // 发起真实的长按跨行拖拽，但不松手：先验证拖拽已启动并越过目标行，再在手势进行中折叠分组
+        // 关闭 autoAdvance，避免拖拽进行中边缘滚动协程的 delay(16) 循环阻塞 waitForIdle
         compose.mainClock.autoAdvance = false
-        compose.onNodeWithTag("workspace-group-header:ws-one").performClick()
+        compose.onNodeWithTag("workspace-thread:ws-one:t1").performTouchInput {
+            down(pointerId = 0, position = center)
+            advanceEventTime(600)
+            moveTo(pointerId = 0, position = center + Offset(0f, dragDelta))
+        }
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+
+        val firstBoundsMidDrag = compose.onNodeWithTag("workspace-thread:ws-one:t1")
+            .fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "长按并跨行拖动后被拖行应实际向下位移: before=${firstBoundsBeforeDrag.top}, mid=${firstBoundsMidDrag.top}",
+            firstBoundsMidDrag.top > firstBoundsBeforeDrag.top + 10f,
+        )
+
+        // 在手势仍按下（未松手）时折叠该分组：应立即取消在途拖拽并进入 Reduce Motion 150ms 淡出中段
+        compose.onNodeWithTag("workspace-group-header:ws-one")
+            .performSemanticsAction(SemanticsActions.OnClick)
         repeat(3) {
             compose.mainClock.advanceTimeByFrame()
             compose.waitForIdle()
@@ -567,19 +592,41 @@ class WorkspaceConversationBrowserTest {
             SemanticsProperties.Disabled in midNode.config,
         )
         compose.onNodeWithContentDescription("管理会话 第一条会话").assertIsNotEnabled()
-        compose.onNodeWithTag("workspace-thread:ws-one:t2").performClick()
+        compose.onNodeWithTag("workspace-thread:ws-one:t2")
+            .performSemanticsAction(SemanticsActions.OnClick)
         assertTrue("折叠中段点击不得打开会话", opened.isEmpty())
 
-        // 收敛后子项安全卸载；再次展开后交互完全恢复（无拖拽状态残留）
+        // 松开原先拖拽手指并等待折叠收敛：被折叠中断的拖拽不得提交任何排序，且子项安全卸载
+        compose.onNodeWithTag("workspace-conversation-browser").performTouchInput {
+            up(pointerId = 0)
+        }
         compose.mainClock.autoAdvance = true
         compose.waitForIdle()
+        assertTrue("折叠中断在途拖拽后，松手时不得提交排序", reordered.isEmpty())
         compose.onNodeWithTag("workspace-thread:ws-one:t2").assertDoesNotExist()
 
+        // 重新展开后，普通点击与完整长按跨行拖拽排序均须恢复正常提交
         compose.onNodeWithTag("workspace-group-header:ws-one").performClick()
         compose.waitForIdle()
-        compose.onNodeWithTag("workspace-thread:ws-one:t2").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("workspace-thread:ws-one:t1").assertIsDisplayed()
+        compose.onNodeWithTag("workspace-thread:ws-one:t2").assertIsDisplayed()
+
+        val firstBoundsExpanded = compose.onNodeWithTag("workspace-thread:ws-one:t1")
+            .fetchSemanticsNode().boundsInRoot
+        val secondBoundsExpanded = compose.onNodeWithTag("workspace-thread:ws-one:t2")
+            .fetchSemanticsNode().boundsInRoot
+        val expandedDragDelta = secondBoundsExpanded.center.y - firstBoundsExpanded.center.y
+        compose.onNodeWithTag("workspace-thread:ws-one:t1").performTouchInput {
+            down(center)
+            advanceEventTime(600)
+            moveTo(center + Offset(0f, expandedDragDelta))
+            up()
+        }
+        compose.runOnIdle {
+            assertEquals("重新展开后的正常长按跨行拖拽必须提交排序", listOf(listOf("t2", "t1")), reordered)
+        }
+        compose.onNodeWithTag("workspace-thread:ws-one:t2").performClick()
         assertEquals(listOf("t2"), opened)
-        assertTrue(reordered.isEmpty())
     }
 
     @Test
