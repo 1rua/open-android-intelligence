@@ -93,18 +93,20 @@ class NativePhoneScreen internal constructor(
             if (captureDisplay) localUi?.awaitCaptureProtection(request.scope.key.storageKey)
             else localUi?.captureProtection()
         }
-        suspend fun readSnapshot(): ScreenSnapshot = withContext(Dispatchers.Main.immediate) {
-            if (!captureDisplay) return@withContext backend.read(query)
+        suspend fun readSnapshot(): Pair<ScreenSnapshot, Long?> = withContext(Dispatchers.Main.immediate) {
+            val rawGeneration = (backend as? AndroidScreenBackend)?.captureGeneration()
+            if (!captureDisplay) return@withContext backend.read(query) to rawGeneration
             if (localUi == null || protection?.ready != true)
                 throw ControlRequestException("SCREEN_OVERLAY_EXCLUSION_UNSUPPORTED")
             val read = readDisplaySom ?: throw ControlRequestException("SCREEN_REDACTION_UNPROVABLE")
             val snapshot = read(query, protection)
             if (PhoneLocalControlUiRegistry.current !== localUi || localUi.captureProtection() != protection)
                 throw ControlRequestException("SCREEN_LOCAL_UI_CHANGED")
-            snapshot
+            snapshot to rawGeneration
         }
         currentCoroutineContext().ensureActive(); guard(revalidate)
-        val snapshot = readSnapshot()
+        val baseline = readSnapshot()
+        val snapshot = baseline.first
         if (snapshot.truncated) throw ControlRequestException("SCREEN_REDACTION_UNPROVABLE")
         if (captureDisplay && protection?.display != snapshot.display)
             throw ControlRequestException("SCREEN_OVERLAY_EXCLUSION_UNSUPPORTED")
@@ -112,7 +114,7 @@ class NativePhoneScreen internal constructor(
             currentCoroutineContext().ensureActive()
             guard(revalidate)
             val current = readSnapshot()
-            if (current != snapshot) throw ControlRequestException("SNAPSHOT_STALE")
+            if (current != baseline) throw ControlRequestException("SNAPSHOT_STALE")
         }
         request.beforeDispatch(); guard(revalidate)
         val requestedAt = SystemClock.uptimeMillis()

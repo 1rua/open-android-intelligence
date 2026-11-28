@@ -74,6 +74,8 @@ class ScreenBackendTest {
         }
         val backend = AndroidScreenBackend(runtime)
         val original = backend.read()
+        runtime.controlSequenceOverride = runtime.sequence
+        runtime.sequence++
         runtime.roots = listOf(target, meter.copy(text = "9 KB/s"))
         val refreshed = backend.read(ScreenReadQuery(previousHash = original.hash))
         assertNotEquals(original.hash, refreshed.hash)
@@ -105,6 +107,19 @@ class ScreenBackendTest {
         val rotated = backend.read()
         runtime.sequence++
         fails("SCREEN_STALE_REFERENCE") { backend.executeLeased(rotated.revision, ScreenAction.Global("back")) }
+        assertTrue(runtime.effects.isEmpty())
+    }
+
+    @Test fun 有缺失子节点的树必须按原始代次拦截旧操控引用() = runTest {
+        val runtime = FakeRuntime().apply { roots = listOf(Spec(children = listOf(null))) }
+        val backend = AndroidScreenBackend(runtime)
+        val partial = backend.read()
+        assertTrue(partial.truncated)
+        runtime.controlSequenceOverride = runtime.sequence
+        runtime.sequence++
+
+        assertEquals(partial.hash, backend.read().hash)
+        fails("SCREEN_STALE_REFERENCE") { backend.executeLeased(partial.revision, ScreenAction.Global("home")) }
         assertTrue(runtime.effects.isEmpty())
     }
 
@@ -311,7 +326,7 @@ class ScreenBackendTest {
 
 private data class Spec(
     val text: String? = "target", val resourceId: String? = null, val password: Boolean = false,
-    val visible: Boolean = true, val children: List<Spec> = emptyList(),
+    val visible: Boolean = true, val children: List<Spec?> = emptyList(),
     val interactive: Boolean = true, val bounds: ScreenBounds = ScreenBounds(0, 0, 50, 50),
 )
 
@@ -322,12 +337,14 @@ private class FakeRuntime : ScreenRuntime {
     var closed = 0
     var denial: String? = null
     var sequence = 1L
+    var controlSequenceOverride: Long? = null
     var currentDisplay = ScreenDisplay(1080, 1920, 0)
     val effects = mutableListOf<String>()
     var gestureCompletion: CompletableDeferred<Boolean>? = null
     var beforeNative: () -> Unit = {}
     override fun availability() = denial
     override fun generation() = sequence
+    override fun controlGeneration() = controlSequenceOverride ?: sequence
     override fun display() = currentDisplay
     override fun windows(): ScreenWindowCapture {
         val packageName = "org.example.app"

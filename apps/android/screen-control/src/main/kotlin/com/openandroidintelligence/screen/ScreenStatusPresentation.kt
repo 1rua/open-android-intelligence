@@ -8,6 +8,7 @@ import com.openandroidintelligence.control.ScreenNode
 
 private const val SYSTEM_UI = "com.android.systemui"
 private const val NETWORK_SPEED_LABEL = "$SYSTEM_UI:id/network_speed_contentview"
+private const val STATUS_BAR_ROOT = "$SYSTEM_UI:id/status_bar"
 private const val TEXT_VIEW = "android.widget.TextView"
 
 /** 三星状态栏网速标签独立刷新。只识别已确认的系统、窗口和无交互文字组合。 */
@@ -25,6 +26,19 @@ internal fun AccessibilityEvent.isNetworkSpeedTextEvent(): Boolean {
         (eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED || contentChangeTypes != AccessibilityEvent.CONTENT_CHANGE_TYPE_TEXT)) return false
     val node = try { source } catch (_: RuntimeException) { null } ?: return false
     return try { node.windowId == windowId && node.isNetworkSpeedLabel() } catch (_: RuntimeException) { false }
+    finally { node.recycle() }
+}
+
+@Suppress("DEPRECATION")
+internal fun AccessibilityEvent.isStatusBarSubtreeEvent(): Boolean {
+    if (eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED ||
+        contentChangeTypes != AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE || packageName?.toString() != SYSTEM_UI) return false
+    val node = try { source } catch (_: RuntimeException) { null } ?: return false
+    return try {
+        node.windowId == windowId && node.packageName?.toString() == SYSTEM_UI &&
+            node.viewIdResourceName == STATUS_BAR_ROOT && node.className?.toString() == "android.widget.FrameLayout" &&
+            !node.isClickable && !node.isLongClickable && !node.isScrollable && !node.isEditable && !node.isFocused
+    } catch (_: RuntimeException) { false }
     finally { node.recycle() }
 }
 

@@ -50,6 +50,7 @@ internal class ScreenTreeReader {
     fun capture(
         windows: List<ScreenTreeWindow>, display: ScreenDisplay, generation: Long,
         foregroundPackage: String?, activeWindowId: Int?,
+        controlGeneration: Long? = null,
     ): ScreenSnapshot {
         val out = ArrayList<ScreenNode>()
         var visited = 0
@@ -71,7 +72,11 @@ internal class ScreenTreeReader {
             for (index in 0 until children) {
                 if (visited >= MAX_VISITED || out.size >= MAX_NODES) { truncated = true; return }
                 val child = node.child(index)
-                if (child == null) { visited++; continue }
+                if (child == null) {
+                    visited++
+                    truncated = true
+                    continue
+                }
                 try { walk(child, windowId, "$path.$index", depth + 1, nodeId) }
                 finally { child.close() }
             }
@@ -93,7 +98,10 @@ internal class ScreenTreeReader {
             }
             Json.sha256(Json.of(metadata + ("nodes" to nodes)))
         } else hash
-        val revision = Json.sha256(Json.of(mapOf("hash" to controlHash, "generation" to generation)))
+        // 无法完整读取时，旧动作引用仍绑定全部窗口事件。
+        val verifiedGeneration = controlGeneration?.takeUnless { truncated }
+        val revision = Json.sha256(Json.of(mapOf("hash" to controlHash, "generation" to (verifiedGeneration ?: generation),
+            "statusRecheck" to (verifiedGeneration != null))))
         return ScreenSnapshot(revision, hash, null, display, foregroundPackage?.take(MAX_TEXT), activeWindowId,
             windows.take(MAX_WINDOWS).map { it.window }, out, truncated)
     }

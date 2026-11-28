@@ -153,6 +153,22 @@ class SomScreenshotApiRouteTest {
         }
     }
 
+    @Test @Config(sdk = [33]) fun 原始帧代次变化即使操控修订不变也拒绝交付() = runTest {
+        withService { service ->
+            windowsForRead = { listOf(window(17, targetRoot())) }
+            lateinit var bitmap: Bitmap
+            val port = NativePhoneScreen(service, AndroidScreenBackend(runtime(service)), SomFrameSource { snapshot ->
+                ScreenAccessibilityConnection.changed(deferControlCheck = true)
+                val display = snapshot.display
+                bitmap = Bitmap.createBitmap(display.widthPixels, display.heightPixels, Bitmap.Config.ARGB_8888)
+                SomFrame(bitmap, SystemClock.uptimeMillis(), display,
+                    ScreenBounds(0, 0, display.widthPixels, display.heightPixels), false)
+            })
+            assertEquals("SNAPSHOT_STALE", captureFailure(port))
+            assertTrue(bitmap.isRecycled)
+        }
+    }
+
     private suspend fun assertRejectedBeforeCapture(windows: () -> List<AccessibilityWindowInfo>) = withService { service ->
         windowsForRead = windows
         var dispatches = 0

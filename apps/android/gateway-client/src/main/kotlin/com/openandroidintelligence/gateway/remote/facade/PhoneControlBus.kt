@@ -26,6 +26,11 @@ class PhoneControlBus(
     val processEpoch: String = UUID.randomUUID().toString(),
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
 ) {
+    private class ContentDelivery(
+        var verify: ((ControlAccessBinding) -> Unit)?,
+        val actionOutcome: JsonValue.JObject?,
+    )
+
     private class Task(val scope: ControlTaskScope, val createdAt: Long) {
         val queue = Mutex()
         var frozen = false
@@ -38,7 +43,7 @@ class PhoneControlBus(
         val artifacts = mutableMapOf<String, Pair<String, ControlArtifact>>()
         // 正文撤权后也保留已分配的标识，避免旧回执的路径指向新请求。
         val publishedArtifactIds = mutableSetOf<String>()
-        val contentChecks = mutableMapOf<String,(ControlAccessBinding) -> Unit>()
+        val contentChecks = mutableMapOf<String, ContentDelivery>()
         var revision = 0L
     }
     private val lock = Any()
@@ -195,18 +200,22 @@ class PhoneControlBus(
                     return
                 }
                 val contentCheck = result.requireContentAccess
+                val actionOutcome = if (request.operation is ControlOperation.Screen) {
+                    (result.result.values["performed"] as? ControlValue.Boolean)?.let {
+                        JsonValue.JObject(listOf("result" to Json.of(mapOf("performed" to it.value))))
+                    }
+                } else null
                 try {
                     contentCheck?.invoke(access)
                 } catch (failure: ControlRequestException) {
                     // 原生动作已返回已知结果，附带观察失权只丢弃正文和像素。
-                    val performed = result.result.values["performed"] as? ControlValue.Boolean
-                    if (request.operation !is ControlOperation.Screen || performed == null) throw failure
+                    if (actionOutcome == null) throw failure
                     requireOutput(access, deliveryEpoch)
                     result.artifacts.forEach { it.bytes.fill(0) }
                     update(access, task.scope.taskSessionId, request.requestId) {
                         it.copy(state = ControlRequestState.COMPLETED, execution = ControlExecutionStatus.SUCCEEDED)
                     }
-                    task.results[request.requestId] = Json.of(mapOf("result" to mapOf("performed" to performed.value)))
+                    task.results[request.requestId] = actionOutcome
                     finish(access, task, request.requestId)
                     return
                 }
@@ -221,7 +230,7 @@ class PhoneControlBus(
                     }
                 }
                 task.publishedArtifactIds.addAll(seenArtifactIds)
-                if (contentCheck != null) task.contentChecks[request.requestId] = contentCheck
+                if (contentCheck != null) task.contentChecks[request.requestId] = ContentDelivery(contentCheck, actionOutcome)
                 val artifacts = result.artifacts.map { artifact ->
                     task.artifacts[artifact.id] = request.requestId to artifact.copy(bytes = artifact.bytes.copyOf())
                     mapOf("artifactId" to artifact.id, "path" to "artifacts/${artifact.id}", "mimeType" to artifact.mimeType,
@@ -456,16 +465,21 @@ class PhoneControlBus(
         task.records.drop((seq + 1).toInt()).map { sanitizeRecord(access,task,it) }
     }
 
-    private fun resultAvailable(access: ControlAccessBinding, task: Task?, id: String): Boolean =
-        !stopped && task != null && task.scope.permits(access, processEpoch) && id in task.results && contentCurrent(access, task, id)
+    private fun resultAvailable(access: ControlAccessBinding, task: Task?, id: String): Boolean {
+        if (stopped || task == null || !task.scope.permits(access, processEpoch)) return false
+        contentCurrent(access, task, id)
+        return id in task.results
+    }
 
     /** 每条记录只受自身请求许可约束，失效正文擦除为最小回执。 */
     private fun contentCurrent(access: ControlAccessBinding,task: Task,id: String): Boolean {
-        val check=task.contentChecks[id] ?: return true
-        if (id in task.results && runCatching { check(access) }.isSuccess) return true
+        val delivery = task.contentChecks[id] ?: return true
+        val verify = delivery.verify ?: return false
+        if (runCatching { verify(access) }.isSuccess) return true
         // 旧连接在回读期间失效时，断开这次交付，同一拥有者重连后仍可重新复核本机许可。
         executor.requireCurrentAccess(access)
-        task.results.remove(id)
+        delivery.verify = null
+        if (delivery.actionOutcome == null) task.results.remove(id) else task.results[id] = delivery.actionOutcome
         task.artifacts.entries.filter { it.value.first == id }.forEach { (artifactId,artifact) ->
             artifact.second.bytes.fill(0);task.artifacts.remove(artifactId)
         }
@@ -479,8 +493,7 @@ class PhoneControlBus(
         val data=JsonFields.obj(JsonFields.field(event,"data")) ?: return record
         val id=JsonFields.string(data,"request_id") ?: return record
         if (contentCurrent(access,task,id)) return record
-        val row=find(access,task.scope.taskSessionId,id)
-        val receipt=Json.canonical(Json.of(minimal(row,false)))
+        val receipt = Json.canonical(receipt(access, task.scope.taskSessionId, id))
         val safeData=mapOf("request_id" to id,"message" to mapOf("id" to id,"role" to "assistant",
             "content" to listOf(mapOf("type" to "text","text" to receipt))))
         return Json.of(mapOf("type" to "event","event" to mapOf("seq" to JsonFields.field(event,"seq"),

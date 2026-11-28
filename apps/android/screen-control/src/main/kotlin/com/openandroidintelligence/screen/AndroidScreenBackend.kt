@@ -24,6 +24,7 @@ internal data class ScreenWindowCapture(
 internal interface ScreenRuntime {
     fun availability(): String?
     fun generation(): Long
+    fun controlGeneration(): Long = generation()
     fun display(): ScreenDisplay
     fun windows(): ScreenWindowCapture
     fun windowsForDisplaySom(protection: LocalUiCaptureProtection): ScreenWindowCapture =
@@ -45,6 +46,8 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
 
     override fun availability(): String? = runtime.availability()
 
+    internal fun captureGeneration(): Long = runtime.generation()
+
     override fun read(query: ScreenReadQuery): ScreenSnapshot = reader.select(capture().first, query)
 
     internal fun readForDisplaySom(query: ScreenReadQuery, protection: LocalUiCaptureProtection): ScreenSnapshot =
@@ -53,6 +56,7 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
     private fun capture(readWindows: () -> ScreenWindowCapture = runtime::windows): Pair<ScreenSnapshot, Long> {
         ready()
         val generation = runtime.generation()
+        val controlGeneration = runtime.controlGeneration()
         val display = runtime.display()
         val windowCapture = readWindows()
         val windows = windowCapture.windows
@@ -62,11 +66,17 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
             val active = windows.singleOrNull { it.window.active }?.takeIf {
                 !it.packageName.isNullOrBlank() && it.window.id in 0 until Int.MAX_VALUE
             }
-            val snapshot = reader.capture(windows, display, generation, active?.packageName, active?.window?.id)
+            val observed = windowCapture.observed?.takeIf { it.matchesBusinessWindows(windows) }
+            val snapshot = reader.capture(windows, display, generation, active?.packageName, active?.window?.id,
+                controlGeneration.takeIf { observed != null })
             if (runtime.generation() != generation || runtime.display() != display) throw ScreenOperationException("SCREEN_CHANGED")
             ready()
-            val observed = windowCapture.observed?.takeIf { it.matchesBusinessWindows(windows) }
-            ScreenAccessibilityConnection.noteSnapshotWindows(windows.size, observed)
+            val statusIds = if (snapshot.truncated) emptySet() else observed?.targets.orEmpty()
+                .filter { isStatusBarWindow(it.type, it.packageName, it.bounds, it.active, it.focused) }
+                .mapNotNullTo(mutableSetOf()) { status ->
+                    status.id.takeIf { id -> snapshot.nodes.any { it.windowId == id && it.isNetworkSpeedLabel() } }
+                }
+            ScreenAccessibilityConnection.noteSnapshotWindows(windows.size, observed, statusIds)
             if (runtime.generation() != generation) throw ScreenOperationException("SCREEN_CHANGED")
             return snapshot to generation
         } catch (failure: ScreenOperationException) { throw failure }

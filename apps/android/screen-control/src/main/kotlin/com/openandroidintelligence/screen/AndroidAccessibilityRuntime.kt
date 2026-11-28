@@ -43,6 +43,7 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
     }
 
     override fun generation(): Long = ScreenAccessibilityConnection.generation
+    override fun controlGeneration(): Long = ScreenAccessibilityConnection.controlGeneration
 
     @Suppress("DEPRECATION")
     override fun display(): ScreenDisplay {

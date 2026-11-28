@@ -107,6 +107,32 @@ class ScreenSnapshotInvalidationTest {
         assertEquals(generation + 3, ScreenAccessibilityConnection.generation)
     }
 
+    @Test fun 已知状态栏子树变化使原始帧过期但延后复核操控() {
+        val app = ScreenWindowState(TARGET_WINDOW_ID, AccessibilityWindowInfo.TYPE_APPLICATION, 1, true, true,
+            ScreenBounds(0, 0, 100, 200), TARGET_PACKAGE)
+        val bar = ScreenWindowState(11, AccessibilityWindowInfo.TYPE_SYSTEM, 2, false, false,
+            ScreenBounds(0, 0, 100, 10), "com.android.systemui")
+        val windows = buildObservedWindows(listOf(app, bar), service.packageName)
+        ScreenAccessibilityConnection.noteSnapshotWindows(2, windows, setOf(bar.id))
+        val raw = ScreenAccessibilityConnection.generation
+        val control = ScreenAccessibilityConnection.controlGeneration
+        fun subtree(observed: ObservedWindows = windows) = ScreenAccessibilityConnection.onWindowEvent(
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, bar.packageName, bar.id, isStatusSubtreeEvent = { true }) { observed }
+
+        subtree()
+        assertEquals(raw + 1, ScreenAccessibilityConnection.generation)
+        assertEquals(control, ScreenAccessibilityConnection.controlGeneration)
+
+        subtree(buildObservedWindows(listOf(app.copy(focused = false), bar), service.packageName))
+        assertEquals(raw + 2, ScreenAccessibilityConnection.generation)
+        assertEquals(control + 1, ScreenAccessibilityConnection.controlGeneration)
+
+        ScreenAccessibilityConnection.noteSnapshotWindows(2, windows)
+        subtree()
+        assertEquals(raw + 3, ScreenAccessibilityConnection.generation)
+        assertEquals(control + 2, ScreenAccessibilityConnection.controlGeneration)
+    }
+
     @Test fun 观察浮层卸载时仍由系统提供显示尺寸() {
         val manager = service.getSystemService(android.view.WindowManager::class.java)
         val observed = LocalOverlayWindowObserver(manager) {}

@@ -131,20 +131,28 @@ class PhoneContentDeliveryTest {
     }
 
     @Test fun 动作成功后只撤销附带观察时仍回传确认的动作结果() = runTest {
-        val executor = Executor().apply { contentCurrent = false }
-        val bus = PhoneControlBus(this, Ledger(), executor, phoneFacadeTestStrings)
-        val task = bus.create(access)
-        val request = ControlRequestParser.parse("""{
-            "request_id":"act-content-000001", "op":"ui.global_action",
-            "args":{"snapshotId":"test-snapshot", "globalAction":"home"}}""")
-        bus.submit(access, task, request)
-        runCurrent()
-        val receipt = Json.canonical(bus.receipt(access, task, request.requestId))
-        assertTrue(receipt.contains("\"status\":\"succeeded\""))
-        assertTrue(receipt.contains("\"performed\":true"))
-        assertFalse(receipt.contains(SECRET))
-        assertFalse(receipt.contains("\"ui\":"))
-        denied("CONTROL_ARTIFACT_UNAVAILABLE") { bus.artifact(access, task, artifactId(request.requestId)) }
+        for (revokeBeforePublish in listOf(true, false)) {
+            val executor = Executor().apply { contentCurrent = !revokeBeforePublish }
+            val bus = PhoneControlBus(this, Ledger(), executor, phoneFacadeTestStrings)
+            val task = bus.create(access)
+            val request = ControlRequestParser.parse("""{
+                "request_id":"act-content-000001", "op":"ui.global_action",
+                "args":{"snapshotId":"test-snapshot", "globalAction":"home"}}""")
+            bus.submit(access, task, request)
+            runCurrent()
+            if (!revokeBeforePublish) assertTrue(Json.canonical(bus.receipt(access, task, request.requestId)).contains(SECRET))
+            executor.contentCurrent = false
+            val receipt = Json.canonical(bus.receipt(access, task, request.requestId))
+            assertTrue(receipt.contains("\"status\":\"succeeded\""))
+            assertTrue(receipt.contains("\"performed\":true"))
+            assertFalse(receipt.contains(SECRET))
+            assertFalse(receipt.contains("\"ui\":"))
+            executor.contentCurrent = true
+            denied("CONTROL_ARTIFACT_UNAVAILABLE") { bus.artifact(access, task, artifactId(request.requestId)) }
+            val history = Json.canonical(bus.history(access, task))
+            assertTrue(history.contains("performed"))
+            assertFalse(history.contains(SECRET))
+        }
     }
 
     @Test fun 只失效一个请求时controlBus回执能力与同任务其他请求仍可读()=runTest {

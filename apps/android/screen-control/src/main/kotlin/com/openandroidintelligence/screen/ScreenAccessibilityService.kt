@@ -44,7 +44,7 @@ class ScreenAccessibilityService : AccessibilityService() {
         if (event == null || ScreenAccessibilityConnection.service !== this) return
         // 只保留窗口 ID、类型、状态和包名等失效判定所需信息，不保留事件源或界面文本。
         ScreenAccessibilityConnection.onWindowEvent(event.eventType, event.packageName?.toString(), event.windowId,
-            isStatusTextEvent = event::isNetworkSpeedTextEvent) {
+            isStatusTextEvent = event::isNetworkSpeedTextEvent, isStatusSubtreeEvent = event::isStatusBarSubtreeEvent) {
             ScreenAccessibilityConnection.observeWindows(this)
         }
     }
@@ -123,11 +123,13 @@ internal class LocalOverlayWindowObserver(
 object ScreenAccessibilityConnection {
     @Volatile private var reference = WeakReference<ScreenAccessibilityService>(null)
     private val sequence = AtomicLong()
+    private val controlSequence = AtomicLong()
     private val layoutChanges = kotlinx.coroutines.flow.MutableStateFlow(0L)
     val layoutEvents: kotlinx.coroutines.flow.StateFlow<Long> get() = layoutChanges
     private val listeners = CopyOnWriteArraySet<() -> Unit>()
     private val windowStateLock = Any()
     private var snapshotTargets: List<ScreenWindowState>? = null
+    private var snapshotNetworkSpeedWindows = emptySet<Int>()
     private var observedAuxiliary: Set<ScreenWindowState>? = emptySet()
     private var detachedOverlayId: Int? = null
 
@@ -137,10 +139,12 @@ object ScreenAccessibilityConnection {
         synchronized(windowStateLock) { detachedOverlayId = windowId }
     }
     internal val generation: Long get() = sequence.get()
+    internal val controlGeneration: Long get() = controlSequence.get()
     internal val service: ScreenAccessibilityService?
         get() = reference.get()?.takeIf { ScreenHostRegistry.accessibilityConnected.value }
-    internal fun changed(eventType: Int? = null) {
+    internal fun changed(eventType: Int? = null, deferControlCheck: Boolean = false) {
         sequence.incrementAndGet()
+        if (!deferControlCheck) controlSequence.incrementAndGet()
         when (eventType) {
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> layoutChanges.value += 1
@@ -177,7 +181,7 @@ object ScreenAccessibilityConnection {
     }
 
     /** 快照成功后记录与业务树同次枚举的完整窗口指纹；缺失时不建立乐观基线。 */
-    internal fun noteSnapshotWindows(businessWindowCount: Int, observed: ObservedWindows?) {
+    internal fun noteSnapshotWindows(businessWindowCount: Int, observed: ObservedWindows?, networkSpeedWindows: Set<Int> = emptySet()) {
         if (service == null) return
         if (Log.isLoggable(SCREEN_TRACE, Log.DEBUG)) {
             val rootlessOverlays = observed?.auxiliary?.count { it.packageName == null } ?: 0
@@ -187,6 +191,7 @@ object ScreenAccessibilityConnection {
         synchronized(windowStateLock) {
             snapshotTargets = observed?.targets
             observedAuxiliary = observed?.auxiliary
+            snapshotNetworkSpeedWindows = networkSpeedWindows
         }
     }
 
@@ -195,6 +200,7 @@ object ScreenAccessibilityConnection {
         eventPackage: String?,
         windowId: Int,
         isStatusTextEvent: () -> Boolean = { false },
+        isStatusSubtreeEvent: () -> Boolean = { false },
         observe: () -> ObservedWindows?,
     ) {
         // 没有可继续使用的快照时，窗口指纹无法豁免这次失效。
@@ -204,11 +210,16 @@ object ScreenAccessibilityConnection {
         val statusWindow = observed?.targets?.any { it.id == windowId && it.isStatusBar() } == true
         val statusText = statusWindow && isStatusTextEvent()
         if (requiresInvalidation(eventType, eventPackage, windowId, observed, statusText)) {
-            synchronized(windowStateLock) {
+            // 系统可能同时上报网速文字和状态栏根变化。取帧仍须失效，操控执行前重新读全量快照比对。
+            val canDefer = statusWindow && synchronized(windowStateLock) {
+                windowId in snapshotNetworkSpeedWindows && snapshotTargets == observed?.targets
+            } && isStatusSubtreeEvent()
+            if (!canDefer) synchronized(windowStateLock) {
                 snapshotTargets = null
                 observedAuxiliary = null
+                snapshotNetworkSpeedWindows = emptySet()
             }
-            changed(eventType)
+            changed(eventType, deferControlCheck = canDefer)
         }
     }
 
@@ -306,6 +317,7 @@ object ScreenAccessibilityConnection {
     private fun clearWindowState() {
         synchronized(windowStateLock) {
             snapshotTargets = null
+            snapshotNetworkSpeedWindows = emptySet()
             observedAuxiliary = emptySet()
             detachedOverlayId = null
         }
