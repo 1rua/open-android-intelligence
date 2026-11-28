@@ -22,8 +22,7 @@ class NativePhoneControlKernel(
     private fun scope(primitive: String, digest: String) = CapabilityRequestScope("native.remote.$primitive",
         if (primitive == "kernel.screen.control") DeviceOperation.CONTROL else DeviceOperation.READ, digest)
     private fun effectivePolicy(primitive: String): CapabilityPolicy = policy(primitive).let { local ->
-        if (primitive != "kernel.screen.control" && local.mode == CapabilityAuthorizationMode.READ_ONLY) local
-        else local.copy(mode = CapabilityAuthorizationMode.MANUAL)
+        if (primitive == "kernel.screen.control") local.copy(mode = CapabilityAuthorizationMode.MANUAL) else local
     }
     fun evaluate(context: PhoneExecutionContext, binding: RemoteCapabilityBinding, operation: ControlOperation): CapabilityAuthorization {
         checkBinding(binding, operation)
@@ -50,10 +49,14 @@ class NativePhoneControlKernel(
         ui.executing(context.scope.key.storageKey)
         return try {
             val result = provider.execute(context, operation, ::revalidate) {
-                // 控制批准只含 CONTROL。动作后的自动观测必须另有明确的只读免确认策略。
+                // 动作批准仅授予操控，随后自动读树仍需独立的本机读取授权。
                 runCatching {
                     checkBinding(binding, ControlOperation.DumpTree(com.openandroidintelligence.control.ScreenReadQuery()))
-                    policy("kernel.screen.read").let { it.enabled && it.mode == CapabilityAuthorizationMode.READ_ONLY }
+                    val readPolicy = policy("kernel.screen.read")
+                    readPolicy.enabled && when (readPolicy.mode) {
+                        CapabilityAuthorizationMode.READ_ONLY, CapabilityAuthorizationMode.AUTOMATIC -> true
+                        CapabilityAuthorizationMode.MANUAL -> false
+                    }
                 }.getOrDefault(false)
             }
             currentCoroutineContext().ensureActive(); revalidate(); result

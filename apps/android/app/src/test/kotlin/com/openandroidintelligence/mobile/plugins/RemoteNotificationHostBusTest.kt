@@ -41,9 +41,63 @@ class RemoteNotificationHostBusTest {
     private val systemQueries = CopyOnWriteArrayList<Pair<String, JsonValue>>()
     private var confirmations = 0
     private var providerFailure: String? = null
+    private var providerUnavailable: String? = null
 
     @Test
-    fun approvedNotificationReturnsItsRecordOnceAndANewRequestStillNeedsConsent() = runBlocking {
+    fun approvedNotificationReturnsItsRecordOnceAndANewRequestStillNeedsConsent() = withNotificationHost { _, bus ->
+        verifyReceipts(bus)
+    }
+
+    @Test
+    fun automaticNotificationReadCompletesWithoutLocalConfirmation() = withNotificationHost { host, bus ->
+        host.setCapabilityPolicy(NOTIFICATION_PLUGIN_ID, PairingGrantCapabilities.NOTIFICATIONS,
+            CapabilityPolicy(mode = CapabilityAuthorizationMode.AUTOMATIC))
+        val task = bus.create(access)
+        val request = notificationQuery("notification-automatic-01")
+        bus.submit(access, task, request)
+        coroutineContext.job.children.toList().joinAll()
+
+        val receipt = JsonFields.obj(bus.receipt(access, task, request.requestId))
+        assertEquals("completed", JsonFields.string(receipt, "state"))
+        assertEquals(true, JsonFields.bool(receipt, "resultAvailable"))
+        assertEquals(0, confirmations)
+        assertEquals(1, systemQueries.size)
+    }
+
+    @Test
+    fun notificationResultsHideTheirBodyAfterPolicyOrSystemPermissionIsRevoked() = withNotificationHost { host, bus ->
+        val task = bus.create(access)
+        val policy = CapabilityPolicy(mode = CapabilityAuthorizationMode.READ_ONLY)
+        host.setCapabilityPolicy(NOTIFICATION_PLUGIN_ID, PairingGrantCapabilities.NOTIFICATIONS, policy)
+
+        suspend fun read(id: String) {
+            bus.submit(access, task, notificationQuery(id))
+            coroutineContext.job.children.toList().joinAll()
+            assertEquals(true, JsonFields.bool(JsonFields.obj(bus.receipt(access, task, id)), "resultAvailable"))
+        }
+
+        fun assertOnlyReceipt(id: String) {
+            val receipt = JsonFields.obj(bus.receipt(access, task, id))
+            assertEquals("completed", JsonFields.string(receipt, "state"))
+            assertEquals(false, JsonFields.bool(receipt, "resultAvailable"))
+            assertNull(JsonFields.field(receipt, "result"))
+            assertFalse(Json.canonical(bus.history(access, task)).contains("仅由通知提供者返回的标记"))
+        }
+
+        val first = "notification-policy-revoked"
+        read(first)
+        host.setCapabilityPolicy(NOTIFICATION_PLUGIN_ID, PairingGrantCapabilities.NOTIFICATIONS, policy.copy(enabled = false))
+        assertOnlyReceipt(first)
+
+        host.setCapabilityPolicy(NOTIFICATION_PLUGIN_ID, PairingGrantCapabilities.NOTIFICATIONS, policy)
+        val second = "notification-system-revoked"
+        read(second)
+        providerUnavailable = "NOTIFICATION_ACCESS_REQUIRED"
+        assertOnlyReceipt(second)
+        assertEquals(0, confirmations)
+    }
+
+    private fun withNotificationHost(verify: suspend CoroutineScope.(ProductionPluginHost, PhoneControlBus) -> Unit) = runBlocking {
         assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
         val app = ApplicationProvider.getApplicationContext<Application>()
         // 先初始化进程生命周期，再启动前台界面，按通知插件声明的前台读取权限执行。
@@ -51,6 +105,7 @@ class RemoteNotificationHostBusTest {
         Robolectric.buildActivity(ComponentActivity::class.java).setup().use {
             val provider = object : KernelPrimitiveProvider {
                 override val primitiveId = "kernel.notifications.read"
+                override fun availability(): String? = providerUnavailable
                 override suspend fun invoke(context: LocalGrantContext, input: ByteArray): ByteArray {
                     providerFailure?.let { throw com.openandroidintelligence.kernel.CapabilityDenied(it) }
                     systemQueries.add(context.accountId to Json.parse(input.decodeToString()))
@@ -78,7 +133,7 @@ class RemoteNotificationHostBusTest {
                             confirmations++
                             confirmations != 2
                         }).use { phone ->
-                        phone.register(access) { true }.use { verifyReceipts(phone.bus) }
+                        phone.register(access) { true }.use { verify(host, phone.bus) }
                     }
                 }
             } finally {
@@ -89,19 +144,20 @@ class RemoteNotificationHostBusTest {
         }
     }
 
-    private suspend fun CoroutineScope.verifyReceipts(bus: PhoneControlBus) {
-        val task = bus.create(access)
-        fun query(id: String) = ControlRequestParser.parse("""{
+    private fun notificationQuery(id: String) = ControlRequestParser.parse("""{
             "request_id":"$id","op":"plugin.invoke","args":{
                 "pluginId":"$NOTIFICATION_PLUGIN_ID","capabilityId":"${PairingGrantCapabilities.NOTIFICATIONS}",
                 "method":"query","params":{"limit":1}}
         }""")
+
+    private suspend fun CoroutineScope.verifyReceipts(bus: PhoneControlBus) {
+        val task = bus.create(access)
         suspend fun receiptAfterWorkersFinish(id: String): JsonValue.JObject {
             coroutineContext.job.children.toList().joinAll()
             return requireNotNull(JsonFields.obj(bus.receipt(access, task, id)))
         }
 
-        val approved = query("notification-approved-01")
+        val approved = notificationQuery("notification-approved-01")
         bus.submit(access, task, approved)
         val completed = receiptAfterWorkersFinish(approved.requestId)
         assertEquals(Json.canonical(completed), "completed", JsonFields.string(completed, "state"))
@@ -118,7 +174,7 @@ class RemoteNotificationHostBusTest {
         assertEquals(1, confirmations)
         assertEquals(1, systemQueries.size)
 
-        val rejected = query("notification-rejected-02")
+        val rejected = notificationQuery("notification-rejected-02")
         bus.submit(access, task, rejected)
         val denied = receiptAfterWorkersFinish(rejected.requestId)
         assertEquals(Json.canonical(denied), "denied", JsonFields.string(denied, "state"))
@@ -133,7 +189,7 @@ class RemoteNotificationHostBusTest {
         for ((reason, code) in listOf("NOTIFICATION_LISTENER_UNAVAILABLE" to "NOTIFICATION_LISTENER_UNAVAILABLE",
             "私有通知标记" to "CAPABILITY_DENIED")) {
             providerFailure = reason
-            val operation = query("notification-failure-${confirmations}")
+            val operation = notificationQuery("notification-failure-${confirmations}")
             bus.submit(access, task, operation)
             val failed = receiptAfterWorkersFinish(operation.requestId)
             assertEquals(code, JsonFields.string(JsonFields.obj(JsonFields.field(failed, "error")), "code"))

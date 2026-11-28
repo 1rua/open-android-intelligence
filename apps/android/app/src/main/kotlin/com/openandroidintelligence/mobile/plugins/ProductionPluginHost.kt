@@ -32,6 +32,8 @@ data class VerifiedCapability(val identity: PluginIdentity, val id: String, val 
 data class CapabilitySnapshot(val bindings: List<Map<String,Any?>>, val inventory: List<Map<String,Any?>>,
     val inventoryComplete: Boolean = true)
 
+private val remoteDataPlugins = setOf(NOTIFICATION_PLUGIN_ID, CALL_LOG_PLUGIN_ID, SMS_PLUGIN_ID)
+
 /** Installed code is reverified once before registration; invocations use immutable verified bytes. */
 class ProductionPluginHost(private val context: Context, private val grants: PairingGrantStateHolder,
     private val trustMode: DeveloperTrustMode, val nativeLoader: NativePluginLoader, private val installationId: String,
@@ -653,13 +655,20 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         binding: RemoteCapabilityBinding, controlDigest: String? = null): CapabilityAuthorization {
         if (!binding.isCurrent() || grants.currentKernelGrant(binding.id) == null) return CapabilityAuthorization.Denied("REMOTE_AUTHORIZATION_CHANGED")
         captureSmsSubscription(binding.requestKey(requestId), entry, parameters)
-        val policy = capabilityPolicy(entry.identity.pluginId, entry.key)
         val scope = authorizationScope(entry, parameters).let { if (controlDigest == null) it else it.copy(parametersSha256 = controlDigest) }
-        // 新通道只允许明确的只读免确认；写入和控制不会继承旧自动许可。
-        val remotePolicy = if (scope.operation == DeviceOperation.READ && policy.mode == CapabilityAuthorizationMode.READ_ONLY) policy
-            else policy.copy(mode = CapabilityAuthorizationMode.MANUAL)
-        return grants.authorization.evaluate(binding.requestKey(requestId), scope, remotePolicy,
-            grants.state.value?.revision ?: return CapabilityAuthorization.Denied("LOCAL_POLICY_UNAVAILABLE"))
+        return evaluateRemoteAuthorization(requestId, entry, scope, binding)
+    }
+
+    private fun evaluateRemoteAuthorization(requestId: String, entry: VerifiedCapability, scope: CapabilityRequestScope,
+        binding: RemoteCapabilityBinding): CapabilityAuthorization {
+        val grant = grants.currentKernelGrant(binding.id)
+        if (!binding.isCurrent() || grant == null) return CapabilityAuthorization.Denied("REMOTE_AUTHORIZATION_CHANGED")
+        val policy = capabilityPolicy(entry.identity.pluginId, entry.key)
+        // 数据读取沿用本机模式。写入、控制和其他插件原有的确认要求继续生效。
+        val requiresManual = scope.operation != DeviceOperation.READ ||
+            (policy.mode == CapabilityAuthorizationMode.AUTOMATIC && entry.identity.pluginId !in remoteDataPlugins)
+        val remotePolicy = if (requiresManual) policy.copy(mode = CapabilityAuthorizationMode.MANUAL) else policy
+        return grants.authorization.evaluate(binding.requestKey(requestId), scope, remotePolicy, grant.revision)
     }
 
     fun approveRemoteRequest(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
@@ -689,11 +698,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             entry != null && backgroundAuthorizationCurrent(entry, invocation.background)
         } else if (invocation.remote != null) {
             val entry = capabilityForAuthorizationScope(invocation.scope)
-            entry != null && invocation.remote.isCurrent() && grants.authorization.evaluate(invocation.remote.requestKey(requestId),
-                invocation.scope, capabilityPolicy(entry.identity.pluginId, entry.key).let { policy ->
-                    if (invocation.scope.operation == DeviceOperation.READ && policy.mode == CapabilityAuthorizationMode.READ_ONLY) policy
-                    else policy.copy(mode = CapabilityAuthorizationMode.MANUAL)
-                }, grants.state.value?.revision ?: -1) is CapabilityAuthorization.Allowed
+            entry != null && evaluateRemoteAuthorization(requestId, entry, invocation.scope, invocation.remote) is CapabilityAuthorization.Allowed
         } else authorizationScopeIsCurrent(requestId, invocation.scope, null, invocation.binding)
 
     fun invokeRemote(entry: VerifiedCapability, parameters: JsonValue, correlationId: String, binding: RemoteCapabilityBinding,

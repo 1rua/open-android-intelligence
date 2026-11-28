@@ -23,3 +23,25 @@ ADB 的另一轮临时连接在 `05:25:49.706` 关闭，窗口于 `05:25:49.760`
 屏幕测试在三星计算器进行。原控制快照把已卸审批窗的迟到事件当成业务界面变化。ADB 确认该浮窗的窗口号后，修复通过已登记的本机窗口身份处理卸载事件。测试还发现，交互控件和窗口均相同的两份快照可因状态栏网速文字变化而失效。暂时隐藏网速显示后，Home 动作成功执行，随后恢复手机原设置。操控校验仅归一化已确认的系统状态栏网速标签文字，语义树仍返回真实文本。[窗口事件判定](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/ScreenAccessibilityService.kt#L215) · [状态栏标签识别](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/ScreenStatusPresentation.kt#L12)
 
 旧版 Android 的 SoM 整屏取帧须在采集前确认遮蔽所需的窗口根与子节点可读。身份明确且已完整遮蔽的本机审批浮窗可剔除。取帧后再做一次严格校验。Android 34 起使用指定窗口截图。[SoM 校验](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/NativePhoneScreen.kt#L88)
+
+## `13821` 真机对照
+
+Note20 Ultra（Android 33）安装签名 APK `13821`，签名与 APK 内记录的源码提交 `9ed072ae` 均已核对。状态栏网速显示开启。以下测试使用持续 LAN 连接，审批经过真实的本机确认窗口。
+
+| 能力 | DSH 原生 | Terra 经 MCP |
+| --- | --- | --- |
+| `phone.capabilities` | 完成，10 项，0.78 秒 | 完成，10 项，2.75 秒 |
+| `notifications.query` | 完成 0 条，1.98 秒 | 完成 0 条，4.92 秒 |
+| `call-log.query` | 完成 1 条，1.75 秒 | 完成 1 条，4.74 秒 |
+| `sms.query` | 完成 1 条，1.68 秒 | 完成 1 条，4.95 秒 |
+| `ui.dump_tree` | 返回计算器 16 个节点，3.79 秒含结果文件回读 | 返回计算器 16 个节点，7.73 秒 |
+| `ui.capture_som` | 取得 90,680 字节 WebP，取回结果耗时 6.60 秒 | 取得 90,680 字节 WebP，结果耗时 18.47 秒，随后下载 |
+| `ui.global_action`（Home） | 动作完成，`performed:true`、`settled:true`，3.90 秒 | 该轮批准后快照过期，动作未执行，6.06 秒 |
+
+两条路径都验证了通知查询的本机拒绝，业务执行未开始。截图一栏为暂时关闭三星侧屏面板后的对照结果，WebP 文件长度、格式及 SHA-256 均通过校验。原生工具此前在侧屏面板开启时已完成计算器 UI 树和 Home。持续连接的上述样本中未遇到 `REMOTE_CONNECTION_CLOSED`。
+
+侧屏面板开启时，Android 33 的全显示器 SoM 在取帧前返回 `SCREEN_REDACTION_UNPROVABLE`。设备上的调试栈显示三星侧屏把手报告了子节点，但对父节点调用 `refresh()` 成功后，同一索引仍返回空。窗口管理器记录的绘制帧为 `[1013,439][1080,719]`，无障碍窗口的可触范围为 `[1038,439][1080,719]`。缺失节点的窗口无法凭可触区域保证像素遮蔽，仍由手机安全拒绝。此场景的 UI 树读取和已确认的 Home 控制可独立使用。[缺失节点处理](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/AndroidAccessibilityRuntime.kt#L308)
+
+## 三档本机授权
+
+DSH 手机的数据插件和原生屏幕曾只识别「允许只读」的免确认模式，把「自动允许」降为「每次手动」。数据插件的进入判断与执行复核同时使用同一策略。两种免确认模式均只作用于已授权的读取，截图还要求读取与图像采集各自获准。屏幕操控与短信发送继续本机确认。[数据能力策略](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/plugins/ProductionPluginHost.kt#L652) · [屏幕授权](../../apps/android/platform-kernel/src/main/kotlin/com/openandroidintelligence/kernel/NativePhoneControlKernel.kt#L22)
