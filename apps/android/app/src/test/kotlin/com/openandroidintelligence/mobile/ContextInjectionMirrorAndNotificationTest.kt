@@ -365,4 +365,372 @@ class ContextInjectionMirrorAndNotificationTest {
             scope.cancel()
         }
     }
+
+    @Test
+    fun `checkpoint读取与reconcileQuery和完整会话刷新均统一剥离注入信封且不破坏镜像原件`() = runBlocking {
+        val scope = testScope("mirror_checkpoint_reconcile")
+        val localMirror = mirror(scope)
+        val convId = "conv-ckpt-1"
+        val clientId = ClientMessageId("cli-reconcile-1")
+
+        // 1. 写入含上下文注入的 checkpoint 消息与标题，验证 load() 单一收口净化
+        val rawUser = TimelineMessage(
+            id = "ckpt-u-1",
+            sender = "user",
+            parts = listOf(MessagePart.Text("<permissions instructions>\nrules\n</permissions instructions>\n\n检查网络状态")),
+            timestamp = 10L,
+            conversationId = ConversationId(convId),
+        )
+        val rawSystem = TimelineMessage(
+            id = "ckpt-sys-1",
+            sender = "system",
+            parts = listOf(MessagePart.Text("Internal system prompt")),
+            timestamp = 11L,
+            conversationId = ConversationId(convId),
+        )
+        localMirror.save(
+            com.openandroidintelligence.conversation.state.WorkbenchCheckpoint(
+                threads = listOf(ConversationSummary(ConversationId(convId), "<system-reminder>x</system-reminder>\n网络排查", 10L)),
+                threadId = convId,
+                title = "<environment_context><cwd>/</cwd></environment_context>\n网络排查",
+                messages = listOf(rawUser, rawSystem),
+                revisions = mapOf("ckpt-u-1" to 1L, "ckpt-sys-1" to 1L),
+                draft = "",
+                draftRevision = 0L,
+                attachments = emptyList(),
+                submission = null,
+                renamedThreads = emptySet(),
+                eventIds = emptySet(),
+            ),
+        )
+        val loaded = localMirror.load()!!
+        assertEquals(listOf("ckpt-u-1"), loaded.messages.map { it.id })
+        assertEquals("检查网络状态", (loaded.messages.single().parts.single() as MessagePart.Text).value)
+        assertEquals("网络排查", loaded.title)
+        assertEquals("网络排查", loaded.threads.single().title)
+
+        // 2. reconcileQuery 写入远端确认回显时同步净化，不把注入文本带回原子或返回消息
+        localMirror.saveSendAtoms(
+            convId,
+            listOf(
+                com.openandroidintelligence.conversation.model.LocalSendAtom(
+                    conversationId = ConversationId(convId),
+                    clientMessageId = clientId,
+                    parts = listOf(MessagePart.Text("检查网络状态")),
+                    timestamp = 15L,
+                ),
+            ),
+        )
+        val reconciled = localMirror.reconcileQuery(
+            convId,
+            clientId,
+            TimelineMessage(
+                id = "srv-rec-1",
+                sender = "user",
+                parts = listOf(MessagePart.Text("<system-reminder>injected</system-reminder>\n检查网络状态")),
+                timestamp = 20L,
+                state = "CONFIRMED",
+                conversationId = ConversationId(convId),
+                clientMessageId = clientId,
+                contentRevision = 2L,
+            ),
+        )
+        assertEquals("检查网络状态", (reconciled.parts.single() as MessagePart.Text).value)
+        val storedAtom = localMirror.loadSendAtoms(convId).single()
+        assertEquals("检查网络状态", (storedAtom.parts.single() as MessagePart.Text).value)
+
+        // 3. MirroredConversationRepository.listConversations 全量刷新持久化到镜像的标题已净化
+        val delegate = object : ConversationRepository {
+            override suspend fun listConversations(scope: ConversationScope, page: PageRequest) =
+                ConversationPage(
+                    listOf(ConversationSummary(ConversationId(convId), "<permissions instructions>p</permissions instructions>\n干净会话名", 30L)),
+                    null,
+                    snapshotRevision = 5L,
+                    authoritative = true,
+                )
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+            override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) = Conversation(ConversationId(convId), "", 0L)
+            override suspend fun submitMessage(message: OutgoingMessage) = MessageAcceptance("ok", message.clientMessageId.value)
+            override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
+            override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> = flowOf()
+            override suspend fun cancelGeneration(generationId: String, requestId: String) =
+                CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
+        }
+        val repo = MirroredConversationRepository(delegate, localMirror)
+        val refreshed = repo.listConversations(scope, PageRequest())
+        assertEquals("干净会话名", refreshed.conversations.single().title)
+        assertEquals("干净会话名", localMirror.threads()!!.single().title)
+    }
+
+    @Test
+    fun `reconcileQuery与MessageStatus遇到纯上下文注入消息绝不回退写入原始文本或泄漏返回`() = runBlocking {
+        val scope = testScope("mirror_pure_injection_no_fallback")
+        val localMirror = mirror(scope)
+        val convId = "conv-pure-inj-1"
+
+        // 1. reconcileQuery 已有本地发送原子，远端回传纯注入消息（projectMessage == null）：绝不覆盖本地原子且不泄漏注入文本
+        val existingClientId = ClientMessageId("cli-existing-1")
+        localMirror.saveSendAtoms(
+            convId,
+            listOf(
+                com.openandroidintelligence.conversation.model.LocalSendAtom(
+                    conversationId = ConversationId(convId),
+                    clientMessageId = existingClientId,
+                    parts = listOf(MessagePart.Text("用户原始提问")),
+                    timestamp = 10L,
+                ),
+            ),
+        )
+        val pureInjectionRow = TimelineMessage(
+            id = "srv-pure-1",
+            sender = "user",
+            parts = listOf(MessagePart.Text("<system-reminder>only secret prompt</system-reminder>")),
+            timestamp = 20L,
+            state = "CONFIRMED",
+            conversationId = ConversationId(convId),
+            clientMessageId = existingClientId,
+            contentRevision = 2L,
+        )
+        val kept = localMirror.reconcileQuery(convId, existingClientId, pureInjectionRow)
+        assertEquals("用户原始提问", (kept.parts.single() as MessagePart.Text).value)
+        assertEquals("用户原始提问", (localMirror.loadSendAtoms(convId).single().parts.single() as MessagePart.Text).value)
+
+        // 2. reconcileQuery 无本地原子，远端回传纯注入消息：绝不把原始注入文本返回给调用方，且 MirroredConversationRepository.queryMessage 返回 null
+        val orphanClientId = ClientMessageId("cli-orphan-pure")
+        val orphanPureRow = TimelineMessage(
+            id = "srv-pure-orphan",
+            sender = "user",
+            parts = listOf(MessagePart.Text("<permissions instructions>secret</permissions instructions>")),
+            timestamp = 25L,
+            state = "CONFIRMED",
+            conversationId = ConversationId(convId),
+            clientMessageId = orphanClientId,
+        )
+        val sanitizedOrphan = localMirror.reconcileQuery(convId, orphanClientId, orphanPureRow)
+        assertTrue("纯注入消息不得带出任何可见文本分段", sanitizedOrphan.parts.isEmpty())
+        assertTrue("纯注入消息必须标记为 meta", sanitizedOrphan.isMeta)
+
+        val queryDelegate = object : ConversationRepository, com.openandroidintelligence.conversation.ports.MessageOutcomeQuery {
+            override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(emptyList(), null)
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+            override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) = Conversation(ConversationId(convId), "", 0L)
+            override suspend fun submitMessage(message: OutgoingMessage) = MessageAcceptance("ok", message.clientMessageId.value)
+            override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
+            override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> = flowOf()
+            override suspend fun cancelGeneration(generationId: String, requestId: String) = CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
+            override suspend fun queryMessage(conversationId: String, clientMessageId: ClientMessageId) = orphanPureRow
+        }
+        val mirroredRepo = MirroredConversationRepository(queryDelegate, localMirror)
+        assertNull("queryMessage 遇到纯注入消息必须返回 null", mirroredRepo.queryMessage(convId, orphanClientId))
+
+        // 3. apply(MessageStatus) 命中基线中一条纯注入 user 行且无既有原子：绝不能将其原始注入文本写入 LocalSendAtom
+        localMirror.saveTimeline(
+            convId,
+            TimelinePage(
+                messages = listOf(
+                    TimelineMessage(
+                        id = "srv-base-pure",
+                        sender = "user",
+                        parts = listOf(MessagePart.Text("<system-reminder>hidden baseline injection</system-reminder>")),
+                        timestamp = 30L,
+                        conversationId = ConversationId(convId),
+                    ),
+                ),
+                nextCursor = null,
+            ),
+        )
+        val statusClientId = ClientMessageId("cli-status-pure")
+        localMirror.apply(
+            VerifiedConversationEvent.MessageStatus(
+                eventId = "ev-status-pure",
+                occurredAt = 35L,
+                conversationId = ConversationId(convId),
+                messageId = "srv-base-pure",
+                clientMessageId = statusClientId,
+                status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED,
+                revision = 1L,
+                errorCode = null,
+                generationId = "g-pure",
+            ),
+        )
+        assertTrue(
+            "纯注入基线消息收到 MessageStatus 不得创建带原始注入文本的 LocalSendAtom",
+            localMirror.loadSendAtoms(convId).none { it.clientMessageId == statusClientId },
+        )
+    }
+
+    @Test
+    fun `用户普通XML示例在投影与关联clientMessageId的本地发送记录中均完整保留`() = runBlocking {
+        val scope = testScope("mirror_user_xml_preserve")
+        val localMirror = mirror(scope)
+        val convId = "conv-xml-preserve"
+        val clientId = ClientMessageId("cli-xml-1")
+        val xmlMessage = "<tools><tool>calculator</tool></tools>\n\n请解释这段 XML"
+
+        localMirror.saveSendAtoms(
+            convId,
+            listOf(
+                com.openandroidintelligence.conversation.model.LocalSendAtom(
+                    conversationId = ConversationId(convId),
+                    clientMessageId = clientId,
+                    parts = listOf(MessagePart.Text(xmlMessage)),
+                    timestamp = 100L,
+                ),
+            ),
+        )
+        val echoEvent = VerifiedConversationEvent.TimelineUpsert(
+            eventId = "ev-xml-echo",
+            occurredAt = 110L,
+            revision = 1L,
+            message = TimelineMessage(
+                id = "srv-xml-1",
+                sender = "user",
+                parts = listOf(MessagePart.Text(xmlMessage)),
+                timestamp = 110L,
+                state = "CONFIRMED",
+                conversationId = ConversationId(convId),
+                clientMessageId = clientId,
+                contentRevision = 1L,
+            ),
+        )
+        localMirror.apply(echoEvent)
+        val projectedEvent = localMirror.projectEvent(echoEvent) as VerifiedConversationEvent.TimelineUpsert
+        assertEquals(xmlMessage, (projectedEvent.message.parts.single() as MessagePart.Text).value)
+        assertEquals(xmlMessage, (localMirror.loadSendAtoms(convId).single().parts.single() as MessagePart.Text).value)
+
+        // 对照：即便本地发送原稿含会被投影剥离的前缀，镜像事件回显原稿时 LocalSendAtom 仍保留用户原稿不被投影覆盖丢失
+        val clientId2 = ClientMessageId("cli-xml-raw-draft")
+        val userDraftWithContextTag = "<context>demo</context>\n\n原稿问题"
+        localMirror.saveSendAtoms(
+            convId,
+            listOf(
+                com.openandroidintelligence.conversation.model.LocalSendAtom(
+                    conversationId = ConversationId(convId),
+                    clientMessageId = clientId2,
+                    parts = listOf(MessagePart.Text(userDraftWithContextTag)),
+                    timestamp = 120L,
+                ),
+            ),
+        )
+        localMirror.apply(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "ev-raw-draft-echo",
+                occurredAt = 130L,
+                revision = 2L,
+                message = TimelineMessage(
+                    id = "srv-xml-2",
+                    sender = "user",
+                    parts = listOf(MessagePart.Text("原稿问题")),
+                    rawParts = listOf(MessagePart.Text(userDraftWithContextTag)),
+                    timestamp = 130L,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId(convId),
+                    clientMessageId = clientId2,
+                    contentRevision = 2L,
+                ),
+            ),
+        )
+        val storedDraftAtom = localMirror.loadSendAtoms(convId).single { it.clientMessageId == clientId2 }
+        assertEquals(
+            "已关联 clientMessageId 的镜像事件不得把投影清洗结果覆盖写入 LocalSendAtom 导致丢失原稿",
+            userDraftWithContextTag,
+            (storedDraftAtom.parts.single() as MessagePart.Text).value,
+        )
+
+        // 对照：明确携带注入标记的 <tools source="system"> 仍会被投影可靠剥离
+        val injectedEvent = VerifiedConversationEvent.TimelineUpsert(
+            eventId = "ev-tools-injected",
+            occurredAt = 140L,
+            revision = 3L,
+            message = TimelineMessage(
+                id = "srv-tools-inj",
+                sender = "user",
+                parts = listOf(MessagePart.Text("<tools source=\"system\"><tool>bash</tool></tools>\n\n请解释这段 XML")),
+                timestamp = 140L,
+                state = "CONFIRMED",
+                conversationId = ConversationId(convId),
+                contentRevision = 3L,
+            ),
+        )
+        val projectedInjected = localMirror.projectEvent(injectedEvent) as VerifiedConversationEvent.TimelineUpsert
+        assertEquals("请解释这段 XML", (projectedInjected.message.parts.single() as MessagePart.Text).value)
+    }
+
+    @Test
+    fun `172字普通长标题在save和会话列表与TitleUpdated下保存及离线恢复完整不截断且注入标题仍被净化`() = runBlocking {
+        val scope = testScope("mirror_full_long_title")
+        val localMirror = mirror(scope)
+        val convId = "conv-long-title"
+        val longTitle172 = "完整重命名会话标题-" + "甲".repeat(155) + "-后缀172字"
+        assertEquals(172, longTitle172.length)
+
+        // 1. save() + 离线重开 load() 完整保留 172 字标题（workbench.title 与 threads 均不截断为 160 字）
+        localMirror.save(
+            com.openandroidintelligence.conversation.state.WorkbenchCheckpoint(
+                threads = listOf(ConversationSummary(ConversationId(convId), longTitle172, 100L)),
+                threadId = convId,
+                title = longTitle172,
+                messages = emptyList(),
+                revisions = emptyMap(),
+                draft = "",
+                draftRevision = 0L,
+                attachments = emptyList(),
+                submission = null,
+                renamedThreads = setOf(convId),
+                eventIds = emptySet(),
+            ),
+        )
+        val reopenedAfterSave = mirror(scope)
+        val loadedCheckpoint = reopenedAfterSave.load()!!
+        assertEquals("save/load 必须完整保留 172 字活跃会话标题", longTitle172, loadedCheckpoint.title)
+        assertEquals("save/load 必须完整保留 172 字会话列表标题", longTitle172, loadedCheckpoint.threads.single().title)
+        assertEquals("threads() 必须完整保留 172 字标题", longTitle172, reopenedAfterSave.threads()!!.single().title)
+
+        // 2. TitleUpdated 事件（apply + projectEvent）完整保留 172 字标题，并净化含注入标记的长标题
+        val updatedLongTitle172 = "更新后的完整标题-" + "乙".repeat(156) + "-末尾172字"
+        assertEquals(172, updatedLongTitle172.length)
+        val titleEvent = VerifiedConversationEvent.TitleUpdated(
+            eventId = "ev-title-long",
+            occurredAt = 200L,
+            conversationId = ConversationId(convId),
+            newTitle = "<environment_context><cwd>/repo</cwd></environment_context>\n$updatedLongTitle172",
+        )
+        reopenedAfterSave.apply(titleEvent)
+        val projectedTitleEvent = reopenedAfterSave.projectEvent(titleEvent) as VerifiedConversationEvent.TitleUpdated
+        assertEquals(updatedLongTitle172, projectedTitleEvent.newTitle)
+
+        val reopenedAfterTitleEvent = mirror(scope)
+        assertEquals(updatedLongTitle172, reopenedAfterTitleEvent.threads()!!.single().title)
+
+        // 3. MirroredConversationRepository.listConversations 全量刷新与离线恢复均保留完整 172 字标题
+        val delegate = object : ConversationRepository {
+            override suspend fun listConversations(scope: ConversationScope, page: PageRequest) =
+                ConversationPage(
+                    listOf(
+                        ConversationSummary(
+                            ConversationId(convId),
+                            "<system-reminder>internal</system-reminder>\n$longTitle172",
+                            300L,
+                        ),
+                    ),
+                    null,
+                    snapshotRevision = 9L,
+                    authoritative = true,
+                )
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+            override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) = Conversation(ConversationId(convId), "", 0L)
+            override suspend fun submitMessage(message: OutgoingMessage) = MessageAcceptance("ok", message.clientMessageId.value)
+            override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
+            override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> = flowOf()
+            override suspend fun cancelGeneration(generationId: String, requestId: String) =
+                CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
+        }
+        val repo = MirroredConversationRepository(delegate, reopenedAfterTitleEvent)
+        val onlineList = repo.listConversations(scope, PageRequest())
+        assertEquals(longTitle172, onlineList.conversations.single().title)
+
+        val offlineRepo = OfflineMirrorRepository(mirror(scope))
+        val offlineList = offlineRepo.listConversations(scope, PageRequest())
+        assertEquals(longTitle172, offlineList.conversations.single().title)
+    }
 }

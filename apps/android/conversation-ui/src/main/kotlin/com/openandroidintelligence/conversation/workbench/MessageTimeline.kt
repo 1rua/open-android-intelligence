@@ -87,10 +87,16 @@ fun MessageTimeline(
     onDownloadAttachment: ((String) -> Unit)? = null,
     onRequestOriginalAttachment: ((String) -> Unit)? = null,
     generation: GenerationState? = null,
+    ready: Boolean = true,
 ) {
     val displayItems = rememberTimelineDisplayItems(entries, generation = generation)
     val timing = rememberExecutionTimingStore(threadId = null)
     val presentations = rememberStreamingPresentations(entries, owner = null, generation = generation)
+    val toolCardRevealTracker = LocalToolCardRevealTracker.current ?: rememberToolCardRevealTracker(
+        threadId = null,
+        displayItems = displayItems,
+        ready = ready,
+    )
     AttachmentPreviewHost(
         attachments = entries.flatMap { it.attachments },
         onDownload = onDownloadAttachment,
@@ -107,6 +113,7 @@ fun MessageTimeline(
                     onDecide = onDecide,
                     timing = timing,
                     presentations = presentations,
+                    toolCardRevealTracker = toolCardRevealTracker,
                     onDownloadAttachment = onDownloadAttachment,
                     onRequestOriginalAttachment = onRequestOriginalAttachment,
                     onOpenAttachmentPreview = openPreview,
@@ -769,6 +776,7 @@ fun TimelineDisplayRow(
     onOpenAttachmentPreview: ((String) -> Unit)? = null,
     evidenceOwner: Any? = null,
     presentations: StreamingPresentationRegistry? = null,
+    toolCardRevealTracker: ToolCardRevealTracker? = LocalToolCardRevealTracker.current,
 ) {
     val inheritedPreviewScope = LocalImagePreviewScope.current
     if (GatewayLog.protocolEvidenceEnabled) {
@@ -829,6 +837,7 @@ fun TimelineDisplayRow(
     CompositionLocalProvider(
         LocalExecutionTiming provides timing,
         LocalStreamingPresentationRegistry provides presentations,
+        LocalToolCardRevealTracker provides toolCardRevealTracker,
     ) {
         CompositionLocalProvider(
             LocalImagePreviewScope provides (evidenceOwner ?: inheritedPreviewScope),

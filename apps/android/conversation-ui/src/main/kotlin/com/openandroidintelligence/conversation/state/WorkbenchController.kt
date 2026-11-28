@@ -338,8 +338,45 @@ class WorkbenchController(
         }
     }
 
+    /**
+     * 控制器镜像写入的单一权威投影闸门：
+     * 所有远端快照、本地缓存恢复、实时事件和本地发送受理写入 `mirrored` 前均统一经由此处
+     * 叠加最新状态并通过 [ContextInjectionFilter.projectMessage] 过滤与剥离，杜绝单点漏过滤。
+     */
+    private fun projectForMirror(rawMessage: TimelineMessage): TimelineMessage? {
+        val withStatus = withLatestMessageStatus(rawMessage)
+        if (withStatus.isDeleted) return null
+        return ContextInjectionFilter.projectMessage(withStatus)
+    }
+
+    private fun ingestMirroredMessage(
+        threadId: String,
+        rawMessage: TimelineMessage,
+        revisionOverride: Long? = null,
+        presentationOrigin: StreamPresentationOrigin = StreamPresentationOrigin.SNAPSHOT,
+        removeIfFiltered: Boolean = true,
+    ): TimelineMessage? {
+        val projected = projectForMirror(rawMessage)
+        if (projected == null) {
+            if (removeIfFiltered) {
+                mirrored.remove(rawMessage.id)
+                mirroredRevisions.remove(rawMessage.id)
+            }
+            return null
+        }
+        val targetRevision = revisionOverride ?: projected.contentRevision ?: 0L
+        rememberPresentation(projected, targetRevision, presentationOrigin)
+        recordMessageArrival(threadId, projected.id)
+        mirrored[projected.id] = preserveOrderSequence(projected)
+        mirroredRevisions[projected.id] = maxOf(mirroredRevisions[projected.id] ?: 0L, targetRevision)
+        return projected
+    }
+
     /** 同步界面路径只读投影；未装载状态由 historyHydrated 明确表示。 */
     private fun atomsFor(threadId: String): Map<String,LocalSendAtom> = sendAtomsByThread[threadId].orEmpty()
+
+    private fun canonicalStepId(stepId: String): String =
+        com.openandroidintelligence.conversation.model.ToolCallPairing.normalizeCallId(stepId) ?: stepId
 
     private fun recordExecutionFacts(event: VerifiedConversationEvent.ExecutionStepsUpdated) {
         if (event.generationId.isBlank() || event.executionRevision < 0 || event.steps.any {
@@ -347,24 +384,89 @@ class WorkbenchController(
             }) return
         val key = event.conversationId.value to event.generationId
         val previous = executionFacts[key]
-        if (previous != null && event.executionRevision <= previous.revision) return
+        val allowsStaleOrEqualRevision = previous != null && event.steps.any { incoming ->
+            val incomingId = canonicalStepId(incoming.stepId)
+            val prevStep = previous.steps.firstOrNull { canonicalStepId(it.stepId) == incomingId }
+            when {
+                prevStep == null -> event.executionRevision == previous.revision
+                !com.openandroidintelligence.conversation.model.ToolCallPairing.isTerminalStatus(prevStep.status) &&
+                    com.openandroidintelligence.conversation.model.ToolCallPairing.isTerminalStatus(incoming.status) -> true
+                else -> false
+            }
+        }
+        if (previous != null && event.executionRevision <= previous.revision && !allowsStaleOrEqualRevision) return
         val clientId = event.clientMessageId?.takeIf { it.isNotBlank() }
         val userId = event.userMessageId?.takeIf { it.isNotBlank() }
         // A later snapshot cannot move an existing generation to a new prompt.
         if (previous?.clientMessageId != null && clientId != null && previous.clientMessageId != clientId ||
             previous?.userMessageId != null && userId != null && previous.userMessageId != userId) return
+        val incomingStepIds = event.steps.mapTo(hashSetOf()) { canonicalStepId(it.stepId) }
+        // 若同会话已存在临时 generation（request:* / remote-execution:* / history-turn:*）承载了同一 stepId，
+        // 统一收口到真实 generation，防止同一工具在升级 generation 后分裂成底部重复卡片。
+        val incomingIsProvisional = com.openandroidintelligence.conversation.model.ToolCallPairing.isProvisionalGenerationId(event.generationId)
+        val overlappingKeys = executionFacts.entries.filter { (otherKey, otherFacts) ->
+            otherKey.first == event.conversationId.value &&
+                otherKey.second != event.generationId &&
+                (incomingIsProvisional || com.openandroidintelligence.conversation.model.ToolCallPairing.isProvisionalGenerationId(otherKey.second)) &&
+                otherFacts.steps.any { canonicalStepId(it.stepId) in incomingStepIds }
+        }
+        val targetKey = if (incomingIsProvisional) {
+            overlappingKeys.firstOrNull { (otherKey, _) ->
+                !com.openandroidintelligence.conversation.model.ToolCallPairing.isProvisionalGenerationId(otherKey.second)
+            }?.key ?: key
+        } else {
+            key
+        }
+        val targetPrevious = executionFacts[targetKey]
         val steps = linkedMapOf<String, NativeExecutionStep>()
-        previous?.steps?.forEach { steps[it.stepId] = it }
-        event.steps.forEach { incoming ->
-            val arrivalKey = Triple(event.conversationId.value, event.generationId, incoming.stepId)
+        var mergedOccurredAt = targetPrevious?.occurredAt ?: event.occurredAt
+        var mergedClientId = targetPrevious?.clientMessageId ?: clientId
+        var mergedUserId = targetPrevious?.userMessageId ?: userId
+        if (!incomingIsProvisional) {
+            overlappingKeys.forEach { (provKey, provFacts) ->
+                val remaining = mutableListOf<NativeExecutionStep>()
+                provFacts.steps.forEach { rawStep ->
+                    val cleanId = canonicalStepId(rawStep.stepId)
+                    val step = if (rawStep.stepId == cleanId) rawStep else rawStep.copy(stepId = cleanId)
+                    if (cleanId in incomingStepIds) {
+                        steps[cleanId] = steps[cleanId]?.applyNewerSnapshot(step) ?: step
+                        executionStepArrivalOrder.remove(Triple(event.conversationId.value, provKey.second, cleanId))?.let { order ->
+                            executionStepArrivalOrder.putIfAbsent(Triple(event.conversationId.value, targetKey.second, cleanId), order)
+                        }
+                    } else {
+                        remaining += step
+                    }
+                }
+                if (provFacts.occurredAt > 0L && (mergedOccurredAt <= 0L || provFacts.occurredAt < mergedOccurredAt)) {
+                    mergedOccurredAt = provFacts.occurredAt
+                }
+                if (mergedClientId == null) mergedClientId = provFacts.clientMessageId
+                if (mergedUserId == null) mergedUserId = provFacts.userMessageId
+                if (remaining.isEmpty()) {
+                    executionFacts.remove(provKey)
+                } else {
+                    executionFacts[provKey] = provFacts.copy(steps = remaining)
+                }
+            }
+        }
+        targetPrevious?.steps?.forEach { rawPrev ->
+            val cleanId = canonicalStepId(rawPrev.stepId)
+            val prevStep = if (rawPrev.stepId == cleanId) rawPrev else rawPrev.copy(stepId = cleanId)
+            steps[cleanId] = steps[cleanId]?.applyNewerSnapshot(prevStep) ?: prevStep
+        }
+        event.steps.forEach { rawIncoming ->
+            val cleanId = canonicalStepId(rawIncoming.stepId)
+            val incoming = if (rawIncoming.stepId == cleanId) rawIncoming else rawIncoming.copy(stepId = cleanId)
+            val arrivalKey = Triple(event.conversationId.value, targetKey.second, cleanId)
             if (arrivalKey !in executionStepArrivalOrder) {
                 executionStepArrivalOrder[arrivalKey] = ++nextArrivalOrder
             }
-            val old = steps[incoming.stepId]
-            steps[incoming.stepId] = old?.applyNewerSnapshot(incoming) ?: incoming
+            val old = steps[cleanId]
+            steps[cleanId] = old?.applyNewerSnapshot(incoming) ?: incoming
         }
-        executionFacts[key] = NativeExecutionFacts(event.executionRevision, previous?.occurredAt ?: event.occurredAt,
-            steps.values.toList(), previous?.clientMessageId ?: clientId, previous?.userMessageId ?: userId)
+        val nextRevision = maxOf(targetPrevious?.revision ?: 0L, event.executionRevision)
+        executionFacts[targetKey] = NativeExecutionFacts(nextRevision, mergedOccurredAt,
+            steps.values.toList(), mergedClientId, mergedUserId)
     }
 
     private fun rememberExecutionTerminal(threadId: String, generationId: String,
@@ -586,6 +688,10 @@ class WorkbenchController(
             }
             is VerifiedConversationEvent.TimelineUpsert -> event.message.conversationId?.value?.let { threadId ->
                 if (event.message.isDeleted) snapshotDeletedIdsByThread.getOrPut(threadId) { linkedSetOf() }.add(event.message.id)
+                val versionedMessage = if (event.message.contentRevision == null) {
+                    event.message.copy(contentRevision = event.revision)
+                } else event.message
+                val projectedForAtom = if (versionedMessage.isDeleted) versionedMessage else ContextInjectionFilter.projectMessage(versionedMessage)
                 val atom = loadSendAtomsOnIo(threadId).firstOrNull {
                     it.messageId == event.message.id || (event.message.clientMessageId != null && it.clientMessageId == event.message.clientMessageId)
                 }
@@ -593,7 +699,8 @@ class WorkbenchController(
                     old?.let {
                         if (event.message.isDeleted) it.identified(event.message.id).copy(parts=emptyList(),snapshotDeleted=true)
                         else if (it.snapshotDeleted || event.revision <= it.contentRevision || it.tombstoneRevision?.let { revision -> event.revision <= revision } == true) it
-                        else it.identified(event.message.id).copy(parts = event.message.parts,
+                        else if (projectedForAtom == null) it
+                        else it.identified(event.message.id).copy(parts = projectedForAtom.parts,
                             contentRevision = event.revision, tombstoneRevision = null)
                     }
                 } }
@@ -1654,8 +1761,7 @@ class WorkbenchController(
             if (restoreLastThread) {
                 mirrored.putAll(
                     saved.messages
-                        .map(::withLatestMessageStatus)
-                        .mapNotNull { msg -> if (msg.isDeleted) null else ContextInjectionFilter.projectMessage(msg) }
+                        .mapNotNull(::projectForMirror)
                         .associateBy { it.id }
                 )
                 mirroredRevisions.putAll(saved.revisions)
@@ -1673,10 +1779,10 @@ class WorkbenchController(
                     LocalSubmissionState.OUTCOME_UNKNOWN
             } == true
             val restoredRows = renderTimeline()
-            val cleanSavedThreads = saved.threads.map { it.copy(title = ContextInjectionFilter.sanitizeSummaryText(it.title)) }
+            val cleanSavedThreads = saved.threads.map { it.copy(title = ContextInjectionFilter.sanitizeTitleText(it.title)) }
             _state.value = _state.value.copy(threads = if (cleanSavedThreads.isEmpty()) Loadable.Empty else Loadable.Ready(saved.organization.sort(cleanSavedThreads)),
                 organization=saved.organization, pendingFolderAssignments=pendingFolderAssignments.toMap(),
-                activeThreadId = activeThreadId, activeThreadTitle = if (restoreLastThread) ContextInjectionFilter.sanitizeSummaryText(saved.title) else "",
+                activeThreadId = activeThreadId, activeThreadTitle = if (restoreLastThread) ContextInjectionFilter.sanitizeTitleText(saved.title) else "",
                 draftVersion=saved.draftVersion,
                 draft = if (restoreComposer) {
                     if (saved.draftExplicit) saved.draft else saved.draft.ifBlank { displayedSubmission?.text.orEmpty() }
@@ -1917,7 +2023,7 @@ class WorkbenchController(
                     val cached = _state.value.organization.sort(
                         local.conversations
                             .filterNot { it.id.value in deletedThreads }
-                            .map { it.copy(title = ContextInjectionFilter.sanitizeSummaryText(it.title)) }
+                            .map { it.copy(title = ContextInjectionFilter.sanitizeTitleText(it.title)) }
                     )
                     update { it.copy(threads = if (cached.isEmpty()) Loadable.Empty else Loadable.Ready(cached)) }
                 }
@@ -1953,7 +2059,7 @@ class WorkbenchController(
                 val threads=installedOrganization.sort(
                     summaries
                         .filterNot { it.id.value in deletedThreads }
-                        .map { it.copy(title = ContextInjectionFilter.sanitizeSummaryText(it.title)) }
+                        .map { it.copy(title = ContextInjectionFilter.sanitizeTitleText(it.title)) }
                 )
                 update { state -> state.copy(organization=installedOrganization,
                     selectedFolderId=state.selectedFolderId?.takeIf { id -> installedOrganization.folders.any { it.folderId == id } },
@@ -2090,23 +2196,22 @@ class WorkbenchController(
             saved.arrivalOrders.forEach { (msgId, order) ->
                 mirroredArrivalOrder.putIfAbsent(threadId to msgId, order)
             }
+            messageStatusRevisions.putAll(saved.statusRevisions)
+            messageStatusesById.putAll(saved.statusesById)
+            messageStatusesByClientId.putAll(saved.statusesByClient)
             mirrored.putAll(
                 saved.messages
-                    .mapNotNull { msg -> if (msg.isDeleted) null else ContextInjectionFilter.projectMessage(msg) }
+                    .mapNotNull(::projectForMirror)
                     .onEach { recordMessageArrival(threadId, it.id) }
                     .associateBy { it.id }
             )
             mirroredRevisions.putAll(saved.revisions)
-            messageStatusRevisions.putAll(saved.statusRevisions)
-            messageStatusesById.putAll(saved.statusesById)
-            messageStatusesByClientId.putAll(saved.statusesByClient)
         }
         restored?.let { saved ->
             draftRevision = saved.draftRevision
             mirrored.putAll(
                 saved.messages
-                    .map(::withLatestMessageStatus)
-                    .mapNotNull { msg -> if (msg.isDeleted) null else ContextInjectionFilter.projectMessage(msg) }
+                    .mapNotNull(::projectForMirror)
                     .onEach { recordMessageArrival(threadId, it.id) }
                     .associateBy { it.id }
             )
@@ -2181,20 +2286,24 @@ class WorkbenchController(
                     if (!isActive || activeThreadId != threadId) return@launch
                     scheduleHistoricalMedia(threadId,page.messages)
                     page.messages.sortedWith(timelineMessageOrderComparator).forEach { rawMessage ->
-                        val message = withLatestMessageStatus(rawMessage)
+                        if (rawMessage.isDeleted || snapshotDeletedIdsByThread[threadId]?.contains(rawMessage.id) == true) return@forEach
+                        val message = projectForMirror(rawMessage) ?: run {
+                            mirrored.remove(rawMessage.id)
+                            mirroredRevisions.remove(rawMessage.id)
+                            return@forEach
+                        }
                         val currentRevision = mirroredRevisions[message.id] ?: 0L
                         if (!mirrored.containsKey(message.id) || (message.contentRevision?.let { it > currentRevision } == true) || (message.state == "CONFIRMED" && currentRevision == 0L)) {
-                            if (message.sender == "assistant" && message.state == "CONFIRMED") {
+                            if (ContextInjectionFilter.classifySender(message.sender) == ContextInjectionFilter.SenderRole.ASSISTANT && message.state == "CONFIRMED") {
                                 pruneConfirmedAssistantDuplicates(message)
                             }
-                            rememberPresentation(message, message.contentRevision ?: 0L, StreamPresentationOrigin.SNAPSHOT)
-                            recordMessageArrival(threadId, message.id)
-                            mirrored[message.id] = preserveOrderSequence(message)
-                            mirroredRevisions[message.id] = maxOf(currentRevision,message.contentRevision ?: 0L)
+                            ingestMirroredMessage(threadId, message, presentationOrigin = StreamPresentationOrigin.SNAPSHOT)
                         }
                     }
                     maybeArmCreationGraceFromTimeline(threadId)
-                    val hasStreaming = mirrored.values.any { it.sender == "assistant" && it.state == "STREAMING" }
+                    val hasStreaming = mirrored.values.any {
+                        ContextInjectionFilter.classifySender(it.sender) == ContextInjectionFilter.SenderRole.ASSISTANT && it.state == "STREAMING"
+                    }
                     update { state ->
                         if (!isActive || state.activeThreadId != threadId) state
                         else {
@@ -2253,7 +2362,7 @@ class WorkbenchController(
                     val transferredComposer = SavedComposerDraft(conversation.id.value,_state.value.draft,draftRevision,_state.value.attachments)
                     composerDrafts[conversation.id.value] = transferredComposer
                     openThread(conversation.id.value)
-                    update { it.copy(activeThreadTitle=conversation.title) }
+                    update { it.copy(activeThreadTitle=ContextInjectionFilter.sanitizeTitleText(conversation.title)) }
                     GatewayLog.protocolEvidence("create.ui_applied", mapOf("conversationId" to conversation.id.value))
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -2738,7 +2847,7 @@ class WorkbenchController(
             refreshThreads()
             if (detail == null) return@launch
             if (activeThreadId == threadId && !isThreadUserRenamed(threadId)) {
-                update { it.copy(activeThreadTitle = detail.title) }
+                update { it.copy(activeThreadTitle = ContextInjectionFilter.sanitizeTitleText(detail.title)) }
             }
         }
     }
@@ -2765,7 +2874,7 @@ class WorkbenchController(
                     // create request. Its identity stays visible while its
                     // durable send record is written for the new conversation.
                     val pending = optimisticEntry?.let(::listOf).orEmpty()
-                    state.copy(activeThreadId = conversation.id.value, activeThreadTitle = conversation.title,
+                    state.copy(activeThreadId = conversation.id.value, activeThreadTitle = ContextInjectionFilter.sanitizeTitleText(conversation.title),
                         timeline = if (pending.isEmpty()) Loadable.Empty else Loadable.Ready(renderTimeline(pending)),
                         pendingBatch = pending, notice = null)
                 }
@@ -3740,19 +3849,27 @@ class WorkbenchController(
                         acceptSendAtom(target, message.clientMessageId.value, acceptance.messageId, generationId = acceptance.generationId)
                     if (activeThreadId == target) {
                         val statusReceipt = messageStatusesByClientId[message.clientMessageId.value]
-                        if (atomsFor(target)[message.clientMessageId.value]?.isDeleted != true && !mirrored.containsKey(acceptance.messageId)) mirrored[acceptance.messageId] = TimelineMessage(
-                            id = acceptance.messageId, sender = "user",
-                            parts = buildList {
-                                if (message.text.isNotEmpty()) add(com.openandroidintelligence.conversation.model.MessagePart.Text(message.text))
-                                submittedAttachments.zip(remoteIds).forEach { (att, remoteId) ->
-                                    add(verifiedAttachmentPart(remoteId,att.filename,att.mediaType,drafts[att.draftId]))
-                                }
-                            },
-                            timestamp = entry.timestamp,
-                            state = statusReceipt?.status?.wireValue ?: "queued",
-                            errorCode = statusReceipt?.errorCode?.wireValue,
-                            clientMessageId = message.clientMessageId,
-                        )
+                        if (atomsFor(target)[message.clientMessageId.value]?.isDeleted != true && !mirrored.containsKey(acceptance.messageId)) {
+                            ingestMirroredMessage(
+                                threadId = target,
+                                rawMessage = TimelineMessage(
+                                    id = acceptance.messageId, sender = "user",
+                                    parts = buildList {
+                                        if (message.text.isNotEmpty()) add(com.openandroidintelligence.conversation.model.MessagePart.Text(message.text))
+                                        submittedAttachments.zip(remoteIds).forEach { (att, remoteId) ->
+                                            add(verifiedAttachmentPart(remoteId,att.filename,att.mediaType,drafts[att.draftId]))
+                                        }
+                                    },
+                                    timestamp = entry.timestamp,
+                                    state = statusReceipt?.status?.wireValue ?: "queued",
+                                    errorCode = statusReceipt?.errorCode?.wireValue,
+                                    clientMessageId = message.clientMessageId,
+                                ),
+                                revisionOverride = 0L,
+                                presentationOrigin = StreamPresentationOrigin.SNAPSHOT,
+                                removeIfFiltered = false,
+                            )
+                        }
                         mirroredRevisions.putIfAbsent(acceptance.messageId, 0L)
                         statusReceipt?.let { receipt -> messageStatusRevisions.putIfAbsent(acceptance.messageId, receipt.revision) }
                         update { state ->
@@ -3905,15 +4022,21 @@ class WorkbenchController(
                         )
                     }
                 }
-                mirrored[id] = TimelineMessage(
-                    id = id,
-                    sender = "user",
-                    parts = parts,
-                    timestamp = timestamp,
-                    state = atomsFor(conversationId)[localId]?.status?.wireValue ?: "queued",
-                    errorCode = atomsFor(conversationId)[localId]?.errorCode?.wireValue,
-                    batchId = acceptance.batchId,
-                    clientMessageId = msg.clientMessageId,
+                ingestMirroredMessage(
+                    threadId = conversationId,
+                    rawMessage = TimelineMessage(
+                        id = id,
+                        sender = "user",
+                        parts = parts,
+                        timestamp = timestamp,
+                        state = atomsFor(conversationId)[localId]?.status?.wireValue ?: "queued",
+                        errorCode = atomsFor(conversationId)[localId]?.errorCode?.wireValue,
+                        batchId = acceptance.batchId,
+                        clientMessageId = msg.clientMessageId,
+                    ),
+                    revisionOverride = 0L,
+                    presentationOrigin = StreamPresentationOrigin.SNAPSHOT,
+                    removeIfFiltered = false,
                 )
                 if (!mirroredRevisions.containsKey(id)) {
                     mirroredRevisions[id] = 0L
@@ -5022,7 +5145,7 @@ class WorkbenchController(
                     commitHandledEvent(event.eventId)
                     return
                 }
-                val message = ContextInjectionFilter.projectMessage(rawMessage)
+                val message = projectForMirror(rawMessage)
                 if (message == null) {
                     val removed = mirrored.remove(rawMessage.id) != null
                     mirroredRevisions.remove(rawMessage.id)
@@ -5108,10 +5231,12 @@ class WorkbenchController(
                             }
                         }
                     }
-                    rememberPresentation(message, event.revision, event.presentationOrigin)
-                    recordMessageArrival(currentActiveId, message.id)
-                    mirrored[message.id] = preserveOrderSequence(message)
-                    mirroredRevisions[message.id] = event.revision
+                    ingestMirroredMessage(
+                        threadId = currentActiveId,
+                        rawMessage = message,
+                        revisionOverride = event.revision,
+                        presentationOrigin = event.presentationOrigin,
+                    )
                 }
                 if (isAssistantRole &&
                     (message.state == "STREAMING" || message.state == "CONFIRMED")
@@ -5158,7 +5283,7 @@ class WorkbenchController(
 
             is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TitleUpdated -> {
                 val threadId = event.conversationId.value
-                val cleanTitle = ContextInjectionFilter.sanitizeSummaryText(event.newTitle)
+                val cleanTitle = ContextInjectionFilter.sanitizeTitleText(event.newTitle)
                 if (cleanTitle.isNotEmpty() && !userRenamedThreads.contains(threadId)) {
                     if (threadId == activeThreadId) {
                         update { it.copy(activeThreadTitle = cleanTitle) }
@@ -5312,10 +5437,9 @@ class WorkbenchController(
                 var receivedConfirmedAssistantForCurrentTurn = false
                 page.messages.sortedWith(timelineMessageOrderComparator).forEach { rawMessage ->
                     if (rawMessage.isDeleted || snapshotDeletedIdsByThread[threadId]?.contains(rawMessage.id) == true) return@forEach
-                    val withStatus = withLatestMessageStatus(rawMessage)
-                    val message = ContextInjectionFilter.projectMessage(withStatus) ?: run {
-                        mirrored.remove(withStatus.id)
-                        mirroredRevisions.remove(withStatus.id)
+                    val message = projectForMirror(rawMessage) ?: run {
+                        mirrored.remove(rawMessage.id)
+                        mirroredRevisions.remove(rawMessage.id)
                         return@forEach
                     }
                     val senderRole = ContextInjectionFilter.classifySender(message.sender)
@@ -5337,10 +5461,7 @@ class WorkbenchController(
                                 belongsToCurrentTurn = matched,
                             )
                         }
-                        rememberPresentation(message, message.contentRevision ?: 0L, StreamPresentationOrigin.SNAPSHOT)
-                        recordMessageArrival(threadId, message.id)
-                        mirrored[message.id] = preserveOrderSequence(message)
-                        mirroredRevisions[message.id] = maxOf(currentRevision,message.contentRevision ?: 0L)
+                        ingestMirroredMessage(threadId, message, presentationOrigin = StreamPresentationOrigin.SNAPSHOT)
                     } else if (isAssistantRole && message.state == "CONFIRMED") {
                         val matched = pruneConfirmedAssistantDuplicates(message)
                         if (matched) {
@@ -5406,13 +5527,10 @@ class WorkbenchController(
             snapshotDeletedIdsByThread.getOrPut(threadId) { linkedSetOf() }.addAll(deleted)
             deleted.forEach { mirrored.remove(it); mirroredRevisions.remove(it) }
             page.messages.filterNot { it.isDeleted || it.id in deleted }.forEach { rawMessage ->
-                val message = ContextInjectionFilter.projectMessage(withLatestMessageStatus(rawMessage)) ?: return@forEach
+                val message = projectForMirror(rawMessage) ?: return@forEach
                 val revision = message.contentRevision ?: 0L
                 if (message.id !in mirrored || revision > (mirroredRevisions[message.id] ?: 0L)) {
-                    rememberPresentation(message, revision, StreamPresentationOrigin.SNAPSHOT)
-                    recordMessageArrival(threadId, message.id)
-                    mirrored[message.id] = preserveOrderSequence(message)
-                    mirroredRevisions[message.id] = revision
+                    ingestMirroredMessage(threadId, message, revisionOverride = revision, presentationOrigin = StreamPresentationOrigin.SNAPSHOT)
                 }
             }
             scheduleHistoricalMedia(threadId,page.messages)
@@ -5902,21 +6020,49 @@ class WorkbenchController(
             } else steps
         fun mergeStepUpdate(old: NativeExecutionStep, incoming: NativeExecutionStep?): NativeExecutionStep =
             old.applyNewerSnapshot(incoming)
+        fun generationsCompatibleForStep(
+            entryGen: String?,
+            factGen: String,
+            step: NativeExecutionStep,
+            entryKey: String,
+        ): Boolean {
+            if (entryGen == factGen) return true
+            if (!step.sourceMessageId.isNullOrBlank() && step.sourceMessageId == entryKey) return true
+            if (entryGen == null) return true
+            return com.openandroidintelligence.conversation.model.ToolCallPairing.isProvisionalGenerationId(entryGen) ||
+                com.openandroidintelligence.conversation.model.ToolCallPairing.isProvisionalGenerationId(factGen)
+        }
         val result = entries.map { entry ->
             val generationId = entry.generationId
             val hasEmbeddedTools = entry.hasExecutionSteps
-            if (generationId != null && hasEmbeddedTools) {
-                val updates = executionFacts[threadId to generationId]?.steps.orEmpty().associateBy { it.stepId }
-                val terminal = isTerminalState(taskState(generationId))
-                val mergedExec = visibleSteps(
-                    generationId,
-                    entry.executionSteps.map { old -> mergeStepUpdate(old, updates[old.stepId]) },
-                )
+            if (hasEmbeddedTools) {
+                val updates = linkedMapOf<String, NativeExecutionStep>()
+                executionFacts.forEach { (factIdentity, facts) ->
+                    if (factIdentity.first != threadId) return@forEach
+                    val factGen = factIdentity.second
+                    facts.steps.forEach { step ->
+                        if (generationsCompatibleForStep(generationId, factGen, step, entry.key)) {
+                            val cleanId = canonicalStepId(step.stepId)
+                            val normalizedStep = if (step.stepId == cleanId) step else step.copy(stepId = cleanId)
+                            updates[cleanId] = updates[cleanId]?.applyNewerSnapshot(normalizedStep) ?: normalizedStep
+                        }
+                    }
+                }
+                val resolvedState = generationId?.let(::taskState)
+                val terminal = isTerminalState(resolvedState)
+                val mergedExec = if (generationId != null) {
+                    visibleSteps(
+                        generationId,
+                        entry.executionSteps.map { old -> mergeStepUpdate(old, updates[canonicalStepId(old.stepId)]) },
+                    )
+                } else {
+                    entry.executionSteps.map { old -> mergeStepUpdate(old, updates[canonicalStepId(old.stepId)]) }
+                }
                 val mergedTimeline = entry.timelineSteps.map { step ->
                     when (step) {
                         is ExecutionTimelineStep.ThinkingStep -> step
                         is ExecutionTimelineStep.ToolCallStep -> {
-                            val updated = mergeStepUpdate(step.step, updates[step.stepId])
+                            val updated = mergeStepUpdate(step.step, updates[canonicalStepId(step.stepId)])
                             val settled = if (terminal && updated.status == NativeExecutionStatus.RUNNING) {
                                 updated.copy(status = NativeExecutionStatus.UNKNOWN)
                             } else updated
@@ -5927,7 +6073,7 @@ class WorkbenchController(
                 entry.copy(
                     executionSteps = mergedExec,
                     timelineSteps = mergedTimeline,
-                    executionGenerationState = taskState(generationId),
+                    executionGenerationState = resolvedState,
                 )
             } else if (generationId != null && !entry.isUser) {
                 // 普通正文仅补明确终态；稳定投影继续复用同一实例，不能让每帧追加重建历史。
@@ -5979,13 +6125,14 @@ class WorkbenchController(
             val (conversationId, generationId) = identity
             if (conversationId != threadId || facts.steps.isEmpty()) return@forEach
             val terminal = isTerminalState(taskState(generationId))
-            val existingSources = result.flatMap { entry ->
-                if (entry.generationId == generationId) {
-                    entry.executionSteps.map { it.stepId } +
-                        entry.timelineSteps.filterIsInstance<ExecutionTimelineStep.ToolCallStep>().map { it.stepId }
-                } else emptyList()
-            }.toSet()
-            val missing = facts.steps.filterNot { it.stepId in existingSources }
+            val missing = facts.steps.filterNot { step ->
+                val cleanStepId = canonicalStepId(step.stepId)
+                result.any { entry ->
+                    generationsCompatibleForStep(entry.generationId, generationId, step, entry.key) &&
+                        (entry.executionSteps.any { canonicalStepId(it.stepId) == cleanStepId } ||
+                            entry.timelineSteps.any { it is ExecutionTimelineStep.ToolCallStep && canonicalStepId(it.stepId) == cleanStepId })
+                }
+            }
             // 有宿主来源的步骤按其真实消息位置插入；缺源行时限定在当前回合窗口内，防止跨轮插队。
             val bySource = missing.filter { !it.sourceMessageId.isNullOrBlank() }.groupBy { requireNotNull(it.sourceMessageId) }
             bySource.forEach { (sourceId, steps) ->
@@ -6076,7 +6223,7 @@ class WorkbenchController(
             val orderedLegacy = legacy.sortedWith(
                 compareBy<NativeExecutionStep>(
                     { it.orderSequence ?: Long.MAX_VALUE },
-                    { executionStepArrivalOrder[Triple(threadId, generationId, it.stepId)] ?: Long.MAX_VALUE },
+                    { executionStepArrivalOrder[Triple(threadId, generationId, canonicalStepId(it.stepId))] ?: Long.MAX_VALUE },
                     { it.occurredAt ?: Long.MAX_VALUE },
                 ),
             )
@@ -6084,7 +6231,7 @@ class WorkbenchController(
             val groupedBySlot = linkedMapOf<Int, MutableList<NativeExecutionStep>>()
             orderedLegacy.forEach { step ->
                 val stepSeq = step.orderSequence
-                val stepArrival = executionStepArrivalOrder[Triple(threadId, generationId, step.stepId)]
+                val stepArrival = executionStepArrivalOrder[Triple(threadId, generationId, canonicalStepId(step.stepId))]
                 val stepTime = step.occurredAt?.takeIf { it > 0L }
                 var slot = maxIndex
                 for (idx in minIndex until maxIndex) {

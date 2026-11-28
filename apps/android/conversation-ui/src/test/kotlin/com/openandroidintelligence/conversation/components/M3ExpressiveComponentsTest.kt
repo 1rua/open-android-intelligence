@@ -30,7 +30,9 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -44,12 +46,14 @@ import androidx.compose.ui.node.CompositionLocalConsumerModifierNode
 import androidx.compose.ui.node.DelegatableNode
 import androidx.compose.ui.node.DrawModifierNode
 import androidx.compose.ui.node.currentValueOf
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertHeightIsAtLeast
@@ -842,6 +846,153 @@ class M3ExpressiveComponentsTest {
         val iconNode = compose.onNodeWithTag("no-dup-label-icon").fetchSemanticsNode()
         assertEquals(listOf("SendMessage"), iconNode.config.getOrNull(SemanticsProperties.ContentDescription))
         assertEquals(null, iconNode.config.getOrNull(SemanticsActions.OnClick)?.label)
+    }
+
+    @Test
+    fun horizontalDisclosureRevealAnimatesLeftToRightWithoutReflowAndMirrorsInRtl() {
+        val backdrop = Color(0xFFFF0000)
+        val cardColor = Color(0xFF0000FF)
+        lateinit var rootView: View
+        var childRecompositions = 0
+
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = false)) {
+                MaterialTheme {
+                    rootView = LocalView.current
+                    Box(Modifier.size(width = 200.dp, height = 48.dp).background(backdrop).testTag("reveal-host-ltr")) {
+                        HorizontalDisclosureReveal(
+                            animateEntrance = true,
+                            cornerRadius = 0.dp,
+                            modifier = Modifier.size(width = 200.dp, height = 48.dp).testTag("reveal-ltr"),
+                        ) {
+                            SideEffect { childRecompositions++ }
+                            Box(Modifier.size(width = 200.dp, height = 48.dp).background(cardColor))
+                        }
+                    }
+                }
+            }
+        }
+        // 推进 4 帧（前 2 帧完成首组合与启动时间戳登记，后 2 帧推进约 32ms，弹簧处于 ~21%-36% 展开区间）：
+        // 左侧已显现卡片色，右侧尚未揭示仍透出红色底板，且首帧测量宽度稳定
+        repeat(4) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+        val earlyBounds = compose.onNodeWithTag("reveal-ltr").fetchSemanticsNode().boundsInRoot
+        val expectedWidthPx = with(compose.density) { 200.dp.toPx() }
+        assertEquals("水平揭示首帧测量宽度必须稳定，避免内部文本重排", expectedWidthPx, earlyBounds.width, 1f)
+        val earlyMap = captureBitmap("reveal-host-ltr", rootView)
+        val leftPixel = earlyMap[(earlyMap.width * 0.1f).toInt(), earlyMap.height / 2]
+        val rightPixel = earlyMap[(earlyMap.width * 0.9f).toInt(), earlyMap.height / 2]
+        assertTrue("LTR 早段左侧应已显露出蓝色卡片: left=$leftPixel", leftPixel.blue > 0.25f)
+        assertTrue("LTR 早段右侧应仍被裁切保留红色底板: right=$rightPixel", rightPixel.red > 0.95f && rightPixel.blue < 0.05f)
+        val recompositionsBeforeSettle = childRecompositions
+
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        assertEquals("水平揭示逐帧仅在绘制层生效，不得触发子树重组", recompositionsBeforeSettle, childRecompositions)
+        val settledMap = captureBitmap("reveal-host-ltr", rootView)
+        assertColor("LTR 收敛后右侧应完全显现", cardColor, settledMap[(settledMap.width * 0.9f).toInt(), settledMap.height / 2])
+    }
+
+    @Test
+    fun horizontalDisclosureRevealMirrorsRightToLeftInRtlLayout() {
+        val backdrop = Color(0xFFFF0000)
+        val cardColor = Color(0xFF0000FF)
+        lateinit var rootView: View
+
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            CompositionLocalProvider(
+                LocalMotionPolicy provides MotionPolicy(reduceMotion = false),
+                LocalLayoutDirection provides LayoutDirection.Rtl,
+            ) {
+                MaterialTheme {
+                    rootView = LocalView.current
+                    Box(Modifier.size(width = 200.dp, height = 48.dp).background(backdrop).testTag("reveal-host-rtl")) {
+                        HorizontalDisclosureReveal(
+                            animateEntrance = true,
+                            cornerRadius = 0.dp,
+                            modifier = Modifier.size(width = 200.dp, height = 48.dp),
+                        ) {
+                            Box(Modifier.size(width = 200.dp, height = 48.dp).background(cardColor))
+                        }
+                    }
+                }
+            }
+        }
+        repeat(4) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+        val earlyMap = captureBitmap("reveal-host-rtl", rootView)
+        val leftPixel = earlyMap[(earlyMap.width * 0.1f).toInt(), earlyMap.height / 2]
+        val rightPixel = earlyMap[(earlyMap.width * 0.9f).toInt(), earlyMap.height / 2]
+        assertTrue("RTL 早段右侧应先显露蓝色卡片: right=$rightPixel", rightPixel.blue > 0.25f)
+        assertTrue("RTL 早段左侧应仍被裁切保留红色底板: left=$leftPixel", leftPixel.red > 0.95f && leftPixel.blue < 0.05f)
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+    }
+
+    @Test
+    fun horizontalDisclosureRevealDegradesToNoDisplacementFadeInReduceMotionAndSkipsWhenDisabled() {
+        val backdrop = Color(0xFFFF0000)
+        val cardColor = Color(0xFF0000FF)
+        lateinit var rootView: View
+
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = true)) {
+                MaterialTheme {
+                    rootView = LocalView.current
+                    Column {
+                        Box(Modifier.size(width = 200.dp, height = 48.dp).background(backdrop).testTag("reveal-reduced-host")) {
+                            HorizontalDisclosureReveal(
+                                animateEntrance = true,
+                                cornerRadius = 0.dp,
+                                modifier = Modifier.size(width = 200.dp, height = 48.dp),
+                            ) {
+                                Box(Modifier.size(width = 200.dp, height = 48.dp).background(cardColor))
+                            }
+                        }
+                        Box(Modifier.size(width = 200.dp, height = 48.dp).background(backdrop).testTag("reveal-disabled-host")) {
+                            HorizontalDisclosureReveal(
+                                animateEntrance = false,
+                                cornerRadius = 0.dp,
+                                modifier = Modifier.size(width = 200.dp, height = 48.dp),
+                            ) {
+                                Box(Modifier.size(width = 200.dp, height = 48.dp).background(cardColor))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 首帧未推进前，animateEntrance=false 必须已完整不透明呈现
+        val disabledMap = captureBitmap("reveal-disabled-host", rootView)
+        assertColor("animateEntrance=false 左侧应立即完整呈现", cardColor, disabledMap[(disabledMap.width * 0.1f).toInt(), disabledMap.height / 2])
+        assertColor("animateEntrance=false 右侧应立即完整呈现", cardColor, disabledMap[(disabledMap.width * 0.9f).toInt(), disabledMap.height / 2])
+
+        // 推进 5 帧（~80ms，150ms 线性淡化中段）：减少动态模式下左右两侧透明度一致，无任何水平裁切
+        repeat(5) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+        val midReducedMap = captureBitmap("reveal-reduced-host", rootView)
+        val midLeft = midReducedMap[(midReducedMap.width * 0.1f).toInt(), midReducedMap.height / 2]
+        val midRight = midReducedMap[(midReducedMap.width * 0.9f).toInt(), midReducedMap.height / 2]
+        assertTrue("减少动态中段左侧应处于线性半透明淡入: $midLeft", midLeft.blue in 0.15f..0.85f)
+        assertTrue("减少动态中段右侧应处于线性半透明淡入: $midRight", midRight.blue in 0.15f..0.85f)
+        assertEquals("减少动态模式下左右两端不得存在水平裁切差值", midLeft.blue, midRight.blue, 0.03f)
+
+        // 推进超过 150ms 后完整收敛为卡片色
+        compose.mainClock.advanceTimeBy(120)
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        val endReducedMap = captureBitmap("reveal-reduced-host", rootView)
+        assertColor("减少动态 150ms 后应完全淡入", cardColor, endReducedMap[(endReducedMap.width * 0.9f).toInt(), endReducedMap.height / 2])
+        compose.mainClock.autoAdvance = true
     }
 
     private fun capturePixel(tag: String, rootView: View): Color {

@@ -2,9 +2,12 @@ package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import com.openandroidintelligence.gateway.diagnostics.GatewayLog
@@ -34,16 +37,21 @@ class StructuredToolComposeTest {
     }
 
     @Test
-    fun missingNativeResultRemainsUnknownInsteadOfCompletedOrFailed() {
+    fun missingNativeResultShowsNoResultLabelInsteadOfCompletedOrFailed() {
         compose.setContent {
             MaterialTheme {
                 MarkdownToolCallView(TimelineBlock.ToolCallBlock("read", "{}",
                     executionStatus = NativeExecutionStatus.UNKNOWN))
             }
         }
-        compose.onNodeWithText("结果未知").assertIsDisplayed()
+        compose.onNodeWithText("未返回结果").assertIsDisplayed()
+        compose.onNodeWithText("结果未知").assertDoesNotExist()
         compose.onNodeWithText("执行成功").assertDoesNotExist()
         compose.onNodeWithText("执行失败").assertDoesNotExist()
+
+        compose.onNodeWithText("未返回结果").performClick()
+        compose.onAllNodesWithText("未返回结果").assertCountEquals(2)
+        compose.onNodeWithText("未收到工具结果").assertDoesNotExist()
     }
 
     @Test

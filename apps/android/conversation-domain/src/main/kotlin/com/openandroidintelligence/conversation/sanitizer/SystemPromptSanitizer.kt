@@ -4,33 +4,18 @@ package com.openandroidintelligence.conversation.sanitizer
  * 系统上下文提示词与指令剥离清洗器（兼容层，委托给 [ContextInjectionFilter] 统一管线）。
  */
 object SystemPromptSanitizer {
-    private val LEGACY_SYSTEM_REMINDER_REGEX = Regex(
-        "(?i)<system-reminder>[\\s\\S]*?</system-reminder>|</system-reminder>"
-    )
-
     /**
      * 对输入文本执行统一上下文注入净化。
-     * 单参数重载保留流式未闭合与正文内历史 `<system-reminder>` 标签兼容行为，
-     * 避免破坏既有单参清洗调用方的语义；新管线请直接调用 [ContextInjectionFilter]。
+     * 单参数重载保留默认流式清洗语义，所有规则均纯委托至领域唯一权威 [ContextInjectionFilter]。
      */
     fun sanitize(text: String): String =
         sanitize(text, streaming = true)
 
-    /** 按指定流式状态对输入文本执行统一上下文注入净化。 */
+    /** 按指定流式状态对输入文本执行统一上下文注入净化（纯委托，零独立正则分叉）。 */
     fun sanitize(text: String, streaming: Boolean): String {
         if (text.isEmpty()) return ""
-        val cleaned = ContextInjectionFilter.sanitizeText(
-            text = text,
-            role = ContextInjectionFilter.SenderRole.ASSISTANT,
-            streaming = streaming,
-        )
-        // 兼容历史单参清洗中处于助手文本中间的闭合/孤立 `<system-reminder>` 片段，代码块受 ContextInjectionFilter 保护思路豁免
-        val protected = ContextInjectionFilter.protectedCodeRangesForLegacyCompat(cleaned, streaming)
-        val legacyCleaned = LEGACY_SYSTEM_REMINDER_REGEX.replace(cleaned) { match ->
-            if (protected.any { match.range.first in it }) match.value else ""
-        }
         return ContextInjectionFilter.sanitizeText(
-            text = legacyCleaned,
+            text = text,
             role = ContextInjectionFilter.SenderRole.ASSISTANT,
             streaming = streaming,
         )

@@ -174,9 +174,17 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
     }
     private fun sanitize(checkpoint: WorkbenchCheckpoint): WorkbenchCheckpoint {
         val removed=checkpoint.threadId?.let(::isConversationDeleted) == true
-        return checkpoint.copy(threads=checkpoint.threads.filterNot { isConversationDeleted(it.id.value) },
-            threadId=checkpoint.threadId.takeUnless { removed }, title=if (removed) "" else checkpoint.title,
-            messages=checkpoint.messages.filterNot { row -> (row.conversationId?.value ?: checkpoint.threadId)?.let(::isConversationDeleted) == true },
+        val projectedMessages = ContextInjectionFilter.projectTimeline(
+            checkpoint.messages.filterNot { row ->
+                (row.conversationId?.value ?: checkpoint.threadId)?.let(::isConversationDeleted) == true
+            },
+        )
+        return checkpoint.copy(
+            threads=checkpoint.threads.filterNot { isConversationDeleted(it.id.value) }
+                .map { it.copy(title = ContextInjectionFilter.sanitizeTitleText(it.title)) },
+            threadId=checkpoint.threadId.takeUnless { removed },
+            title=if (removed) "" else ContextInjectionFilter.sanitizeTitleText(checkpoint.title),
+            messages=projectedMessages,
             revisions=if (removed) emptyMap() else checkpoint.revisions,
             submission=checkpoint.submission?.takeUnless { it.conversationId?.let(::isConversationDeleted) == true },
             composerDrafts=checkpoint.composerDrafts.filterNot { it.threadId?.let(::isConversationDeleted) == true },
@@ -185,7 +193,8 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             cancellations=checkpoint.cancellations.filterNot { isConversationDeleted(it.conversationId) },
             messageGenerations=checkpoint.messageGenerations.filterNot { isConversationDeleted(it.conversationId) },
             pendingFolderAssignments=checkpoint.pendingFolderAssignments.filterNot { isConversationDeleted(it.conversationId) },
-            deletedThreadIds=checkpoint.deletedThreadIds+documents.keys().filter { it.startsWith("deleted-conversation:") }.map { it.removePrefix("deleted-conversation:") })
+            deletedThreadIds=checkpoint.deletedThreadIds+documents.keys().filter { it.startsWith("deleted-conversation:") }.map { it.removePrefix("deleted-conversation:") },
+        )
     }
     private fun parts(value: List<MessagePart>) = value.map { p -> when(p) {
         is MessagePart.Text -> mapOf("type" to "text","text" to p.value)
@@ -566,7 +575,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             } ?: if (cleanEvent.message.conversationId == null) cleanEvent else null
         }
         is VerifiedConversationEvent.TitleUpdated -> {
-            val cleanTitle = ContextInjectionFilter.sanitizeSummaryText(event.newTitle)
+            val cleanTitle = ContextInjectionFilter.sanitizeTitleText(event.newTitle)
             if (cleanTitle.isEmpty()) null else event.copy(newTitle = cleanTitle)
         }
         is VerifiedConversationEvent.TimelineTombstoned -> event.conversationId?.value?.let { id ->
@@ -726,6 +735,28 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             deletedMessageIds=canonical.deletedMessageIds + canonical.messages.filter { it.isDeleted || contentRevision(conversationId,it.id).snapshotDeleted }.map { it.id })
     }
 
+    /**
+     * 解析应写入本地发送记录 `LocalSendAtom` 的正文分段：
+     * 若已有本地原稿，且远端回显的原始内容或投影结果与本地原稿等价（即并非远端编辑，而是投影清洗/上下文包裹后的同一原稿），
+     * 则保留本地原稿不被投影结果覆写丢失；仅在确有远端实质编辑（含显式清空）或首次无本地原稿时采用投影结果。
+     */
+    private fun resolvedAtomParts(
+        existing: LocalSendAtom?,
+        incomingRow: TimelineMessage,
+        projected: TimelineMessage,
+    ): List<MessagePart> {
+        if (existing == null) return projected.parts
+        val incomingRaw = incomingRow.rawParts ?: incomingRow.parts
+        if (incomingRaw == existing.parts) return existing.parts
+        val sanitizedExisting = ContextInjectionFilter.sanitizeParts(
+            parts = existing.parts,
+            role = ContextInjectionFilter.SenderRole.USER,
+            streaming = false,
+        ).parts
+        if (projected.parts == sanitizedExisting) return existing.parts
+        return projected.parts
+    }
+
     /** 只比较明确单条正文版本；普通空页和全页摘要不能改写原稿。 */
     private fun reconcileSnapshotContent(id: String,page: TimelinePage): TimelinePage {
         val baseline=timeline(id)?.messages.orEmpty().associateBy { it.id }
@@ -745,9 +776,16 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             }
             if (revision > known) {
                 if (atom != null) {
-                    val changed=atom.identified(row.id,row.batchId ?: atom.batchId).copy(parts=row.parts,
-                        contentRevision=revision,tombstoneRevision=null)
-                    saveSendAtoms(id,atoms.map { if (it.clientMessageId == atom.clientMessageId) changed else it })
+                    val projected = ContextInjectionFilter.projectMessage(row)
+                    if (projected != null) {
+                        val resolvedParts = resolvedAtomParts(atom, row, projected)
+                        val changed = atom.identified(row.id, row.batchId ?: atom.batchId).copy(
+                            parts = resolvedParts,
+                            contentRevision = revision,
+                            tombstoneRevision = null,
+                        )
+                        saveSendAtoms(id, atoms.map { if (it.clientMessageId == atom.clientMessageId) changed else it })
+                    }
                 }
                 saveContentRevision(id,row.id,revision,false)
                 val current = attachmentIds(row.parts)
@@ -767,14 +805,29 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         val atoms=loadSendAtoms(conversationId)
         val original=atoms.firstOrNull { it.clientMessageId == clientMessageId }
         val identified=canonical.copy(conversationId=ConversationId(conversationId),clientMessageId=clientMessageId)
-        if (original == null) return@transaction identified
+        fun sanitizedOrMeta(message: TimelineMessage): TimelineMessage {
+            if (message.isDeleted) return message
+            return ContextInjectionFilter.projectMessage(message)
+                ?: message.copy(
+                    parts = emptyList(),
+                    rawParts = message.rawParts ?: message.parts,
+                    isMeta = true,
+                )
+        }
+        if (original == null) {
+            return@transaction sanitizedOrMeta(identified)
+        }
+        val projectedRow = ContextInjectionFilter.projectMessage(row)
+        val cleanRowParts = projectedRow?.parts.orEmpty()
         val accepted=original.identified(row.id,row.batchId ?: original.batchId).copy(
-            parts=if (original.contentRevision >= 0L || row.parts.isEmpty()) original.parts else row.parts,
+            parts=if (original.contentRevision >= 0L || projectedRow == null || cleanRowParts.isEmpty()) original.parts
+                else resolvedAtomParts(original, row, projectedRow),
             timestamp=original.timestamp.takeIf { it > 0L } ?: row.timestamp,
         )
         saveSendAtoms(conversationId,atoms.map { if (it.clientMessageId == clientMessageId) accepted else it })
         val merged=mergeLocalSendAtoms(listOf(identified.copy(parts=accepted.parts)),loadSendAtoms(conversationId).filter { it.clientMessageId == clientMessageId })
-        merged.firstOrNull() ?: identified.copy(parts=emptyList(),state="TOMBSTONED")
+        val resolved = merged.firstOrNull() ?: identified.copy(parts=emptyList(),state="TOMBSTONED")
+        sanitizedOrMeta(resolved)
     }
     fun wipe() {
         documents.wipe()
@@ -883,7 +936,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         JsonFields.objects(it,"threads")
             .map(::decodeThread)
             .filterNot { thread -> isConversationDeleted(thread.id.value) }
-            .map { thread -> thread.copy(title = ContextInjectionFilter.sanitizeSummaryText(thread.title)) }
+            .map { thread -> thread.copy(title = ContextInjectionFilter.sanitizeTitleText(thread.title)) }
     }
     /** A durable barrier prevents an in-flight read, old checkpoint or replay from reopening a deleted identity. */
     @Synchronized fun deleteConversation(id: String): Unit = documents.transaction {
@@ -939,14 +992,21 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                     (event.revision == existing?.tombstoneRevision)) return@let
                 val clientId=existing?.clientMessageId ?: event.message.clientMessageId
                 if (isUserSender(event.message.sender) && clientId != null) {
-                    val status=statusRevision(id,event.message.id)
-                    val atom=(existing ?: LocalSendAtom(ConversationId(id),clientId,event.message.parts,event.message.timestamp))
-                        .identified(event.message.id,event.message.batchId ?: existing?.batchId).copy(
-                            parts=event.message.parts,contentRevision=event.revision,tombstoneRevision=null,
-                            status=status?.status ?: existing?.status,statusRevision=status?.revision ?: existing?.statusRevision ?: -1L,
-                            errorCode=if (status != null) status.errorCode else existing?.errorCode,
-                        )
-                    saveSendAtoms(id,atoms.filterNot { it.clientMessageId == clientId } + atom)
+                    val versionedMessage = if (event.message.contentRevision == null) {
+                        event.message.copy(contentRevision = event.revision)
+                    } else event.message
+                    val projected = ContextInjectionFilter.projectMessage(versionedMessage)
+                    if (projected != null) {
+                        val resolvedParts = resolvedAtomParts(existing, versionedMessage, projected)
+                        val status=statusRevision(id,event.message.id)
+                        val atom=(existing ?: LocalSendAtom(ConversationId(id),clientId,resolvedParts,event.message.timestamp))
+                            .identified(event.message.id,event.message.batchId ?: existing?.batchId).copy(
+                                parts=resolvedParts,contentRevision=event.revision,tombstoneRevision=null,
+                                status=status?.status ?: existing?.status,statusRevision=status?.revision ?: existing?.statusRevision ?: -1L,
+                                errorCode=if (status != null) status.errorCode else existing?.errorCode,
+                            )
+                        saveSendAtoms(id,atoms.filterNot { it.clientMessageId == clientId } + atom)
+                    }
                 }
                 val legacy=legacySent(id)
                 if (legacy.any { it.id == event.message.id }) saveLegacySent(id,legacy.map {
@@ -1004,9 +1064,14 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                 }) }
                 val baseline=timeline(id)
                 val knownRow=baseline?.messages?.firstOrNull { it.id == event.messageId && isUserSender(it.sender) }
-                if (existing != null || knownRow != null) {
-                    val atom=(existing ?: LocalSendAtom(ConversationId(id),event.clientMessageId,knownRow!!.parts,knownRow.timestamp))
-                        .identified(event.messageId).copy(status=event.status,statusRevision=event.revision,errorCode=event.errorCode)
+                val projectedKnownRow = knownRow?.let { ContextInjectionFilter.projectMessage(it) }
+                if (existing != null || projectedKnownRow != null) {
+                    val atom=(existing ?: LocalSendAtom(
+                        ConversationId(id),
+                        event.clientMessageId,
+                        projectedKnownRow!!.parts,
+                        projectedKnownRow.timestamp,
+                    )).identified(event.messageId).copy(status=event.status,statusRevision=event.revision,errorCode=event.errorCode)
                     saveSendAtoms(id,atoms.filterNot { it.clientMessageId == atom.clientMessageId } + atom)
                 }
                 baseline?.let { page -> saveTimeline(id,page.copy(messages=page.messages.map {
@@ -1016,7 +1081,12 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                 documents.write("message-status:$id:${event.messageId}",encode(mapOf("status" to event.status.wireValue,
                     "revision" to event.revision,"errorCode" to event.errorCode?.wireValue)))
             }
-            is VerifiedConversationEvent.TitleUpdated -> threads()?.let { list -> saveThreads(list.map { if (it.id == event.conversationId) it.copy(title=event.newTitle) else it }) }
+            is VerifiedConversationEvent.TitleUpdated -> {
+                val cleanTitle = ContextInjectionFilter.sanitizeTitleText(event.newTitle)
+                if (cleanTitle.isNotEmpty()) {
+                    threads()?.let { list -> saveThreads(list.map { if (it.id == event.conversationId) it.copy(title = cleanTitle) else it }) }
+                }
+            }
             is VerifiedConversationEvent.GenerationCancelled -> event.conversationId?.value?.let { id ->
                 saveGenerationFacts(confirmedCancellations=listOf(SavedCancellation(id,event.generationId)))
             }
@@ -1099,13 +1169,15 @@ class MirroredConversationRepository(private val delegate: ConversationRepositor
     }
     override suspend fun queryMessage(conversationId:String,clientMessageId:ClientMessageId):TimelineMessage? =
         (delegate as? MessageOutcomeQuery)?.queryMessage(conversationId,clientMessageId)?.let {
-            mirror.reconcileQuery(conversationId,clientMessageId,it).also { if (media != null) mirror.applyPendingMediaTransitions(media) }
+            val reconciled = mirror.reconcileQuery(conversationId,clientMessageId,it)
+            if (media != null) mirror.applyPendingMediaTransitions(media)
+            if (reconciled.isDeleted) reconciled else ContextInjectionFilter.projectMessage(reconciled)
         }
     override suspend fun listConversations(scope: ConversationScope, page: PageRequest): ConversationPage = try {
         if (page.cursor == null) refreshCompleteHistory(scope)
         else delegate.listConversations(scope,page).let { paged ->
             paged.copy(conversations = paged.conversations.map {
-                it.copy(title = ContextInjectionFilter.sanitizeSummaryText(it.title))
+                it.copy(title = ContextInjectionFilter.sanitizeTitleText(it.title))
             })
         }
     } catch (c: CancellationException) { throw c } catch (e: java.io.IOException) {
@@ -1117,10 +1189,10 @@ class MirroredConversationRepository(private val delegate: ConversationRepositor
             val epoch=withContext(Dispatchers.IO) { mirror.beginHistoryRead() }
             val page=delegate.completeConversations(scope)
             val sanitizedPage = page.copy(conversations = page.conversations.map {
-                it.copy(title = ContextInjectionFilter.sanitizeSummaryText(it.title))
+                it.copy(title = ContextInjectionFilter.sanitizeTitleText(it.title))
             })
             if (!page.authoritative || page.nextCursor != null) return sanitizedPage
-            if (mirror.saveThreadsDurably(page.conversations,page.snapshotRevision,epoch) || attempt == 1) return sanitizedPage
+            if (mirror.saveThreadsDurably(sanitizedPage.conversations,page.snapshotRevision,epoch) || attempt == 1) return sanitizedPage
             // Pending native operation recovery can advance the mirror after
             // this read reserved its fence; refetch once from the new baseline.
         }

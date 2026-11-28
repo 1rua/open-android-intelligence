@@ -262,9 +262,15 @@ object ContextInjectionFilter {
         "tool",
         "tool_call",
         "tool_result",
+        "toolresult",
         "tool_use",
         "function_call",
         "function_result",
+        "functionresult",
+        "function_response",
+        "functionresponse",
+        "function_call_output",
+        "functioncalloutput",
     )
 
     /** 可单独作为上下文字根标签的规范名称集合。 */
@@ -343,9 +349,74 @@ object ContextInjectionFilter {
         "meta_context",
         "local_command_caveat",
         "local_command_stdout",
+        "local_command_stderr",
         "command_name",
         "command_message",
         "command_args",
+        "permissions_instructions",
+        "collaboration_mode",
+        "app_context",
+        "skill",
+        "turn_aborted",
+        "subagent_notification",
+        "ide_opened_file",
+        "ide_selection",
+        "fast_mode_info",
+        "antml_context",
+        "antml_thinking_instructions",
+        "mcp_instructions",
+        "personality_spec",
+        "automation_context",
+        "user_instructions",
+        "environment_details",
+        "system_environment",
+        "workspace_files",
+        "open_tabs",
+        "active_file",
+        "attached_files",
+        "context_files",
+        "cursor_context",
+        "opencode_context",
+        "claude_md",
+        "agents_md",
+    )
+
+    /** 容易与用户普通 XML 示例冲突的裸单词标签；仅在相邻已剥离信封、携带显式注入属性或具备机器指令/工具声明正文特征时剥离。 */
+    private val CONDITIONAL_SINGLE_WORD_ENVELOPE_TAGS = setOf(
+        "tools",
+        "memory",
+        "soul",
+    )
+
+    private val EXPLICIT_INJECTION_ATTR_REGEX = Regex(
+        "(?i)\\b(?:source|origin|injected|system|context|role|scope|visibility|kind|path|file)\\s*=\\s*[\"'][^\"']*(?:system|developer|runtime|context|injected|internal|agent|harness|dsh|codex|hermes|openclaw|claude|true|hidden|\\.md)[^\"']*[\"']"
+    )
+
+    private val MACHINE_ENVELOPE_HEADING_REGEX = Regex("(?m)^#{1,3}\\s+\\S")
+
+    private val MACHINE_TOOL_SCHEMA_REGEX = Regex(
+        "(?is)(?:\"input_schema\"|\"type\"\\s*:\\s*\"function\"|\"parameters\"\\s*:\\s*\\{[\\s\\S]*?\"properties\"|<function_declarations\\b|<tool_definition\\b)"
+    )
+
+    private val MACHINE_ENVELOPE_PROSE_REGEX = Regex(
+        "(?i)(?:\\b(?:TOOLS|MEMORY|SOUL|AGENTS|CLAUDE|SKILL)\\.md\\b|Instructions from:|You have access to the following tools|Available tools\\s*:|Tool definitions\\s*:|System instructions\\s*:|untrusted metadata)"
+    )
+
+    /** 协议层常见含空格的多词 XML 上下文注入标签名（如 Codex `<permissions instructions>`）。 */
+    private val MULTI_WORD_CONTEXT_ENVELOPE_TAGS = setOf(
+        "permissions instructions",
+        "developer instructions",
+        "system instructions",
+        "user instructions",
+        "system reminder",
+        "system context",
+        "environment context",
+        "runtime context",
+        "available skills",
+        "collaboration mode",
+        "app context",
+        "turn aborted",
+        "subagent notification",
     )
 
     private val CONTEXT_TAG_NOUNS = setOf(
@@ -372,7 +443,13 @@ object ContextInjectionFilter {
         "runtime",
         "info",
         "notice",
+        "notification",
+        "notifications",
         "rules",
+        "stderr",
+        "stdout",
+        "compaction",
+        "details",
     )
 
     private val CONTEXT_TAG_QUALIFIERS = setOf(
@@ -411,6 +488,10 @@ object ContextInjectionFilter {
         "acp",
         "claude",
         "gemini",
+        "opencode",
+        "cursor",
+        "pi",
+        "antigravity",
         "temporal",
         "time",
         "date",
@@ -423,6 +504,15 @@ object ContextInjectionFilter {
         "client",
         "host",
         "platform",
+        "app",
+        "antml",
+        "mcp",
+        "ide",
+        "subagent",
+        "permissions",
+        "permission",
+        "automation",
+        "fast",
     )
 
     /** 仅当外层已剥离至少一个注入信封时，才允许解包的输入/响应外壳标签。 */
@@ -434,8 +524,12 @@ object ContextInjectionFilter {
         "assistant_response",
     )
 
-    /** 仅在助手角色且位于代码块外部时，允许从多段流式拼接正文中剥离的无歧义运行时闭合成对标签。 */
-    private val MID_ASSISTANT_STRICT_INJECTION_TAGS = setOf(
+    /**
+     * 位于代码块外部时允许在消息中段剥离的无歧义运行时闭合成对标签：
+     * - 助手消息：剥离所有代码块外闭合成对标签；
+     * - 用户消息：仅当该成对标签独占整行（位于行边界）时剥离，严禁误杀行内自然语言讨论。
+     */
+    private val MID_STRICT_INJECTION_TAGS = setOf(
         "system_reminder",
         "system_reminders",
         "environment_context",
@@ -444,10 +538,20 @@ object ContextInjectionFilter {
         "injected_context",
         "local_command_caveat",
         "local_command_stdout",
+        "local_command_stderr",
+        "ide_opened_file",
+        "ide_selection",
+        "permissions_instructions",
+        "collaboration_mode",
+        "turn_aborted",
+        "subagent_notification",
+        "user_prompt_submit_hook",
+        "fast_mode_info",
+        "app_context",
     )
 
     /** 终态助手消息或通知预览若在以下严格系统/上下文根标签内部被截断，同样按未闭合信封剥离至结尾，避免泄露注入文本。 */
-    private val COMPLETED_UNCLOSED_ROOT_CONTEXT_TAGS = MID_ASSISTANT_STRICT_INJECTION_TAGS + setOf(
+    private val COMPLETED_UNCLOSED_ROOT_CONTEXT_TAGS = MID_STRICT_INJECTION_TAGS + setOf(
         "system_prompt",
         "system_instructions",
         "developer_prompt",
@@ -645,6 +749,146 @@ object ContextInjectionFilter {
 
     private val SUMMARY_WHITESPACE_REGEX = Regex("\\s+")
 
+    /** Claude Code 本地命令提醒（无外层 XML 标签包装形态）。 */
+    private val CLAUDE_LOCAL_COMMAND_CAVEAT_REGEX = Regex(
+        "(?is)^Caveat:\\s*The messages below were generated by the user while running local commands\\.[\\s\\S]*?(?:(?:\\r?\\n[ \\t]*){2,}|$)"
+    )
+
+    /** Claude Code 上下文压缩后的自动续接摘要注入前缀（无外层 XML 包装形态）。 */
+    private val CLAUDE_SESSION_CONTINUATION_REGEX = Regex(
+        "(?is)^This session is being continued from a previous conversation that ran out of context\\.[\\s\\S]*?(?:(?:\\r?\\n[ \\t]*){2,}|$)"
+    )
+
+    /** 协议层声明为非用户输入来源的 source.kind / origin 集合。 */
+    private val USER_SOURCE_KINDS = setOf(
+        "user",
+        "rpc",
+        "client",
+        "human",
+        "ui",
+        "chat",
+        "manual",
+        "interactive",
+        "steer",
+        "steering",
+        "queue",
+        "queued",
+        "voice",
+        "attachment",
+        "web",
+        "mobile",
+        "desktop",
+        "app",
+        "cli",
+    )
+
+    private val INJECTED_SOURCE_KINDS = setOf(
+        "system",
+        "developer",
+        "context",
+        "context_injection",
+        "injected",
+        "injection",
+        "hook",
+        "hook_prompt",
+        "compaction",
+        "context_compaction",
+        "summary",
+        "continuation",
+        "schedule",
+        "scheduled",
+        "cron",
+        "heartbeat",
+        "tool",
+        "tool_result",
+        "subagent",
+        "subagent_notification",
+        "internal",
+        "synthetic",
+        "meta",
+        "metadata",
+        "runtime",
+        "environment",
+        "memory",
+        "skills",
+        "control",
+        "auto",
+        "background",
+        "notification",
+    )
+
+    private val HIDDEN_CONTENT_BLOCK_TYPES = setOf(
+        "system_reminder",
+        "system_prompt",
+        "system_context",
+        "context_injection",
+        "injected_context",
+        "environment_context",
+        "developer_context",
+        "developer_message",
+        "hook_prompt",
+        "context_compaction",
+        "meta",
+        "metadata",
+        "internal",
+        "hidden",
+        "control",
+    )
+
+    private val HIDDEN_PROTOCOL_ITEM_TYPES = setOf(
+        "hook_prompt",
+        "hookprompt",
+        "codex_hook_prompt",
+        "codex_hookprompt",
+        "context_compaction",
+        "contextcompaction",
+        "codex_compaction",
+        "codex_context_compaction",
+        "codex_contextcompaction",
+        "system_prompt",
+        "system_context",
+        "context_injection",
+        "developer_message",
+        "environment_context",
+    )
+
+    /** 判断消息 `source.kind` / `origin` 是否为协议注入来源（如 system / hook / compaction / schedule）。 */
+    fun isInjectedSourceKind(sourceKind: String?): Boolean {
+        val normalized = sourceKind?.trim()?.lowercase()
+            ?.replace('-', '_')
+            ?.replace(' ', '_')
+            .orEmpty()
+        if (normalized.isEmpty()) return false
+        if (normalized in USER_SOURCE_KINDS) return false
+        if (normalized in INJECTED_SOURCE_KINDS) return true
+        return normalized.startsWith("system_") ||
+            normalized.startsWith("context_") ||
+            normalized.startsWith("injected_") ||
+            normalized.startsWith("hook_") ||
+            normalized.startsWith("internal_")
+    }
+
+    /** 判断内容块 `type` 是否属于不应展示给用户的内部上下文/元数据块。 */
+    fun isHiddenContentBlockType(blockType: String?): Boolean {
+        val normalized = blockType?.trim()?.lowercase()
+            ?.replace('-', '_')
+            ?.replace(' ', '_')
+            .orEmpty()
+        if (normalized.isEmpty()) return false
+        return normalized in HIDDEN_CONTENT_BLOCK_TYPES
+    }
+
+    /** 判断 Codex / 原生协议 item `type` 或历史转换工具名（如 `codex.compaction`）是否属于内部提示/压缩条目（既不应上屏也不应转为工具卡）。 */
+    fun isHiddenProtocolItemType(itemType: String?): Boolean {
+        val normalized = itemType?.trim()?.lowercase()
+            ?.replace('.', '_')
+            ?.replace('-', '_')
+            ?.replace(' ', '_')
+            .orEmpty()
+        if (normalized.isEmpty()) return false
+        return normalized in HIDDEN_PROTOCOL_ITEM_TYPES
+    }
+
     /**
      * 对消息发送者进行严格分类。
      * 缺失、空白或无法识别的发送者返回 [SenderRole.UNKNOWN]，绝不默认归类为 [SenderRole.ASSISTANT]。
@@ -768,6 +1012,7 @@ object ContextInjectionFilter {
      * `<`、`[`、`#`、`:` 或连续 3 个 `[-=]` 之一；不含这些特征的常规纯文本可直接短路。
      */
     private fun mayContainContextInjectionMarker(text: String): Boolean {
+        if (text.trimStart().startsWith("This session is being continued", ignoreCase = true)) return true
         var bannerRun = 0
         for (i in text.indices) {
             when (text[i]) {
@@ -852,21 +1097,38 @@ object ContextInjectionFilter {
             break
         }
 
-        // 流式助手消息中间可能夹带后续文本到达的运行时 `<system-reminder>...</system-reminder>`；
-        // 严格限定在助手角色且位于 Markdown 代码保护区之外的成对闭环标签，绝不误杀用户输入或代码示例。
-        if (role == SenderRole.ASSISTANT && current.text.isNotEmpty()) {
+        // 正文中间可能夹带运行时严格注入标签（如 `<system-reminder>` / `<environment_context>` / `<ide_opened_file>`）：
+        // - 助手角色：剥离代码块外全部闭合成对严格标签及孤立闭合 `</system-reminder>`；
+        // - 用户角色：仅剥离位于独立行边界、代码块外的闭合成对严格标签，避免影响正文行内自然语言引用。
+        if (current.text.isNotEmpty()) {
             val midProtected = findProtectedCodeRanges(current.text, streaming)
-            val midTagRanges = findMidAssistantStrictTagRanges(current.text, midProtected)
+            val midTagRanges = findMidStrictTagRanges(current.text, midProtected, role)
             if (midTagRanges.isNotEmpty()) {
                 current = current.removeRanges(midTagRanges).trimmed()
                 strippedAny = true
             }
         }
 
-        // 若剥离后剩余内容处于明确的运行时输入外壳标签内（如 <user_message>...</user_message>），解包保留真实内容
+        // 若剥离后剩余内容处于明确的运行时输入外壳标签内（如 <user_message>...</user_message>），解包并再做一轮内层信封剥离
         if (strippedAny && current.text.isNotEmpty()) {
             unwrapSingleBodyContainerRange(current.text, streaming)?.let { range ->
                 current = current.slice(range.first, range.last + 1).trimmed()
+                for (innerIteration in 0 until MAX_PEEL_ITERATIONS) {
+                    if (current.text.isEmpty()) break
+                    val innerProtected = findProtectedCodeRanges(current.text, streaming)
+                    val innerLeading = peelLeadingEnvelope(current.text, innerProtected, role, streaming, alreadyStripped = true)
+                    if (innerLeading != null && innerLeading.length != current.text.length) {
+                        val removedPrefix = current.text.length - innerLeading.length
+                        current = current.slice(removedPrefix, current.text.length).trimmed()
+                        continue
+                    }
+                    val innerTrailing = peelTrailingEnvelope(current.text, innerProtected, role, streaming, alreadyStripped = true)
+                    if (innerTrailing != null && innerTrailing.length != current.text.length) {
+                        current = current.slice(0, innerTrailing.length).trimmed()
+                        continue
+                    }
+                    break
+                }
             }
         }
 
@@ -889,6 +1151,54 @@ object ContextInjectionFilter {
         val cleanStart: Int,
         val indexed: IndexedText,
     )
+
+    private fun hasUnclosedCodeFence(text: CharSequence): Boolean {
+        if (text.isEmpty() || (text.indexOf('`') < 0 && text.indexOf('~') < 0)) return false
+        var lineStart = 0
+        var inFence = false
+        var fenceChar = '`'
+        var fenceLen = 0
+        while (lineStart < text.length) {
+            val newlineIdx = text.indexOf('\n', lineStart)
+            val lineEndExclusive = if (newlineIdx >= 0) newlineIdx + 1 else text.length
+            val lineContentEnd = if (newlineIdx >= 0 && newlineIdx > lineStart && text[newlineIdx - 1] == '\r') {
+                newlineIdx - 1
+            } else if (newlineIdx >= 0) {
+                newlineIdx
+            } else {
+                text.length
+            }
+            val line = text.substring(lineStart, lineContentEnd)
+            if (!inFence) {
+                val match = FENCE_START_REGEX.matchEntire(line)
+                if (match != null) {
+                    val fence = match.groupValues[1]
+                    inFence = true
+                    fenceChar = fence[0]
+                    fenceLen = fence.length
+                }
+            } else {
+                val trimmed = line.trim()
+                if (trimmed.length >= fenceLen && trimmed.all { it == fenceChar }) {
+                    inFence = false
+                }
+            }
+            lineStart = lineEndExclusive
+        }
+        return inFence
+    }
+
+    /**
+     * 判断单个非空文本分块本身是否为完整自包含的上下文注入信封（不含未闭合半截分片）。
+     * 用于多块用户/助手消息（例如文本块 + 独立 `<system-reminder>` 块 + `./attachment` 文本块）
+     * 在拼接前先行剔除独立注入块，防止尾部附件路径阻断首尾信封剥离。
+     */
+    private fun isStandaloneCompleteInjectionPart(rawPart: String): Boolean {
+        val trimmed = rawPart.trim()
+        if (trimmed.isEmpty()) return false
+        if (!mayContainContextInjectionMarker(trimmed)) return false
+        return sanitizeTextIndexed(trimmed, role = SenderRole.USER, streaming = false).text.isEmpty()
+    }
 
     /**
      * 对消息分段列表执行合并文本清洗，无损保留附件与原始未清洗分段（仅在发生变化时记录 [rawParts]），
@@ -915,13 +1225,19 @@ object ContextInjectionFilter {
         val hadExplicitEmptyTextPart = parts.any { it is MessagePart.Text && it.value.isEmpty() }
         val originalText = parts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value }
         val hadOriginalText = originalText.isNotEmpty()
+        val textPartCount = parts.count { it is MessagePart.Text }
 
-        // 合并相邻连续文本分段再做净化，防止注入信封跨 content block 切分导致漏网
+        // 合并相邻连续文本分段再做净化，防止注入信封跨 content block 切分导致漏网；
+        // 若存在多个文本分块且其中某分块本身已是完整独立注入信封，先记录其空映射并剔除。
         val output = mutableListOf<MessagePart>()
         val pendingText = StringBuilder()
         val segmentMaps = mutableListOf<TextSegmentMap>()
         var rawCursor = 0
         var cleanCursor = 0
+        var hasEmittedText = false
+        var lastTextEndedWithNewline = false
+        var strippedInjectionSinceLastText = false
+        var pendingSeparatorNewline = false
 
         fun flushPendingText() {
             if (pendingText.isEmpty()) return
@@ -931,19 +1247,71 @@ object ContextInjectionFilter {
             val segRawStart = rawCursor
             val segRawEnd = rawCursor + rawChunk.length
             rawCursor = segRawEnd
-            val segCleanStart = cleanCursor
-            if (indexed.text.isNotEmpty()) {
-                output += MessagePart.Text(indexed.text)
-                cleanCursor += indexed.text.length
+            val segCleanStart = if (indexed.text.isNotEmpty() && pendingSeparatorNewline && hasEmittedText) {
+                val previousText = output.lastOrNull() as? MessagePart.Text
+                if (previousText != null) {
+                    output[output.lastIndex] = MessagePart.Text(previousText.value + "\n" + indexed.text)
+                } else {
+                    output += MessagePart.Text("\n" + indexed.text)
+                }
+                val startAfterNewline = cleanCursor + 1
+                cleanCursor += 1 + indexed.text.length
+                pendingSeparatorNewline = false
+                strippedInjectionSinceLastText = false
+                hasEmittedText = true
+                lastTextEndedWithNewline = rawChunk.endsWith('\n') || rawChunk.endsWith('\r')
+                startAfterNewline
+            } else {
+                val start = cleanCursor
+                if (indexed.text.isNotEmpty()) {
+                    output += MessagePart.Text(indexed.text)
+                    cleanCursor += indexed.text.length
+                    pendingSeparatorNewline = false
+                    strippedInjectionSinceLastText = false
+                    hasEmittedText = true
+                    lastTextEndedWithNewline = rawChunk.endsWith('\n') || rawChunk.endsWith('\r')
+                }
+                start
             }
             segmentMaps += TextSegmentMap(segRawStart, segRawEnd, segCleanStart, indexed)
         }
 
         for (part in parts) {
             when (part) {
-                is MessagePart.Text -> pendingText.append(part.value)
+                is MessagePart.Text -> {
+                    if (textPartCount > 1 && !hasUnclosedCodeFence(pendingText) && isStandaloneCompleteInjectionPart(part.value)) {
+                        val hadTrailingNewlineBefore = if (pendingText.isNotEmpty()) {
+                            pendingText.endsWith('\n') || pendingText.endsWith('\r')
+                        } else {
+                            lastTextEndedWithNewline
+                        }
+                        flushPendingText()
+                        val segRawStart = rawCursor
+                        val segRawEnd = rawCursor + part.value.length
+                        rawCursor = segRawEnd
+                        segmentMaps += TextSegmentMap(segRawStart, segRawEnd, cleanCursor, IndexedText("", IntArray(0)))
+                        if (hasEmittedText) {
+                            strippedInjectionSinceLastText = true
+                            if (hadTrailingNewlineBefore) {
+                                pendingSeparatorNewline = true
+                            }
+                        }
+                    } else {
+                        if (pendingText.isEmpty() && strippedInjectionSinceLastText) {
+                            if (part.value.startsWith('\n') || part.value.startsWith('\r')) {
+                                pendingSeparatorNewline = true
+                            }
+                            strippedInjectionSinceLastText = false
+                        }
+                        pendingText.append(part.value)
+                    }
+                }
                 is MessagePart.Attachment, is MessagePart.Command -> {
                     flushPendingText()
+                    pendingSeparatorNewline = false
+                    strippedInjectionSinceLastText = false
+                    hasEmittedText = false
+                    lastTextEndedWithNewline = false
                     output += part
                 }
             }
@@ -1137,17 +1505,25 @@ object ContextInjectionFilter {
         messages.mapNotNull { projectMessage(it) }
 
     /**
-     * 净化会话列表摘要、标题或预览文本，折叠换行为单行并截断。
+     * 净化完整会话标题：过滤上下文注入信封与内部提示、折叠换行为单行，但不截断合法长标题长度。
+     * 供标题持久化、会话列表元数据、重命名及标题更新事件使用；展示摘要截断请使用 [sanitizeSummaryText]。
      */
-    fun sanitizeSummaryText(raw: String?, maxLength: Int = 160): String {
+    fun sanitizeTitleText(raw: String?): String {
         if (raw.isNullOrBlank()) return ""
         val sanitized = sanitizeText(raw, role = SenderRole.ASSISTANT, streaming = false)
         if (sanitized.isEmpty()) return ""
-        val cleaned = if (hasCollapsibleWhitespace(sanitized)) {
+        return if (hasCollapsibleWhitespace(sanitized)) {
             sanitized.replace(SUMMARY_WHITESPACE_REGEX, " ").trim()
         } else {
             sanitized
         }
+    }
+
+    /**
+     * 净化会话列表摘要、标题或预览文本，折叠换行为单行并按 [maxLength] 截断。
+     */
+    fun sanitizeSummaryText(raw: String?, maxLength: Int = 160): String {
+        val cleaned = sanitizeTitleText(raw)
         if (cleaned.isEmpty()) return ""
         return if (cleaned.length > maxLength) cleaned.take(maxLength).trimEnd() else cleaned
     }
@@ -1183,6 +1559,7 @@ object ContextInjectionFilter {
 
         val normalized = normalizeTagName(trimmed)
         if (normalized in EXACT_CONTEXT_ENVELOPE_TAGS) return true
+        if (normalized.startsWith("antml_") && normalized.length > 6) return true
 
         val parts = normalized.split('_', ':', '-').filter { it.isNotEmpty() }
         if (parts.size < 2) return false
@@ -1192,28 +1569,36 @@ object ContextInjectionFilter {
     }
 
     private fun normalizeTagName(raw: String): String {
-        // 将分隔符 -, :, . 归一化为下划线并转为小写；混合大小写 PascalCase 组件标签已在调用前拦截
+        // 将分隔符 -, :, ., 空白 归一化为下划线并转为小写；混合大小写 PascalCase 组件标签已在调用前拦截
         val builder = StringBuilder(raw.length + 4)
+        var lastUnderscore = false
         for (i in raw.indices) {
             val ch = raw[i]
-            if (ch == '-' || ch == ':' || ch == '.') {
-                builder.append('_')
+            if (ch == '-' || ch == ':' || ch == '.' || ch.isWhitespace()) {
+                if (!lastUnderscore && builder.isNotEmpty()) {
+                    builder.append('_')
+                    lastUnderscore = true
+                }
             } else {
                 builder.append(ch.lowercaseChar())
+                lastUnderscore = false
             }
+        }
+        if (builder.isNotEmpty() && builder[builder.length - 1] == '_') {
+            builder.setLength(builder.length - 1)
         }
         return builder.toString()
     }
 
-    /** 混合大小写 PascalCase（如 DeveloperSettings / SystemCard）视为代码/UI 标签而非机器提示词信封。 */
+    /**
+     * 混合大小写 PascalCase（如 DeveloperSettings / SystemCard）视为代码/UI 标签而非机器提示词信封；
+     * 含 `-`/`_`/`:`/空格 的机器标签（如 `<System-Reminder>`、`<Environment_Context>`）不属于 JSX 组件。
+     */
     private fun isMixedPascalCaseUiTag(tagName: String): Boolean {
         if (tagName.isEmpty() || !tagName[0].isUpperCase()) return false
+        if (tagName.any { it == '-' || it == '_' || it == ':' || it.isWhitespace() }) return false
         return tagName.any { it.isLowerCase() }
     }
-
-    /** 仅供 [SystemPromptSanitizer] 兼容层复用的代码块保护区探测入口。 */
-    internal fun protectedCodeRangesForLegacyCompat(text: String, streaming: Boolean): List<IntRange> =
-        findProtectedCodeRanges(text, streaming)
 
     private fun findProtectedCodeRanges(text: String, streaming: Boolean): List<IntRange> {
         if (text.indexOf('`') < 0 && text.indexOf('~') < 0) return emptyList()
@@ -1338,8 +1723,11 @@ object ContextInjectionFilter {
     ): String? {
         if (text.isEmpty() || isProtected(0, protectedRanges)) return null
 
-        // 1. Codex / 通用 .md instructions + <INSTRUCTIONS> 或 Instructions from: ...AGENTS.md
+        // 1. Codex / 通用 .md instructions + <INSTRUCTIONS> / <user_instructions> 或 Instructions from: ...AGENTS.md
         stripLeadingInstructionsBlock(text, protectedRanges, streaming)?.let { return it }
+
+        // 1.5. Claude Code 无外层 XML 包装的本地命令 Caveat 与上下文压缩续接摘要
+        stripLeadingClaudeProseInjection(text)?.let { return it }
 
         // 2. OpenClaw / Hermes untrusted metadata 标题 + 紧随其后的围栏块/界定块/KV块
         stripLeadingUntrustedMetadata(text, streaming)?.let { return it }
@@ -1351,7 +1739,7 @@ object ContextInjectionFilter {
         stripLeadingChatMl(text, alreadyStripped)?.let { return it }
 
         // 5. 成对或助手终态截断的结构化 XML 上下文信封（支持同名嵌套与属性）
-        stripLeadingXmlEnvelope(text, protectedRanges, role, streaming)?.let { return it }
+        stripLeadingXmlEnvelope(text, protectedRanges, role, streaming, alreadyStripped)?.let { return it }
 
         // 6. 方括号控制/时间/环境头或成对 [SYSTEM]...[/SYSTEM]
         stripLeadingBracketEnvelope(text, streaming)?.let { return it }
@@ -1378,7 +1766,7 @@ object ContextInjectionFilter {
 
         // 若末尾是 `untrusted metadata` 所带围栏块或根上下文 XML 信封（含内部被截断围栏），各自校验起始标签是否在保护区外
         stripTrailingUntrustedMetadata(text, streaming)?.let { return it }
-        stripTrailingXmlEnvelope(text, protectedRanges, role, streaming)?.let { return it }
+        stripTrailingXmlEnvelope(text, protectedRanges, role, streaming, alreadyStripped)?.let { return it }
 
         if (trailingProtected) return null
 
@@ -1404,6 +1792,23 @@ object ContextInjectionFilter {
         return null
     }
 
+    private val KNOWN_AGENT_MD_HEADER_REGEX = Regex(
+        "(?i)^#\\s*(?:AGENTS|CLAUDE|GEMINI|HERMES|OPENCLAW|DSH|SOUL|TOOLS|MEMORY)\\.md instructions for [^\\r\\n]+"
+    )
+
+    private fun stripLeadingClaudeProseInjection(text: String): String? {
+        if (text.isEmpty()) return null
+        val first = text[0]
+        if (first != 'C' && first != 'c' && first != 'T' && first != 't') return null
+        CLAUDE_LOCAL_COMMAND_CAVEAT_REGEX.find(text)?.takeIf { it.range.first == 0 }?.let {
+            return text.substring(it.range.last + 1)
+        }
+        CLAUDE_SESSION_CONTINUATION_REGEX.find(text)?.takeIf { it.range.first == 0 }?.let {
+            return text.substring(it.range.last + 1)
+        }
+        return null
+    }
+
     private fun stripLeadingInstructionsBlock(
         text: String,
         protectedRanges: List<IntRange>,
@@ -1414,12 +1819,38 @@ object ContextInjectionFilter {
         if (first != '#' && first != 'I' && first != 'i') return null
         val headerMatch = MARKDOWN_AGENT_HEADER_REGEX.find(text)
         if (headerMatch != null && headerMatch.range.first == 0) {
-            var cursor = headerMatch.range.last + 1
+            val afterHeader = headerMatch.range.last + 1
+            var cursor = afterHeader
             while (cursor < text.length && text[cursor].isWhitespace()) cursor++
-            if (cursor < text.length && text.startsWith("<INSTRUCTIONS>", startIndex = cursor, ignoreCase = true)) {
-                val closeEnd = findMatchingXmlCloseEnd(text, cursor, "INSTRUCTIONS", protectedRanges)
-                if (closeEnd >= 0) return text.substring(closeEnd)
-                if (streaming) return ""
+            if (cursor < text.length) {
+                for (wrapperTag in arrayOf("INSTRUCTIONS", "user_instructions")) {
+                    if (text.startsWith("<$wrapperTag>", startIndex = cursor, ignoreCase = true)) {
+                        val closeEnd = findMatchingXmlCloseEnd(text, cursor, wrapperTag, protectedRanges)
+                        if (closeEnd >= 0) return text.substring(closeEnd)
+                        if (streaming) return ""
+                    }
+                }
+            }
+            if (KNOWN_AGENT_MD_HEADER_REGEX.matchesAt(text, 0)) {
+                if (cursor >= text.length) return ""
+                val between = text.substring(afterHeader, cursor)
+                if (TRAILING_PARAGRAPH_SPLIT_REGEX.containsMatchIn(between)) {
+                    val blankSplit = TRAILING_PARAGRAPH_SPLIT_REGEX.find(text, cursor)
+                    if (blankSplit != null) {
+                        val paragraph = text.substring(cursor, blankSplit.range.first).trimStart()
+                        val looksLikeMarkdownRules = paragraph.startsWith("#") ||
+                            paragraph.startsWith("- ") ||
+                            paragraph.startsWith("* ") ||
+                            paragraph.startsWith("> ") ||
+                            paragraph.startsWith("1. ")
+                        if (looksLikeMarkdownRules) {
+                            return text.substring(blankSplit.range.last + 1)
+                        }
+                    }
+                    return text.substring(cursor)
+                }
+                val blankSplit = TRAILING_PARAGRAPH_SPLIT_REGEX.find(text, cursor)
+                return if (blankSplit != null) text.substring(blankSplit.range.last + 1) else ""
             }
         }
         val standalone = STANDALONE_INSTRUCTIONS_FROM_REGEX.find(text)
@@ -1584,22 +2015,72 @@ object ContextInjectionFilter {
         return null
     }
 
+    private fun isConditionalEnvelopeTag(rawTagName: String): Boolean {
+        val trimmed = rawTagName.trim()
+        if (trimmed.isEmpty() || isMixedPascalCaseUiTag(trimmed)) return false
+        return normalizeTagName(trimmed) in CONDITIONAL_SINGLE_WORD_ENVELOPE_TAGS
+    }
+
+    private fun shouldStripXmlEnvelope(
+        text: String,
+        openStart: Int,
+        open: ParsedOpenTag,
+        closeEnd: Int,
+        alreadyStripped: Boolean,
+    ): Boolean {
+        if (isContextEnvelopeTag(open.tagName)) return true
+        if (!isConditionalEnvelopeTag(open.tagName)) return false
+        if (alreadyStripped) return true
+        val openTagRaw = text.substring(openStart, open.endExclusive)
+        if (EXPLICIT_INJECTION_ATTR_REGEX.containsMatchIn(openTagRaw)) return true
+        if (open.selfClosing) return false
+        val closeStart = text.lastIndexOf("</", (closeEnd - 1).coerceAtLeast(open.endExclusive))
+        if (closeStart <= open.endExclusive) return false
+        val innerBody = text.substring(open.endExclusive, closeStart)
+        if (MACHINE_ENVELOPE_PROSE_REGEX.containsMatchIn(innerBody) ||
+            MACHINE_ENVELOPE_HEADING_REGEX.containsMatchIn(innerBody) ||
+            MACHINE_TOOL_SCHEMA_REGEX.containsMatchIn(innerBody)
+        ) {
+            return true
+        }
+        // 内部嵌套无歧义上下文注入标签（如 `<system-reminder>` / `<environment_context>`）时视为上下文信封
+        var cursor = 0
+        while (cursor < innerBody.length) {
+            val lt = innerBody.indexOf('<', cursor)
+            if (lt < 0) break
+            val nested = parseOpenTagAt(innerBody, lt)
+            if (nested != null && isContextEnvelopeTag(nested.tagName)) return true
+            cursor = lt + 1
+        }
+        return false
+    }
+
     private fun stripLeadingXmlEnvelope(
         text: String,
         protectedRanges: List<IntRange>,
         role: SenderRole,
         streaming: Boolean,
+        alreadyStripped: Boolean,
     ): String? {
         val open = parseOpenTagAt(text, 0) ?: return null
-        if (!isContextEnvelopeTag(open.tagName)) return null
+        val unconditional = isContextEnvelopeTag(open.tagName)
+        if (!unconditional && !isConditionalEnvelopeTag(open.tagName)) return null
         if (open.selfClosing) {
-            return text.substring(open.endExclusive)
+            return if (shouldStripXmlEnvelope(text, 0, open, open.endExclusive, alreadyStripped)) {
+                text.substring(open.endExclusive)
+            } else {
+                null
+            }
         }
         val closeEnd = findMatchingXmlCloseEnd(text, 0, open.tagName, protectedRanges)
         if (closeEnd >= 0) {
-            return text.substring(closeEnd)
+            return if (shouldStripXmlEnvelope(text, 0, open, closeEnd, alreadyStripped)) {
+                text.substring(closeEnd)
+            } else {
+                null
+            }
         }
-        if (shouldStripUnclosedEnvelope(text, 0, open, role, streaming)) {
+        if (unconditional && shouldStripUnclosedEnvelope(text, 0, open, role, streaming)) {
             return ""
         }
         return null
@@ -1610,6 +2091,7 @@ object ContextInjectionFilter {
         protectedRanges: List<IntRange>,
         role: SenderRole,
         streaming: Boolean,
+        alreadyStripped: Boolean,
     ): String? {
         if (text.indexOf('<') < 0) return null
         // 情况 A：文本末尾紧跟闭合标签 </tag>
@@ -1617,10 +2099,13 @@ object ContextInjectionFilter {
             val lt = text.lastIndexOf('<')
             if (lt >= 0 && lt + 2 < text.length && text[lt + 1] == '/' && !isProtected(lt, protectedRanges)) {
                 val closeTagName = text.substring(lt + 2, text.length - 1).trim()
-                if (isContextEnvelopeTag(closeTagName)) {
+                if (isContextEnvelopeTag(closeTagName) || isConditionalEnvelopeTag(closeTagName)) {
                     val openStart = findMatchingXmlOpenStartBackward(text, lt, closeTagName, protectedRanges)
                     if (openStart >= 0) {
-                        return text.substring(0, openStart)
+                        val open = parseOpenTagAt(text, openStart)
+                        if (open != null && shouldStripXmlEnvelope(text, openStart, open, text.length, alreadyStripped)) {
+                            return text.substring(0, openStart)
+                        }
                     }
                 }
             }
@@ -1741,6 +2226,11 @@ object ContextInjectionFilter {
         val selfClosing: Boolean,
     )
 
+    private fun tagNamesMatch(first: String, second: String): Boolean =
+        first.equals(second, ignoreCase = true) ||
+            ((first.indexOf(' ') >= 0 || second.indexOf(' ') >= 0) &&
+                normalizeTagName(first) == normalizeTagName(second))
+
     private fun parseOpenTagAt(text: String, start: Int): ParsedOpenTag? {
         if (start < 0 || start >= text.length || text[start] != '<') return null
         var i = start + 1
@@ -1749,7 +2239,7 @@ object ContextInjectionFilter {
         while (i < text.length && (text[i].isLetterOrDigit() || text[i] == '_' || text[i] == '-' || text[i] == ':')) {
             i++
         }
-        val tagName = text.substring(nameStart, i)
+        var tagName = text.substring(nameStart, i)
         if (i >= text.length) return null
         val next = text[i]
         if (next != '>' && next != '/' && !next.isWhitespace()) return null
@@ -1765,6 +2255,18 @@ object ContextInjectionFilter {
                     '\'', '"' -> quote = ch
                     '>' -> {
                         val selfClosing = i > nameStart && text[i - 1] == '/'
+                        val contentEnd = if (selfClosing) i - 1 else i
+                        val rawInside = text.substring(nameStart, contentEnd).trim()
+                        if (rawInside.indexOf(' ') >= 0 || rawInside.indexOf('\t') >= 0) {
+                            val collapsed = rawInside.lowercase().replace(SUMMARY_WHITESPACE_REGEX, " ")
+                            val matchedMultiWord = when {
+                                collapsed in MULTI_WORD_CONTEXT_ENVELOPE_TAGS -> collapsed
+                                else -> MULTI_WORD_CONTEXT_ENVELOPE_TAGS.firstOrNull { collapsed.startsWith("$it ") }
+                            }
+                            if (matchedMultiWord != null) {
+                                tagName = matchedMultiWord
+                            }
+                        }
                         return ParsedOpenTag(tagName, i + 1, selfClosing)
                     }
                     '<' -> return null
@@ -1797,14 +2299,14 @@ object ContextInjectionFilter {
                 val gt = text.indexOf('>', lt + 2)
                 if (gt < 0) return -1
                 val closeName = text.substring(lt + 2, gt).trim()
-                if (closeName.equals(tagName, ignoreCase = true)) {
+                if (tagNamesMatch(closeName, tagName)) {
                     depth--
                     if (depth == 0) return gt + 1
                 }
                 cursor = gt + 1
             } else {
                 val nested = parseOpenTagAt(text, lt)
-                if (nested != null && !nested.selfClosing && nested.tagName.equals(tagName, ignoreCase = true)) {
+                if (nested != null && !nested.selfClosing && tagNamesMatch(nested.tagName, tagName)) {
                     depth++
                     cursor = nested.endExclusive
                 } else {
@@ -1834,14 +2336,14 @@ object ContextInjectionFilter {
                     val gt = text.indexOf('>', lt + 2)
                     if (gt in (lt + 2)..closeTagStart) {
                         val innerCloseName = text.substring(lt + 2, gt).trim()
-                        if (innerCloseName.equals(tagName, ignoreCase = true)) {
+                        if (tagNamesMatch(innerCloseName, tagName)) {
                             depth++
                         }
                     }
                 } else {
                     val open = parseOpenTagAt(text, lt)
                     if (open != null && open.endExclusive <= closeTagStart && !open.selfClosing &&
-                        open.tagName.equals(tagName, ignoreCase = true)
+                        tagNamesMatch(open.tagName, tagName)
                     ) {
                         depth--
                         if (depth == 0) return lt
@@ -1976,27 +2478,51 @@ object ContextInjectionFilter {
         }
     }
 
-    private fun findMidAssistantStrictTagRanges(text: String, protectedRanges: List<IntRange>): List<IntRange> {
+    private fun findMidStrictTagRanges(
+        text: String,
+        protectedRanges: List<IntRange>,
+        role: SenderRole,
+    ): List<IntRange> {
         val removed = mutableListOf<IntRange>()
         var cursor = 0
         while (cursor < text.length) {
             val lt = text.indexOf('<', cursor)
             if (lt < 0) break
             if (!isProtected(lt, protectedRanges)) {
+                // 助手文本中可能残留未配对的孤立闭合 `</system-reminder>` 标签，直接移除
+                if (role == SenderRole.ASSISTANT && lt + 1 < text.length && text[lt + 1] == '/') {
+                    val gt = text.indexOf('>', lt + 2)
+                    if (gt > lt + 2) {
+                        val closeName = normalizeTagName(text.substring(lt + 2, gt).trim())
+                        if (closeName == "system_reminder" || closeName == "system_reminders") {
+                            removed += lt until (gt + 1)
+                            cursor = gt + 1
+                            continue
+                        }
+                    }
+                }
                 val open = parseOpenTagAt(text, lt)
                 if (open != null && !isMixedPascalCaseUiTag(open.tagName)) {
                     val normalized = normalizeTagName(open.tagName)
-                    if (normalized in MID_ASSISTANT_STRICT_INJECTION_TAGS) {
-                        if (open.selfClosing) {
-                            removed += lt until open.endExclusive
-                            cursor = open.endExclusive
-                            continue
+                    if (normalized in MID_STRICT_INJECTION_TAGS) {
+                        val tagEnd = if (open.selfClosing) {
+                            open.endExclusive
+                        } else {
+                            findMatchingXmlCloseEnd(text, lt, open.tagName, protectedRanges)
                         }
-                        val closeEnd = findMatchingXmlCloseEnd(text, lt, open.tagName, protectedRanges)
-                        if (closeEnd >= 0) {
-                            removed += lt until closeEnd
-                            cursor = closeEnd
-                            continue
+                        if (tagEnd >= 0) {
+                            if (role == SenderRole.ASSISTANT) {
+                                removed += lt until tagEnd
+                                cursor = tagEnd
+                                continue
+                            } else if (role == SenderRole.USER) {
+                                val lineRange = standaloneLineRangeIfBounded(text, lt, tagEnd)
+                                if (lineRange != null) {
+                                    removed += lineRange
+                                    cursor = lineRange.last + 1
+                                    continue
+                                }
+                            }
                         }
                     }
                 }
@@ -2004,6 +2530,31 @@ object ContextInjectionFilter {
             cursor = lt + 1
         }
         return removed
+    }
+
+    /**
+     * 检查 `[tagStart, tagEndExclusive)` 在用户文本中是否独占完整行边界（前后仅允许水平空白到行首/行尾），
+     * 避免误杀用户在自然语言句子中间行内讨论 `<system-reminder>` 标签。
+     */
+    private fun standaloneLineRangeIfBounded(text: String, tagStart: Int, tagEndExclusive: Int): IntRange? {
+        var lineStart = tagStart
+        while (lineStart > 0 && (text[lineStart - 1] == ' ' || text[lineStart - 1] == '\t')) {
+            lineStart--
+        }
+        val atLineStart = lineStart == 0 || text[lineStart - 1] == '\n' || text[lineStart - 1] == '\r'
+        if (!atLineStart) return null
+
+        var lineEnd = tagEndExclusive
+        while (lineEnd < text.length && (text[lineEnd] == ' ' || text[lineEnd] == '\t')) {
+            lineEnd++
+        }
+        val atLineEnd = lineEnd == text.length || text[lineEnd] == '\n' || text[lineEnd] == '\r'
+        if (!atLineEnd) return null
+
+        // 若该注入行后面紧跟换行符，一并吞掉该行的单个换行符，防止上下相邻行之间留下多余空行
+        if (lineEnd < text.length && text[lineEnd] == '\r') lineEnd++
+        if (lineEnd < text.length && text[lineEnd] == '\n') lineEnd++
+        return lineStart until lineEnd
     }
 
     private fun unwrapSingleBodyContainerRange(text: String, streaming: Boolean): IntRange? {

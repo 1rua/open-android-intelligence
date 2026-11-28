@@ -396,4 +396,73 @@ class ContextInjectionPipelineUiTest {
         compose.onNodeWithText("已创建新对话回执").assertIsDisplayed()
         compose.onNodeWithText("正常助手气泡可见").assertIsDisplayed()
     }
+
+    @Test
+    fun `发送后回显与刷新重拉场景过滤多词注入标签与中段用户提醒且保留正文与附件路径`() {
+        val threadId = "conv-send-refresh-clean"
+        val eventsFlow = MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity = 32)
+        val refreshedHistory = listOf(
+            TimelineMessage(
+                id = "srv-u-1",
+                sender = "user",
+                parts = listOf(
+                    MessagePart.Text(
+                        "<permissions instructions>\nSandbox rules\n</permissions instructions>\n\n帮我看下截图\n<system-reminder>\ninternal hint\n</system-reminder>\n./attachments/shot.png",
+                    ),
+                ),
+                timestamp = 100L,
+                state = "CONFIRMED",
+                conversationId = ConversationId(threadId),
+                contentRevision = 2L,
+            ),
+            TimelineMessage(
+                id = "srv-a-1",
+                sender = "assistant",
+                parts = listOf(MessagePart.Text("<system-reminder>hidden</system-reminder>\n截图已收到，马上分析")),
+                timestamp = 110L,
+                state = "CONFIRMED",
+                conversationId = ConversationId(threadId),
+                contentRevision = 3L,
+            ),
+        )
+        val repo = object : ConversationRepository {
+            override suspend fun listConversations(scope: ConversationScope, page: PageRequest) =
+                ConversationPage(listOf(ConversationSummary(ConversationId(threadId), "<permissions instructions>p</permissions instructions>\n截图排查", 100L)), null)
+            override suspend fun timeline(conversationId: String, page: PageRequest) =
+                TimelinePage(refreshedHistory, null)
+            override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
+                Conversation(ConversationId(threadId), "截图排查", 100L)
+            override suspend fun submitMessage(message: OutgoingMessage) =
+                MessageAcceptance("srv-u-1", message.clientMessageId.value)
+            override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
+            override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> = eventsFlow
+            override suspend fun cancelGeneration(generationId: String, requestId: String) =
+                CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
+        }
+        val controller = WorkbenchController(
+            scope = testScope,
+            repository = repo,
+            catalogRepository = catalogRepo(),
+            scopeFactory = ::scope,
+            persistenceDispatcher = Dispatchers.Unconfined,
+        ).also { controllers += it }
+
+        compose.runOnIdle { controller.openThread(threadId) }
+        compose.waitForIdle()
+
+        // 模拟远端推送快照失效触发刷新重载
+        compose.runOnIdle {
+            eventsFlow.tryEmit(
+                VerifiedConversationEvent.SnapshotInvalidated("ev-inv-1", 120L, 4L, ConversationId(threadId)),
+            )
+        }
+        compose.waitForIdle()
+
+        val entries = (controller.state.value.timeline as com.openandroidintelligence.conversation.state.Loadable.Ready).value
+        assertEquals(listOf("srv-u-1", "srv-a-1"), entries.map { it.key })
+        assertEquals("帮我看下截图\n./attachments/shot.png", entries[0].text)
+        assertEquals("截图已收到，马上分析", entries[1].text)
+        assertFalse(entries[0].text.contains("permissions instructions"))
+        assertFalse(entries[0].text.contains("system-reminder"))
+    }
 }

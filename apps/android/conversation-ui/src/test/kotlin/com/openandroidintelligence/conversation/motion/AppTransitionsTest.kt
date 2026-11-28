@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.view.View
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.LinearEasing
@@ -13,8 +14,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -336,6 +340,123 @@ class AppTransitionsTest {
                 frame.enteringSampleColor.blue in 0.1f..0.9f,
             )
         }
+    }
+
+    @Test
+    fun disclosureTransitionsExpandVerticallyInStandardModeAndFadeWithoutDisplacementWhenReduced() {
+        val standardExpand = AppTransitions.disclosureExpandVertical(reduced = false)
+        val reducedExpand = AppTransitions.disclosureExpandVertical(reduced = true)
+        val standardCollapse = AppTransitions.disclosureCollapseVertical(reduced = false)
+        val reducedCollapse = AppTransitions.disclosureCollapseVertical(reduced = true)
+
+        assertNotEquals(EnterTransition.None, standardExpand)
+        assertNotEquals(ExitTransition.None, standardCollapse)
+        assertNotEquals(standardExpand, reducedExpand)
+        assertNotEquals(standardCollapse, reducedCollapse)
+        assertEquals(
+            "减少动态展开必须退化为无位移 150ms 线性 fadeIn",
+            fadeIn(MotionSpecs.disclosureFade(reduced = true)),
+            reducedExpand,
+        )
+        assertEquals(
+            "减少动态收起必须退化为无位移 150ms 线性 fadeOut",
+            fadeOut(MotionSpecs.disclosureFade(reduced = true)),
+            reducedCollapse,
+        )
+
+        var expanded by mutableStateOf(false)
+        var reducedMode by mutableStateOf(false)
+        var runEpoch by mutableIntStateOf(0)
+        var containerHeightPx = 0
+        lateinit var hostView: View
+
+        compose.setContent {
+            hostView = LocalView.current
+            key(runEpoch) {
+                Box(
+                    Modifier
+                        .size(width = 160.dp, height = 160.dp)
+                        .background(BackdropRed)
+                        .testTag("disclosure-host"),
+                ) {
+                    Column {
+                        AnimatedVisibility(
+                            visible = expanded,
+                            enter = AppTransitions.disclosureExpandVertical(reducedMode),
+                            exit = AppTransitions.disclosureCollapseVertical(reducedMode),
+                            modifier = Modifier.onGloballyPositioned { coords ->
+                                containerHeightPx = coords.size.height
+                            },
+                        ) {
+                            Box(
+                                Modifier
+                                    .width(120.dp)
+                                    .height(100.dp)
+                                    .background(PageBlue)
+                                    .testTag("disclosure-body"),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+        val fullHeightPx = with(compose.density) { 100.dp.toPx() }
+
+        // 1. 标准模式：展开早段（约 32-48ms）高度应处于 0 与满高度之间
+        compose.mainClock.autoAdvance = false
+        compose.runOnIdle { expanded = true }
+        compose.waitForIdle()
+        repeat(4) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+        assertTrue(
+            "标准模式展开早段应处于垂直生长中: height=$containerHeightPx, full=$fullHeightPx",
+            containerHeightPx in 1 until (fullHeightPx - 4f).toInt(),
+        )
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        assertEquals(fullHeightPx, containerHeightPx.toFloat(), 1f)
+
+        // 2. 减少动态模式：展开中段无垂直高度位移（立即满高度），仅保留线性透明度渐显
+        compose.runOnIdle {
+            expanded = false
+            reducedMode = true
+            runEpoch++
+        }
+        compose.waitForIdle()
+        compose.mainClock.autoAdvance = false
+        compose.runOnIdle { expanded = true }
+        compose.waitForIdle()
+        repeat(5) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+        assertEquals(
+            "减少动态展开不得产生垂直高度位移",
+            fullHeightPx,
+            containerHeightPx.toFloat(),
+            1f,
+        )
+        val hostBounds = compose.onNodeWithTag("disclosure-host").fetchSemanticsNode().boundsInRoot
+        val centerPixel = compose.runOnIdle {
+            val bitmap = Bitmap.createBitmap(
+                ceil(hostBounds.width).toInt().coerceAtLeast(1),
+                ceil(hostBounds.height).toInt().coerceAtLeast(1),
+                Bitmap.Config.ARGB_8888,
+            )
+            val canvas = Canvas(bitmap)
+            canvas.translate(-hostBounds.left, -hostBounds.top)
+            hostView.draw(canvas)
+            bitmap.asImageBitmap().toPixelMap()
+        }[with(compose.density) { 60.dp.toPx() }.toInt(), with(compose.density) { 50.dp.toPx() }.toInt()]
+        assertTrue(
+            "减少动态中段应处于半透明线性淡入而非瞬间跳变: blue=${centerPixel.blue}",
+            centerPixel.blue in 0.1f..0.9f,
+        )
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
     }
 
     private data class TransitionFrameSample(

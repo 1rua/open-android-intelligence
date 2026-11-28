@@ -465,9 +465,9 @@ class ExecutionDisplayTest {
     fun finalEntryAttachmentsBecomeProcessStepsWhenNoFinalAnswer() {
         val attachment = TimelineAttachment(draftId = "att-1", filename = "log.txt", mediaType = "text/plain")
         val thought = assistantEntry("a1", "<think>思考</think>")
-        val attachmentOnly = assistantEntry("a2", "", attachments = listOf(attachment))
+        val attachmentOnlyStreaming = assistantEntry("a2", "", streaming = true, attachments = listOf(attachment))
 
-        val run = executionRun(TimelineDisplayModel().build(listOf(thought, attachmentOnly)))
+        val run = executionRun(TimelineDisplayModel().build(listOf(thought, attachmentOnlyStreaming)))
 
         assertFalse(run.hasFinalAnswer)
         assertEquals("a2", run.finalEntry.key)
@@ -475,6 +475,22 @@ class ExecutionDisplayTest {
         val attachmentStep = run.steps.filterIsInstance<ExecutionStep.Attachments>().single()
         assertEquals("a2", attachmentStep.entry.key)
         assertEquals(listOf(attachment), attachmentStep.entry.attachments)
+    }
+
+    @Test
+    fun completedAttachmentOnlyTrailingEntryCountsAsFinalAnswer() {
+        val attachment = TimelineAttachment(draftId = "att-1", filename = "log.txt", mediaType = "text/plain")
+        val thought = assistantEntry("a1", "<think>思考</think>")
+        val attachmentOnly = assistantEntry("a2", "", attachments = listOf(attachment))
+
+        val run = executionRun(TimelineDisplayModel().build(listOf(thought, attachmentOnly)))
+
+        assertTrue(run.hasFinalAnswer)
+        assertTrue(run.hasCompletedFinalAnswer)
+        assertEquals("a2", run.finalEntry.key)
+        assertTrue(run.finalBlocks.isEmpty())
+        assertEquals(1, run.stepCount)
+        assertTrue(run.steps.filterIsInstance<ExecutionStep.Attachments>().isEmpty())
     }
 
     @Test
@@ -725,5 +741,45 @@ class ExecutionDisplayTest {
 
         assertEquals(items.size, items.map { it.key }.distinct().size)
         assertEquals(items.size, items.map { it.contentType }.size)
+    }
+
+    @Test
+    fun hasCompletedFinalAnswerTracksStreamingAndTerminalBoundaries() {
+        val model = TimelineDisplayModel()
+        val streamingWithAnswer = executionRun(
+            model.build(
+                listOf(
+                    assistantEntry("a1", "<think>分析中</think>"),
+                    assistantEntry("a2", "正在流式输出最终答案", streaming = true),
+                ),
+                generation = GenerationState.RUNNING,
+            ),
+        )
+        assertTrue(streamingWithAnswer.isStreaming)
+        assertTrue(streamingWithAnswer.hasFinalAnswer)
+        assertFalse(streamingWithAnswer.hasCompletedFinalAnswer, "流式输出中不得提前进入回合折叠态")
+
+        val completedWithoutAnswer = executionRun(
+            model.build(
+                listOf(assistantEntry("a1", "<tool_call name=\"bash\"><command>ls</command></tool_call>")),
+                generation = GenerationState.COMPLETED,
+            ),
+        )
+        assertFalse(completedWithoutAnswer.isStreaming)
+        assertFalse(completedWithoutAnswer.hasFinalAnswer)
+        assertFalse(completedWithoutAnswer.hasCompletedFinalAnswer, "无最终回答时不进入回合折叠态")
+
+        val completedWithAnswer = executionRun(
+            model.build(
+                listOf(
+                    assistantEntry("a1", "<tool_call name=\"bash\"><command>ls</command></tool_call>"),
+                    assistantEntry("a2", "已列出当前目录。"),
+                ),
+                generation = GenerationState.COMPLETED,
+            ),
+        )
+        assertFalse(completedWithAnswer.isStreaming)
+        assertTrue(completedWithAnswer.hasFinalAnswer)
+        assertTrue(completedWithAnswer.hasCompletedFinalAnswer)
     }
 }

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ================================================================= -->
+    <!-- Conversation tool cards & turn process collapse card (English)    -->
+    <!-- ================================================================= -->
+
+    <!-- Tool call card status, labels, details, and copy feedback -->
+    <string name="conv_md_default_tool_name">Run command</string>
+    <string name="conv_md_exec_success">Succeeded</string>
+    <string name="conv_md_exec_failed">Failed</string>
+    <string name="conv_tool_status_running">Running</string>
+    <string name="conv_tool_status_interrupted">Interrupted</string>
+    <string name="conv_tool_status_no_result">No result returned</string>
+    <string name="conv_tool_status_failed">Failed</string>
+    <string name="conv_tool_status_invocation_only">Called</string>
+    <string name="conv_tool_status_completed">Completed</string>
+    <string name="conv_tool_status_interrupted_unknown">Interrupted · No result returned</string>
+    <string name="conv_tool_action_collapse_label">Collapse tool details</string>
+    <string name="conv_tool_action_expand_label">Expand tool details</string>
+    <string name="conv_tool_call_tag">[Run command]</string>
+    <string name="conv_tool_section_command">Command</string>
+    <string name="conv_tool_section_arguments">Arguments</string>
+    <string name="conv_tool_params_truncated">Arguments may be truncated</string>
+    <string name="conv_tool_section_output">Output</string>
+    <string name="conv_tool_section_error_output">Error output</string>
+    <string name="conv_tool_invocation_no_return">This call returned no value</string>
+    <string name="conv_tool_no_output">No output</string>
+    <string name="conv_tool_action_copy_command">Copy command</string>
+    <string name="conv_tool_announced_copied">Command copied</string>
+    <string name="conv_tool_toast_copied">Copied to clipboard</string>
+    <string name="conv_tool_btn_copied">Copied</string>
+    <string name="conv_tool_btn_copy">Copy</string>
+    <string name="conv_assistant_state_expanded">Expanded</string>
+    <string name="conv_assistant_state_collapsed">Collapsed</string>
+
+    <!-- Turn process collapse card -->
+    <plurals name="conv_turn_process_tool_calls">
+        <item quantity="one">%1$d tool call</item>
+        <item quantity="other">%1$d tool calls</item>
+    </plurals>
+    <string name="conv_turn_process_thought_only">Thought process</string>
+    <string name="conv_turn_process_expand_label">Expand process details</string>
+    <string name="conv_turn_process_collapse_label">Collapse process details</string>
+    <string name="conv_turn_process_state_expanded">Expanded</string>
+    <string name="conv_turn_process_state_collapsed">Collapsed</string>
+</resources>

@@ -96,6 +96,16 @@ class HeterogeneousStepTimelineTest {
         compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
         compose.onNodeWithText("已执行", substring = true).assertDoesNotExist()
 
+        // 回合结束并输出最终回答后默认折叠为「2 次工具调用」大卡
+        val summaryTop = compose.onNodeWithText("2 次工具调用").assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot.top
+        val finalTopCollapsed = compose.onNodeWithText("网络正常可用。").assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot.top
+        assertTrue(summaryTop < finalTopCollapsed, "折叠大卡必须在最终回答之上")
+        compose.onNodeWithText("[check_wifi]").assertDoesNotExist()
+
+        // 点击展开后内部异构步骤按真实发生顺序单调递增
+        compose.onNodeWithText("2 次工具调用").performClick()
         val thoughtTop = compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
             .fetchSemanticsNode().boundsInRoot.top
         val tool1Top = compose.onNodeWithText("[check_wifi]").assertIsDisplayed()
@@ -115,7 +125,7 @@ class HeterogeneousStepTimelineTest {
 
     @Test
     fun t1_F3_02_No_Global_Collapse_Panel() {
-        // 通过真实 MessageTimeline 宿主验证彻底移除集中式“执行过程 · N 步” / “已执行 N 步”外层折叠框
+        // 通过真实 MessageTimeline 宿主验证回合结束折叠为「2 次工具调用」且不出现旧版“执行过程/已执行”文案
         val toolXml = """
             <tool_call name="tool_a">
               <command>cmd_a</command>
@@ -137,6 +147,7 @@ class HeterogeneousStepTimelineTest {
 
         compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
         compose.onNodeWithText("已执行", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("2 次工具调用").assertIsDisplayed().performClick()
         val toolATop = compose.onNodeWithText("[tool_a]").assertIsDisplayed()
             .fetchSemanticsNode().boundsInRoot.top
         val toolBTop = compose.onNodeWithText("[tool_b]").assertIsDisplayed()
@@ -223,6 +234,13 @@ class HeterogeneousStepTimelineTest {
 
         compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
         compose.onNodeWithText("已执行", substring = true).assertDoesNotExist()
+        val summaryTop = compose.onNodeWithText("1 次工具调用").assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot.top
+        val finalTopBefore = compose.onNodeWithText("这是最终的完整分析报告结论。").assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot.top
+        assertTrue(summaryTop < finalTopBefore, "过程折叠大卡必须在最终回答上方")
+
+        compose.onNodeWithText("1 次工具调用").performClick()
         val toolTop = compose.onNodeWithText("[fetch_status]").assertIsDisplayed()
             .fetchSemanticsNode().boundsInRoot.top
         val finalTop = compose.onNodeWithText("这是最终的完整分析报告结论。").assertIsDisplayed()
@@ -330,6 +348,7 @@ class HeterogeneousStepTimelineTest {
 
         compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
         compose.onNodeWithText("已执行", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("2 次工具调用").assertIsDisplayed().performClick()
 
         val thoughtNodes = compose.onAllNodesWithText("已思考", substring = true).fetchSemanticsNodes()
         assertEquals(2, thoughtNodes.size, "两条独立思考步必须各自渲染")
@@ -386,6 +405,7 @@ class HeterogeneousStepTimelineTest {
         }
 
         compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("0 次工具调用").assertDoesNotExist()
         compose.onNodeWithText("最终回答内容").assertIsDisplayed()
         compose.onAllNodesWithText("已思考", substring = true).assertCountEquals(2)
     }
@@ -409,6 +429,7 @@ class HeterogeneousStepTimelineTest {
         }
 
         compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("1 次工具调用").assertIsDisplayed().performClick()
         compose.onNodeWithText("[device_info]").assertIsDisplayed()
         compose.onNodeWithText("设备系统版本为 Android 15。").assertIsDisplayed()
     }
@@ -460,6 +481,7 @@ class HeterogeneousStepTimelineTest {
         }
 
         compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("2 次工具调用").assertIsDisplayed().performClick()
         compose.onNodeWithText("[heavy_tool]").assertIsDisplayed()
         compose.onNodeWithText("[finish_tool]").assertIsDisplayed()
         compose.onNodeWithText("全部执行完毕。").assertIsDisplayed()
@@ -467,8 +489,8 @@ class HeterogeneousStepTimelineTest {
 
     @Test
     fun t2_F3_06_Single_Entry_NativeSteps_And_PlainText_No_Duplication() {
-        // 回归测试 R3：单条 TimelineEntry 同时携带原生 executionSteps 与纯正文回复（无 reasoning 且无 XML 标记）时，
-        // 经真实宿主 MessageTimeline 渲染后，每个工具卡片在整个界面中只能渲染 1 次且位于正文上方。
+        // 回归测试：单条 TimelineEntry 同时携带原生 executionSteps 与纯正文回复（无 reasoning 且无 XML 标记）时，
+        // 经真实宿主 MessageTimeline 渲染后，折叠为「1 次工具调用」大卡，展开后工具卡片严格只渲染 1 次且位于正文上方。
         val entry = assistantEntry(
             key = "single_native_and_plain_text",
             text = "我已经查看了目录内容，一切正常。",
@@ -495,6 +517,7 @@ class HeterogeneousStepTimelineTest {
 
         compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
         compose.onNodeWithText("已执行", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("1 次工具调用").assertIsDisplayed().performClick()
         compose.onAllNodesWithText("[bash]").assertCountEquals(1)
 
         val toolTop = compose.onNodeWithText("[bash]").assertIsDisplayed()
@@ -506,8 +529,8 @@ class HeterogeneousStepTimelineTest {
 
     @Test
     fun t2_F3_07_Repeated_NativeSteps_Across_Entries_No_Duplication() {
-        // 回归测试 R3：多条同 generationId 条目跨条目重复携带 step1，且末条带有新增 step2 与纯正文回复时，
-        // 经真实宿主 MessageTimeline 渲染后，每个工具卡片在整个界面中均严格只出现 1 次。
+        // 回归测试：多条同 generationId 条目跨条目重复携带 step1，且末条带有新增 step2 与纯正文回复时，
+        // 经真实宿主 MessageTimeline 渲染后折叠为「2 次工具调用」，展开后每个工具卡片严格只出现 1 次。
         val step1 = NativeExecutionStep(
             stepId = "step_read",
             eventId = "ev_1",
@@ -550,6 +573,7 @@ class HeterogeneousStepTimelineTest {
             }
         }
 
+        compose.onNodeWithText("2 次工具调用").assertIsDisplayed().performClick()
         compose.onAllNodesWithText("[read_file]").assertCountEquals(1)
         compose.onAllNodesWithText("[grep_code]").assertCountEquals(1)
         val readTop = compose.onNodeWithText("[read_file]").assertIsDisplayed()

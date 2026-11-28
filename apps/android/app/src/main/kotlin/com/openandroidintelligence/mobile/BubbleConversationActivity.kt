@@ -35,6 +35,7 @@ import com.openandroidintelligence.conversation.workbench.AttachmentPreviewHost
 import com.openandroidintelligence.conversation.workbench.TimelineDisplayRow
 import com.openandroidintelligence.conversation.workbench.rememberExecutionTimingStore
 import com.openandroidintelligence.conversation.workbench.rememberTimelineDisplayItems
+import com.openandroidintelligence.conversation.workbench.rememberToolCardRevealTracker
 import com.openandroidintelligence.conversation.workbench.rememberStreamingPresentations
 import com.openandroidintelligence.conversation.workbench.ComposerBar
 import com.openandroidintelligence.conversation.workbench.ConversationBrowser
@@ -225,6 +226,11 @@ private fun BubbleChat(
     val displayItems = rememberTimelineDisplayItems(entries, state.activeThreadId, state.generation)
     val presentations = rememberStreamingPresentations(entries, controller to state.activeThreadId, generation = state.generation)
     val executionTiming = rememberExecutionTimingStore(state.activeThreadId)
+    val toolCardRevealTracker = rememberToolCardRevealTracker(
+        threadId = state.activeThreadId,
+        displayItems = displayItems,
+        ready = state.timeline is Loadable.Ready || state.timeline is Loadable.Empty,
+    )
     val reduceMotion = LocalMotionPolicy.current.isReduced
     val downloadAction: ((String) -> Unit)? =
         if (controller.downloadsSupported) controller::downloadAttachment else null
@@ -269,6 +275,7 @@ private fun BubbleChat(
                         TimelineDisplayRow(
                             item = item,
                             presentations = presentations,
+                            toolCardRevealTracker = toolCardRevealTracker,
                             onDecide = controller::decideApproval,
                             timing = executionTiming,
                             onDownloadAttachment = downloadAction,

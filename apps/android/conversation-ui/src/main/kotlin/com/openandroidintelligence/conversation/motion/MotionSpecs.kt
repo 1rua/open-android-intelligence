@@ -101,6 +101,18 @@ object MotionSpecs {
     val SpatialSpring = SpatialDefaultSpring
     /** 容器形变（助理栏 ↔ 停靠球、附件条高度、设置项胶囊）：临界阻尼，绝不回弹。 */
     val MorphSpring = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 700f)
+    /**
+     * 折叠/展开与水平揭示统一空间弹簧：与工具卡片现有无过冲形变曲线（[MorphSpring]）严格一致，
+     * 供工具卡片、思考卡片、回合过程折叠大卡片与工作区折叠列表共享单一来源。
+     */
+    val DisclosureSpatialSpring = MorphSpring
+    /**
+     * 折叠/展开与水平揭示统一效果弹簧：与工具卡片现有临界阻尼淡入淡出曲线（[EffectsDefaultSpring]）一致，
+     * 严禁过冲或闪烁。
+     */
+    val DisclosureEffectsSpring = EffectsDefaultSpring
+    /** 水平揭示归一化进度 `[0f, 1f]` 的精细收敛阈值，避免尾段提前截断。 */
+    const val DisclosureRevealVisibilityThreshold: Float = 0.001f
     /** 轻快吸附（按钮宽度、图标位移），对齐 [SpatialFastSpring]。 */
     val SnappySpring = SpatialFastSpring
     /**
@@ -241,6 +253,46 @@ object MotionSpecs {
     /** 容器形变：临界阻尼弹簧（700f）；减少动态直接落到目标值。 */
     fun <T> morph(reduced: Boolean, visibilityThreshold: T? = null): FiniteAnimationSpec<T> =
         springSpecFrom(reduced = reduced, template = MorphSpring, visibilityThreshold = visibilityThreshold)
+
+    /**
+     * 折叠/展开与列表推移统一空间尺寸规格：标准态使用 [DisclosureSpatialSpring]（临界阻尼 1.0f / 刚度 700f），
+     * 减少动态时退化为 `snap()`。
+     */
+    fun <T> disclosureSize(
+        reduced: Boolean,
+        visibilityThreshold: T? = null,
+    ): FiniteAnimationSpec<T> = springSpecFrom(
+        reduced = reduced,
+        template = DisclosureSpatialSpring,
+        visibilityThreshold = visibilityThreshold,
+    )
+
+    /**
+     * 工具卡片水平展开显现进度规格（`0f -> 1f`）：复用 [DisclosureSpatialSpring] 并使用精细阈值
+     * [DisclosureRevealVisibilityThreshold]；减少动态时退化为 `snap()`。
+     */
+    fun disclosureRevealProgress(reduced: Boolean): FiniteAnimationSpec<Float> =
+        disclosureSize(
+            reduced = reduced,
+            visibilityThreshold = DisclosureRevealVisibilityThreshold,
+        )
+
+    /**
+     * 折叠/展开与水平揭示统一透明度规格：标准态使用 [DisclosureEffectsSpring]（临界阻尼 1.0f / 刚度 1600f），
+     * 减少动态时退化为 150ms 线性无位移淡化。
+     */
+    fun <T> disclosureFade(reduced: Boolean): FiniteAnimationSpec<T> =
+        effectsSpecFrom(
+            reduced = reduced,
+            template = DisclosureEffectsSpring,
+            visibilityThreshold = null,
+        )
+
+    /**
+     * 折叠指示箭头旋转规格：复用 [spatialFast]（阻尼 0.9f / 刚度 1400f），减少动态时退化为 `snap()`。
+     */
+    fun disclosureChevron(reduced: Boolean): FiniteAnimationSpec<Float> =
+        spatialFast(reduced = reduced)
 
     /** 轻快吸附：对齐 [spatialFast]；减少动态直接落到目标值。 */
     fun <T> snappy(reduced: Boolean): FiniteAnimationSpec<T> =

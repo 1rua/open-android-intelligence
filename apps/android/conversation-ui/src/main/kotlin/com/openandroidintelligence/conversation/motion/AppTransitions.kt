@@ -5,15 +5,18 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
@@ -23,6 +26,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 
 /** 页面在导航/侧滑转场中承担的图层角色。 */
@@ -188,6 +192,38 @@ object AppTransitions {
             ),
             targetOffsetX = { full -> -full },
         )
+    }
+
+    /**
+     * 折叠容器统一垂直展开过渡：供工具卡片、思考卡片、回合折叠大卡片与工作区折叠列表共享。
+     *
+     * 标准态沿用工具卡片的无过冲临界阻尼尺寸弹簧（[MotionSpecs.disclosureSize]）+
+     * 临界阻尼透明度弹簧（[MotionSpecs.disclosureFade]）；减少动态时降级为纯无位移线性淡入，
+     * 不叠加任何垂直位移或高度裁剪动画。
+     */
+    fun disclosureExpandVertical(reduced: Boolean): EnterTransition = when {
+        reduced -> fadeIn(animationSpec = MotionSpecs.disclosureFade(reduced = true))
+        else -> expandVertically(
+            animationSpec = MotionSpecs.disclosureSize(
+                reduced = false,
+                visibilityThreshold = IntSize.VisibilityThreshold,
+            ),
+            expandFrom = Alignment.Top,
+        ) + fadeIn(animationSpec = MotionSpecs.disclosureFade(reduced = false))
+    }
+
+    /**
+     * 折叠容器统一垂直收起过渡：与 [disclosureExpandVertical] 互为反向；减少动态时降级为纯无位移线性淡出。
+     */
+    fun disclosureCollapseVertical(reduced: Boolean): ExitTransition = when {
+        reduced -> fadeOut(animationSpec = MotionSpecs.disclosureFade(reduced = true))
+        else -> shrinkVertically(
+            animationSpec = MotionSpecs.disclosureSize(
+                reduced = false,
+                visibilityThreshold = IntSize.VisibilityThreshold,
+            ),
+            shrinkTowards = Alignment.Top,
+        ) + fadeOut(animationSpec = MotionSpecs.disclosureFade(reduced = false))
     }
 
     private fun sharedAxisEnter(

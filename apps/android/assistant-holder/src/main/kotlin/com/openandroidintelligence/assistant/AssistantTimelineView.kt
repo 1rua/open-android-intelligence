@@ -36,7 +36,9 @@ import com.openandroidintelligence.conversation.workbench.rememberStreamingPrese
 import com.openandroidintelligence.conversation.workbench.TimelineDisplayRow
 import com.openandroidintelligence.conversation.workbench.rememberExecutionTimingStore
 import com.openandroidintelligence.conversation.workbench.rememberTimelineDisplayItems
+import com.openandroidintelligence.conversation.workbench.rememberToolCardRevealTracker
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
@@ -131,8 +133,9 @@ internal fun AssistantTimelineView(
     onRequestOriginalAttachment: ((String) -> Unit)? = null,
     listState: LazyListState? = null,
     emptyContent: (@Composable () -> Unit)? = null,
+    ready: Boolean = true,
 ) {
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     val isThinking = generation.isGenerating() && entries.none { !it.isUser && it.isStreaming }
 
     val content = rememberAssistantTimelineContent(
@@ -145,6 +148,11 @@ internal fun AssistantTimelineView(
     val displayItems = content.displayItems
     val timing = rememberExecutionTimingStore(threadId = threadId)
     val presentations = rememberStreamingPresentations(resolvedEntries, threadId, generation = generation)
+    val toolCardRevealTracker = rememberToolCardRevealTracker(
+        threadId = threadId,
+        displayItems = displayItems,
+        ready = ready,
+    )
     val state = listState ?: rememberLazyListState()
     val scope = rememberCoroutineScope()
 
@@ -233,6 +241,7 @@ internal fun AssistantTimelineView(
                         TimelineDisplayRow(
                             item = item,
                             presentations = presentations,
+                            toolCardRevealTracker = toolCardRevealTracker,
                             // 助理会话与工作台共用同一套审批语义：被按下的那张卡片
                             // 就是被回答的那张审批，宿主拿到的是它的 approvalId。
                             onDecide = onDecide,

@@ -55,6 +55,14 @@ class MessageTimelineExecutionTest {
         compose.onNodeWithText("已执行", substring = true).assertDoesNotExist()
         compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
 
+        val summaryTop = compose.onNodeWithText("1 次工具调用").assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot.top
+        val finalTopCollapsed = compose.onNodeWithText("设置应用已经打开了。", substring = true).assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot.top
+        assertTrue(summaryTop < finalTopCollapsed, "过程折叠大卡片应在最终回答上方")
+        compose.onNodeWithText("[adb_shell]", substring = true).assertDoesNotExist()
+
+        compose.onNodeWithText("1 次工具调用").performClick()
         val thoughtTop = compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
             .fetchSemanticsNode().boundsInRoot.top
         val toolTop = compose.onNodeWithText("[adb_shell]", substring = true).assertIsDisplayed()

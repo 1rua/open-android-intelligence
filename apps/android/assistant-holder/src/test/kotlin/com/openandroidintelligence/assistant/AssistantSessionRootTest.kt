@@ -1,14 +1,22 @@
 package com.openandroidintelligence.assistant
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.view.View
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toPixelMap
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -24,6 +32,9 @@ import com.openandroidintelligence.conversation.model.ApprovalId
 import com.openandroidintelligence.conversation.model.ApprovalOption
 import com.openandroidintelligence.conversation.model.ApprovalOptionStyle
 import com.openandroidintelligence.conversation.model.ApprovalRequest
+import com.openandroidintelligence.conversation.model.GenerationState
+import com.openandroidintelligence.conversation.model.NativeExecutionStatus
+import com.openandroidintelligence.conversation.model.NativeExecutionStep
 import com.openandroidintelligence.conversation.state.ApprovalCardState
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import com.openandroidintelligence.conversation.workbench.ApprovalCardTags
@@ -476,5 +487,136 @@ class AssistantSessionRootTest {
 
         assertTrue("首次测量应当上报", first > 0)
         assertTrue("后续测量也应当上报，实际次数 ${heights.size}（首次 $first）", heights.size > first)
+    }
+
+    @Test
+    fun expandedConversationProvidesToolCardRevealTrackerForFreshToolsAndSkipsHistory() {
+        val historyStep = NativeExecutionStep("s-hist-root", "ev-h", "grep_code", "foo", "hit", NativeExecutionStatus.COMPLETED, 1L)
+        val liveStep = NativeExecutionStep("s-live-root", "ev-l", "read_file", "bar.kt", null, NativeExecutionStatus.RUNNING, 1L)
+        var timeline by mutableStateOf(
+            listOf(
+                TimelineEntry(
+                    key = "a-turn",
+                    sender = "assistant",
+                    text = "",
+                    isUser = false,
+                    timestamp = 2L,
+                    pendingAcceptance = false,
+                    batchGroupId = null,
+                    generationId = "g-turn",
+                    executionSteps = listOf(historyStep),
+                ),
+            ),
+        )
+        var generation by mutableStateOf(GenerationState.IDLE)
+        val controller = AssistantSessionUiController()
+        lateinit var rootView: View
+        // 面板底色设为纯红、工具卡底色设为纯绿，以便像素级区分水平左→右揭示与直接整卡呈现
+        val highContrastScheme = lightColorScheme(
+            surface = Color(0xFFFF0000),
+            surfaceContainer = Color(0xFFFF0000),
+            surfaceContainerLow = Color(0xFFFF0000),
+            surfaceContainerLowest = Color(0xFFFF0000),
+            surfaceContainerHigh = Color(0xFF00AA00),
+            surfaceContainerHighest = Color(0xFFFF0000),
+        )
+
+        compose.setContent {
+            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = false)) {
+                MaterialTheme(colorScheme = highContrastScheme) {
+                    rootView = LocalView.current
+                    Box(Modifier.size(360.dp, 640.dp)) {
+                        AssistantSessionRoot(
+                            draft = "",
+                            onDraftChange = {},
+                            enabled = true,
+                            isGenerating = generation == GenerationState.RUNNING,
+                            isStopping = false,
+                            hasUnknownOutcome = false,
+                            onSend = { true },
+                            onStop = {},
+                            onExit = {},
+                            timeline = timeline,
+                            threadId = "assistant-thread-reveal",
+                            generation = generation,
+                            controller = controller,
+                        )
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            controller.dispatch(AssistantUiEvent.SendRequested(accepted = true))
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("[grep_code]").assertIsDisplayed()
+
+        // 关闭自动时钟后在同一执行段追加实时工具卡（保持 index=0 稳定在视口内），
+        // 验证 ExpandedConversation 接入追踪器：历史卡不重播，新增实时卡触发早段左露右裁入场显现
+        compose.mainClock.autoAdvance = false
+        compose.runOnIdle {
+            timeline = listOf(
+                TimelineEntry(
+                    key = "a-turn",
+                    sender = "assistant",
+                    text = "",
+                    isUser = false,
+                    timestamp = 2L,
+                    pendingAcceptance = false,
+                    batchGroupId = null,
+                    isStreaming = true,
+                    generationId = "g-turn",
+                    executionGenerationState = GenerationState.RUNNING,
+                    executionSteps = listOf(historyStep, liveStep),
+                ),
+            )
+            generation = GenerationState.RUNNING
+        }
+        repeat(5) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+
+        // clickable header 会合并子节点语义，onNodeWithText("[read_file]") 即对应整张工具卡摘要栏边界
+        val histBounds = compose.onNodeWithText("[grep_code]").fetchSemanticsNode().boundsInRoot
+        val liveBounds = compose.onNodeWithText("[read_file]").fetchSemanticsNode().boundsInRoot
+        fun capturePixelMap(bounds: androidx.compose.ui.geometry.Rect) = compose.runOnIdle {
+            val bitmap = Bitmap.createBitmap(
+                bounds.width.toInt().coerceAtLeast(1),
+                bounds.height.toInt().coerceAtLeast(1),
+                Bitmap.Config.ARGB_8888,
+            )
+            val canvas = Canvas(bitmap)
+            canvas.translate(-bounds.left, -bounds.top)
+            rootView.draw(canvas)
+            bitmap.asImageBitmap()
+        }.toPixelMap()
+
+        val histMap = capturePixelMap(histBounds)
+        val histRightSample = histMap[(histMap.width * 0.92f).toInt(), (histMap.height * 0.15f).toInt()]
+        assertTrue(
+            "历史工具卡不得重播入场动画，右侧应保持完整绿色卡片: histRight=$histRightSample",
+            histRightSample.green > 0.45f,
+        )
+
+        val earlyMap = capturePixelMap(liveBounds)
+        val leftSample = earlyMap[(earlyMap.width * 0.08f).toInt(), (earlyMap.height * 0.15f).toInt()]
+        val rightSample = earlyMap[(earlyMap.width * 0.92f).toInt(), (earlyMap.height * 0.15f).toInt()]
+        assertTrue(
+            "浮窗展开态新增实时工具卡早段左侧应已显露出绿色卡片: left=$leftSample",
+            leftSample.green > 0.15f,
+        )
+        assertTrue(
+            "浮窗展开态新增实时工具卡早段右侧应仍被水平裁切保留红色底板: right=$rightSample",
+            rightSample.red > 0.90f && rightSample.green < 0.10f,
+        )
+
+        // 收敛后卡片默认折叠，点击展开正常显示参数
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        compose.onNodeWithText("bar.kt").assertDoesNotExist()
+        compose.onNodeWithText("[read_file]").performClick()
+        compose.onNodeWithText("bar.kt").assertIsDisplayed()
     }
 }

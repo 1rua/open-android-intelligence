@@ -330,6 +330,151 @@ class WorkbenchNativeExecutionEventsTest {
         } finally { controller.close() }
     }
 
+    @Test fun provisionalGenerationUpgradesIntoRealGenerationWithoutBottomDuplicateAndPreservesMetadata() = runTest {
+        val host = Host()
+        val controller = controller(host)
+        try {
+            runCurrent(); controller.openThread("a"); runCurrent()
+            val runningStep = NativeExecutionStep(
+                stepId = "call-upgrade-1",
+                eventId = "ev-1",
+                toolName = "bash",
+                arguments = """{"cmd":"git status"}""",
+                output = null,
+                status = NativeExecutionStatus.RUNNING,
+                revision = 1L,
+            )
+            host.events.emit(update("request:req-1", 1, runningStep))
+            runCurrent()
+
+            // 真实 generation 携带结果快照（即使带占位工具名与空参数），应合并到单卡并保留原工具名与参数，绝不在底部新增第二张卡
+            val completedPlaceholder = NativeExecutionStep(
+                stepId = "call-upgrade-1",
+                eventId = "ev-2",
+                toolName = "tool",
+                arguments = "",
+                output = "clean working tree",
+                status = NativeExecutionStatus.COMPLETED,
+                revision = 2L,
+            )
+            host.events.emit(update("turn-real-1", 2, completedPlaceholder))
+            runCurrent()
+
+            val factRows = rows(controller).filter { it.executionFact }
+            assertEquals("临时 generation 升级到真实 generation 不得产生重复卡片", 1, factRows.size)
+            val merged = factRows.single().executionSteps.single()
+            assertEquals("bash", merged.toolName)
+            assertEquals("""{"cmd":"git status"}""", merged.arguments)
+            assertEquals("clean working tree", merged.output)
+            assertEquals(NativeExecutionStatus.COMPLETED, merged.status)
+        } finally { controller.close() }
+    }
+
+    @Test fun embeddedAssistantToolMergesProvisionalExecutionFactInPlaceWithoutDuplicateBottomCard() = runTest {
+        val host = Host()
+        val controller = controller(host)
+        try {
+            runCurrent(); controller.openThread("a"); runCurrent()
+            val embeddedStep = NativeExecutionStep(
+                stepId = "call-embed-1",
+                eventId = "ev-embed-1",
+                toolName = "read_file",
+                arguments = """{"path":"README.md"}""",
+                output = null,
+                status = NativeExecutionStatus.RUNNING,
+                revision = 1L,
+                sourceMessageId = "asst-embed-1",
+            )
+            host.events.emit(
+                VerifiedConversationEvent.TimelineUpsert(
+                    "asst-upsert-1",
+                    200L,
+                    1L,
+                    TimelineMessage(
+                        id = "asst-embed-1",
+                        sender = "assistant",
+                        parts = listOf(MessagePart.Text("读取文件中")),
+                        timestamp = 200L,
+                        state = "STREAMING",
+                        conversationId = ConversationId("a"),
+                        generationId = "turn-embed-1",
+                        executionSteps = listOf(embeddedStep),
+                        timelineSteps = listOf(ExecutionTimelineStep.ToolCallStep(embeddedStep, bodyOffset = 0, orderIndex = 0)),
+                    ),
+                ),
+            )
+            runCurrent()
+
+            // 随后临时 remote-execution generation 发来同一 stepId 的完成结果：应原地回写原助手消息行，绝不生成底部孤立 execution-fact 卡
+            host.events.emit(
+                update(
+                    "remote-execution:a",
+                    2,
+                    NativeExecutionStep(
+                        stepId = "call-embed-1",
+                        eventId = "ev-embed-2",
+                        toolName = "tool",
+                        arguments = "",
+                        output = "# OAI",
+                        status = NativeExecutionStatus.COMPLETED,
+                        revision = 2L,
+                    ),
+                ),
+            )
+            runCurrent()
+
+            val allRows = rows(controller)
+            assertTrue("已内嵌在助手行的工具不得在底部生成第二张 execution-fact 卡片", allRows.none { it.executionFact })
+            val assistantRow = allRows.single { it.key == "asst-embed-1" }
+            val updated = assistantRow.executionSteps.single()
+            assertEquals("read_file", updated.toolName)
+            assertEquals("""{"path":"README.md"}""", updated.arguments)
+            assertEquals("# OAI", updated.output)
+            assertEquals(NativeExecutionStatus.COMPLETED, updated.status)
+        } finally { controller.close() }
+    }
+
+    @Test fun reconnectLowerOrEqualRevisionTerminalUpgradesRunningStepAndNormalizesWhitespaceStepId() = runTest {
+        val host = Host()
+        val controller = controller(host)
+        try {
+            runCurrent(); controller.openThread("a"); runCurrent()
+            val initialRunning = NativeExecutionStep(
+                stepId = "  call-reconn-1  ",
+                eventId = "ev-run-10",
+                toolName = "bash",
+                arguments = """{"cmd":"./gradlew test"}""",
+                output = null,
+                status = NativeExecutionStatus.RUNNING,
+                revision = 10L,
+            )
+            host.events.emit(update("turn-reconn", 10, initialRunning))
+            runCurrent()
+
+            // 重连后投影修订号从低值（1）重新开始并推送终态结果（stepId 无首尾空白）：必须原地升级为 COMPLETED 且不产生重复卡
+            val lowRevCompleted = NativeExecutionStep(
+                stepId = "call-reconn-1",
+                eventId = "ev-done-1",
+                toolName = "tool",
+                arguments = "",
+                output = "BUILD SUCCESSFUL",
+                status = NativeExecutionStatus.COMPLETED,
+                revision = 1L,
+            )
+            host.events.emit(update("turn-reconn", 1, lowRevCompleted))
+            runCurrent()
+
+            val factRows = rows(controller).filter { it.executionFact }
+            assertEquals("空白 stepId 与重连低修订号终态不得产生重复卡片", 1, factRows.size)
+            val merged = factRows.single().executionSteps.single()
+            assertEquals("call-reconn-1", merged.stepId)
+            assertEquals("bash", merged.toolName)
+            assertEquals("""{"cmd":"./gradlew test"}""", merged.arguments)
+            assertEquals("BUILD SUCCESSFUL", merged.output)
+            assertEquals(NativeExecutionStatus.COMPLETED, merged.status)
+        } finally { controller.close() }
+    }
+
     private fun step(id: String, revision: Long, status: NativeExecutionStatus = NativeExecutionStatus.COMPLETED) =
         NativeExecutionStep(id, "step-$id-$revision", "read_file", "{}", if (status == NativeExecutionStatus.COMPLETED) "result" else null,
             status, revision)

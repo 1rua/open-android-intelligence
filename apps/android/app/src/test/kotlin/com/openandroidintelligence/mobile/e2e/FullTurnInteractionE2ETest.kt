@@ -300,11 +300,18 @@ class FullTurnInteractionE2ETest {
             }
         }
 
-        // 验证通用工具卡片徽标正常展示（非单一 bash 命令硬编码），且彻底消灭集中式外层折叠框
+        // 验证回合结束后折叠为「2 次工具调用」大卡，点击展开后保持异构步骤严格线性顺序，且不出现旧版文案与空气泡
         compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
         compose.onNodeWithText("已执行", substring = true).assertDoesNotExist()
         compose.onNodeWithText("此消息没有可显示的文本").assertDoesNotExist()
 
+        val summaryTop = compose.onNodeWithText("2 次工具调用").assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot.top
+        val finalTopCollapsed = compose.onNodeWithText("所有测试均已成功通过！").assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot.top
+        assertTrue("折叠大卡必须在最终回答之上", summaryTop < finalTopCollapsed)
+
+        compose.onNodeWithText("2 次工具调用").performClick()
         val thoughtTop = compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
             .fetchSemanticsNode().boundsInRoot.top
         val readTop = compose.onNodeWithText("[read_file]").assertIsDisplayed()
@@ -582,6 +589,7 @@ class FullTurnInteractionE2ETest {
         }
 
         compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("1 次工具调用").assertIsDisplayed().performClick()
         compose.onNodeWithText("[ocr_image]").assertIsDisplayed()
         compose.onNodeWithText("图片解析结果如上。").assertIsDisplayed()
         compose.onNodeWithText("此消息没有可显示的文本").assertDoesNotExist()
@@ -755,6 +763,7 @@ class FullTurnInteractionE2ETest {
 
         // 4. UI 验证
         compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("1 次工具调用").assertIsDisplayed().performClick()
         compose.onNodeWithText("[device_volume]").assertIsDisplayed()
         compose.onNodeWithText("音量已成功调至 80%。").assertIsDisplayed()
         compose.onNodeWithText("此消息没有可显示的文本").assertDoesNotExist()

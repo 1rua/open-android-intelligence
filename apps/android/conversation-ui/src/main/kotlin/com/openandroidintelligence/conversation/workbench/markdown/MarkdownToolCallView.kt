@@ -1,7 +1,5 @@
 package com.openandroidintelligence.conversation.workbench
 
-import com.openandroidintelligence.conversation.model.NativeExecutionStatus
-
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -39,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,6 +48,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
@@ -59,14 +59,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.openandroidintelligence.conversation.components.HorizontalDisclosureReveal
 import com.openandroidintelligence.conversation.components.M3ExpandableExpressiveCard
-import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.conversation.components.rememberExpandChevronRotation
+import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.isReduced
+import com.openandroidintelligence.ui.resources.R as UiR
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -74,15 +77,16 @@ import kotlinx.coroutines.launch
  * 工具调用卡片（规格 §4.2）。
  *
  * 摘要栏始终可见：状态图标 + 等宽 `[toolName]` + 状态文字 + 可选耗时 + chevron。
- * - 执行中（`isRunning && 消息仍在流式`）：`执行中` + 跳动点，默认展开；
- * - 成功 / 失败 / 中断：默认收起，展开后完整呈现命令与输出/错误输出。
- *
- * 展开内容只有一层：命令代码块（可横向滚动、可复制）与输出代码块
- * （纵横向滚动、最大高度 [Dimensions.CommandMenuHeight]、可选中），
- * 不再保留第二层「查看输出」开关。用户手动展开/收起优先于自动状态。
+ * - 默认收起（含运行中态），点击后展开命令/参数与输出/错误输出，并记住用户展开选择；
+ * - 实时新出现的工具卡片通过 [HorizontalDisclosureReveal] 播放一次从左到右的入场显现
+ *   （复用统一折叠动效曲线；减少动态时降级为 150ms 无位移淡化），历史加载、滚动回收与
+ *   回合折叠大卡片内部展开均不重播；
+ * - 当回合结束确实未收到工具结果（[NativeExecutionStatus.UNKNOWN]）时，显式标注「未返回结果」。
  *
  * @param isStreaming 所属消息是否仍在流式输出，用于区分「执行中」与「执行已中断」。
  * @param timingKey 宿主提供的耗时观察 key；为 null 时不显示耗时。
+ * @param revealKey 工具卡片入场追踪与展开态记忆 key，默认沿用 [timingKey]。
+ * @param animateEntrance 显式指定是否播放本次入场显现；为 null 时自动交由 [LocalToolCardRevealTracker] 决策。
  */
 @Composable
 fun MarkdownToolCallView(
@@ -90,12 +94,14 @@ fun MarkdownToolCallView(
     modifier: Modifier = Modifier,
     isStreaming: Boolean = false,
     timingKey: String? = null,
+    revealKey: String? = timingKey,
+    animateEntrance: Boolean? = null,
 ) {
     val reduceMotion = LocalMotionPolicy.current.isReduced
     val stateColors = LocalAppStateColors.current
 
     // 只有消息仍在流式时，未闭合的 tool_call 才代表「真的在执行」；
-    // 流已经结束却仍未闭合，就是中断，结果未知。
+    // 流已经结束却仍未闭合，就是中断，未返回结果。
     val nativeStatus = block.executionStatus
     val running = nativeStatus == NativeExecutionStatus.RUNNING ||
         nativeStatus == null && block.isRunning && isStreaming
@@ -109,8 +115,17 @@ fun MarkdownToolCallView(
     val invocationOnly = block.invocationOnly &&
         block.summary.isNullOrBlank() && block.output.isNullOrBlank() && !running && !interrupted && !failed
 
-    var userExpanded by remember { mutableStateOf<Boolean?>(null) }
-    val expanded = userExpanded ?: running
+    // 工具卡片默认折叠（含执行中态），用户手动点击后在列表复用与状态刷新期间稳定记忆。
+    var expanded by rememberSaveable(revealKey) { mutableStateOf(false) }
+
+    val revealTracker = LocalToolCardRevealTracker.current
+    val shouldAnimateEntrance = animateEntrance ?: remember(revealTracker, revealKey) {
+        if (revealTracker != null && !revealKey.isNullOrBlank()) {
+            revealTracker.consumeEntranceAnimation(revealKey)
+        } else {
+            false
+        }
+    }
 
     val timingStore = LocalExecutionTiming.current
     LaunchedEffect(timingKey, running) {
@@ -124,6 +139,18 @@ fun MarkdownToolCallView(
     }
     val durationMillis = timingKey?.let { timingStore?.durationOf(it) }
 
+    val runningLabel = stringResource(UiR.string.conv_tool_status_running)
+    val interruptedLabel = stringResource(UiR.string.conv_tool_status_interrupted)
+    val interruptedUnknownLabel = stringResource(UiR.string.conv_tool_status_interrupted_unknown)
+    val noResultLabel = stringResource(UiR.string.conv_tool_status_no_result)
+    val failedLabel = stringResource(UiR.string.conv_tool_status_failed)
+    val invocationOnlyLabel = stringResource(UiR.string.conv_tool_status_invocation_only)
+    val completedLabel = stringResource(UiR.string.conv_tool_status_completed)
+    val execSuccessLabel = stringResource(UiR.string.conv_md_exec_success)
+    val execFailedLabel = stringResource(UiR.string.conv_md_exec_failed)
+    val defaultToolName = stringResource(UiR.string.conv_md_default_tool_name)
+    val defaultToolCallTag = stringResource(UiR.string.conv_tool_call_tag)
+
     val statusColor: Color = when {
         running -> MaterialTheme.colorScheme.primary
         interrupted -> stateColors.warning
@@ -133,13 +160,13 @@ fun MarkdownToolCallView(
         else -> stateColors.success
     }
     val statusDescription = when {
-        running -> "执行中"
-        interrupted -> "执行已中断"
-        unknown -> "结果未知"
-        failed -> "执行失败"
-        invocationOnly -> "已调用"
-        completed -> "已完成"
-        else -> "执行成功"
+        running -> runningLabel
+        interrupted -> interruptedLabel
+        unknown -> noResultLabel
+        failed -> failedLabel
+        invocationOnly -> invocationOnlyLabel
+        completed -> completedLabel
+        else -> execSuccessLabel
     }
     val statusIcon: ImageVector = when {
         running -> Icons.Default.PlayArrow
@@ -153,15 +180,15 @@ fun MarkdownToolCallView(
     // 只有通用成功/失败文案才退回状态词，长文本在摘要栏单行省略，详情里仍完整展示。
     val summaryText = block.summary
         ?.trim()
-        ?.takeIf { it.isNotEmpty() && it != "执行成功" && it != "执行失败" }
+        ?.takeIf { it.isNotEmpty() && it != execSuccessLabel && it != execFailedLabel }
     val statusText = when {
-        running -> "执行中"
-        interrupted -> "执行已中断 · 结果未知"
-        unknown -> "结果未知"
-        failed -> summaryText ?: "执行失败"
-        invocationOnly -> "已调用"
-        completed -> "已完成"
-        else -> summaryText ?: "执行成功"
+        running -> runningLabel
+        interrupted -> interruptedUnknownLabel
+        unknown -> noResultLabel
+        failed -> summaryText ?: failedLabel
+        invocationOnly -> invocationOnlyLabel
+        completed -> completedLabel
+        else -> summaryText ?: execSuccessLabel
     }
     // 只展示真实观察到的耗时：中断/完成的步骤才可能有结算值。
     val durationSuffix = if (!running && durationMillis != null) {
@@ -170,107 +197,130 @@ fun MarkdownToolCallView(
         ""
     }
 
-    val badgeText = toolBadgeText(block.toolName)
+    val badgeText = toolBadgeText(
+        toolName = block.toolName,
+        defaultToolName = defaultToolName,
+        defaultToolCallTag = defaultToolCallTag,
+    )
 
-    val chevronRotation = com.openandroidintelligence.conversation.components.rememberExpandChevronRotation(
+    val chevronRotation = rememberExpandChevronRotation(
         expanded = expanded,
         reduced = reduceMotion,
         label = "tool-call-chevron",
     )
 
-    M3ExpandableExpressiveCard(
-        expanded = expanded,
-        onExpandedChange = { userExpanded = it },
+    HorizontalDisclosureReveal(
+        animateEntrance = shouldAnimateEntrance,
         modifier = modifier.fillMaxWidth(),
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        border = BorderStroke(Dimensions.StrokeHairline, MaterialTheme.colorScheme.outlineVariant),
-        collapsedCornerRadius = AppRadius.Compact,
-        expandedCornerRadius = AppRadius.Medium,
-        pressedCornerRadius = AppRadius.Medium,
-        toggleClickLabel = if (expanded) "收起工具详情" else "展开工具详情",
-        toggleStateDescription = if (expanded) "已展开" else "已收起",
-        header = {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Dimensions.SpaceCompact, vertical = Dimensions.SpaceSmall),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-            ) {
-                Icon(
-                    imageVector = statusIcon,
-                    contentDescription = statusDescription,
-                    tint = statusColor,
-                    modifier = Modifier.size(Dimensions.SmallIcon),
-                )
-                Text(
-                    text = badgeText,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        cornerRadius = AppRadius.Compact,
+        reduced = reduceMotion,
+    ) {
+        M3ExpandableExpressiveCard(
+            expanded = expanded,
+            onExpandedChange = { expanded = it },
+            modifier = Modifier.fillMaxWidth(),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            border = BorderStroke(Dimensions.StrokeHairline, MaterialTheme.colorScheme.outlineVariant),
+            collapsedCornerRadius = AppRadius.Compact,
+            expandedCornerRadius = AppRadius.Medium,
+            pressedCornerRadius = AppRadius.Medium,
+            toggleClickLabel = stringResource(
+                if (expanded) UiR.string.conv_tool_action_collapse_label else UiR.string.conv_tool_action_expand_label,
+            ),
+            toggleStateDescription = stringResource(
+                if (expanded) UiR.string.conv_assistant_state_expanded else UiR.string.conv_assistant_state_collapsed,
+            ),
+            header = {
                 Row(
-                    modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
-                ) {
-                    Text(
-                        text = statusText + durationSuffix,
-                        style = AppTextStyles.Thought,
-                        color = statusColor,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = if (running) {
-                            Modifier.semantics { liveRegion = LiveRegionMode.Polite }
-                        } else {
-                            Modifier
-                        },
-                    )
-                    if (running) {
-                        TypingDots(reduced = reduceMotion)
-                    }
-                }
-                Icon(
-                    imageVector = Icons.Default.ExpandMore,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier
-                        .size(Dimensions.SmallIcon)
-                        .rotate(chevronRotation),
-                )
-            }
-        },
-        expandedContent = {
-            ToolCallDetails(block = block, running = running)
-        },
-    )
+                        .fillMaxWidth()
+                        .padding(horizontal = Dimensions.SpaceCompact, vertical = Dimensions.SpaceSmall),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                ) {
+                    Icon(
+                        imageVector = statusIcon,
+                        contentDescription = statusDescription,
+                        tint = statusColor,
+                        modifier = Modifier.size(Dimensions.SmallIcon),
+                    )
+                    Text(
+                        text = badgeText,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
+                    ) {
+                        Text(
+                            text = statusText + durationSuffix,
+                            style = AppTextStyles.Thought,
+                            color = statusColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = if (running) {
+                                Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+                            } else {
+                                Modifier
+                            },
+                        )
+                        if (running) {
+                            TypingDots(reduced = reduceMotion)
+                        }
+                    }
+                    Icon(
+                        imageVector = Icons.Default.ExpandMore,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .size(Dimensions.SmallIcon)
+                            .rotate(chevronRotation),
+                    )
+                }
+            },
+            expandedContent = {
+                ToolCallDetails(block = block, running = running, interrupted = interrupted)
+            },
+        )
+    }
 }
 
 /** 工具名称徽标：空名/占位名归一为 `[执行命令]`，其余统一加方括号。 */
-private fun toolBadgeText(toolName: String): String = when {
+private fun toolBadgeText(
+    toolName: String,
+    defaultToolName: String,
+    defaultToolCallTag: String,
+): String = when {
     toolName.isBlank() ||
         toolName.equals("tool_call", ignoreCase = true) ||
-        toolName == "执行命令" -> "[执行命令]"
+        toolName == defaultToolName -> defaultToolCallTag
 
     toolName.startsWith("[") && toolName.endsWith("]") -> toolName
     else -> "[$toolName]"
 }
 
 /**
- * 展开后的详情：命令 → 摘要 → 输出/错误输出。
+ * 展开后的详情：命令/参数 → 摘要 → 输出/错误输出。
  *
- * 没有输出时明确显示「无输出」，而不是留一片空白让用户猜是否还在加载。
+ * 没有输出时按真实状态明确标注「未返回结果」/「此调用未附带返回值」/「无输出」，
+ * 而不是留一片空白让用户猜是否还在加载。
  */
 @Composable
 private fun ToolCallDetails(
     block: TimelineBlock.ToolCallBlock,
     running: Boolean,
+    interrupted: Boolean,
 ) {
+    val execSuccessLabel = stringResource(UiR.string.conv_md_exec_success)
+    val execFailedLabel = stringResource(UiR.string.conv_md_exec_failed)
     val summaryText = block.summary
         ?.trim()
-        ?.takeIf { it.isNotEmpty() && it != "执行成功" && it != "执行失败" }
+        ?.takeIf { it.isNotEmpty() && it != execSuccessLabel && it != execFailedLabel }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -296,7 +346,9 @@ private fun ToolCallDetails(
                 val isShellCommand = block.toolName.lowercase() in listOf(
                     "bash", "sh", "shell", "adb", "adb_shell", "terminal", "cmd",
                 )
-                val parameterLabel = if (isShellCommand) "命令" else "参数" // i18n-ignore: UI 展示标签
+                val parameterLabel = stringResource(
+                    if (isShellCommand) UiR.string.conv_tool_section_command else UiR.string.conv_tool_section_arguments,
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -320,7 +372,7 @@ private fun ToolCallDetails(
 
                 if (block.command.endsWith("...")) {
                     Text(
-                        text = "参数可能已被截断", // i18n-ignore: 截断提示文案
+                        text = stringResource(UiR.string.conv_tool_params_truncated),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -338,7 +390,9 @@ private fun ToolCallDetails(
             val output = block.output
             if (!output.isNullOrBlank()) {
                 Text(
-                    text = if (block.isSuccess) "输出" else "错误输出",
+                    text = stringResource(
+                        if (block.isSuccess) UiR.string.conv_tool_section_output else UiR.string.conv_tool_section_error_output,
+                    ),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -350,11 +404,14 @@ private fun ToolCallDetails(
                 )
             } else if (!running) {
                 Text(
-                    text = when {
-                        block.executionStatus == NativeExecutionStatus.UNKNOWN -> "未收到工具结果"
-                        block.invocationOnly -> "此调用未附带返回值"
-                        else -> "无输出"
-                    },
+                    text = stringResource(
+                        when {
+                            block.executionStatus == NativeExecutionStatus.UNKNOWN || interrupted ->
+                                UiR.string.conv_tool_status_no_result
+                            block.invocationOnly -> UiR.string.conv_tool_invocation_no_return
+                            else -> UiR.string.conv_tool_no_output
+                        },
+                    ),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -410,6 +467,12 @@ private fun CopyCommandAction(command: String) {
     val coroutineScope = rememberCoroutineScope()
     var copied by remember { mutableStateOf(false) }
 
+    val copyCommandLabel = stringResource(UiR.string.conv_tool_action_copy_command)
+    val announcedCopied = stringResource(UiR.string.conv_tool_announced_copied)
+    val toastCopied = stringResource(UiR.string.conv_tool_toast_copied)
+    val copiedLabel = stringResource(UiR.string.conv_tool_btn_copied)
+    val copyLabel = stringResource(UiR.string.conv_tool_btn_copy)
+
     Row(
         modifier = Modifier
             .defaultMinSize(
@@ -417,11 +480,11 @@ private fun CopyCommandAction(command: String) {
                 minHeight = Dimensions.MinimumTouchTarget,
             )
             .clip(RoundedCornerShape(AppRadius.ExtraSmall))
-            .clickable(role = Role.Button, onClickLabel = "复制命令") {
+            .clickable(role = Role.Button, onClickLabel = copyCommandLabel) {
                 clipboardManager.setText(AnnotatedString(command))
                 copied = true
-                runCatching { view.announceForAccessibility("已复制命令") }
-                runCatching { Toast.makeText(context, "已复制到剪贴板", Toast.LENGTH_SHORT).show() }
+                runCatching { view.announceForAccessibility(announcedCopied) }
+                runCatching { Toast.makeText(context, toastCopied, Toast.LENGTH_SHORT).show() }
                 coroutineScope.launch {
                     delay(1500)
                     copied = false
@@ -433,7 +496,7 @@ private fun CopyCommandAction(command: String) {
     ) {
         Icon(
             imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
-            contentDescription = if (copied) "已复制" else "复制",
+            contentDescription = if (copied) copiedLabel else copyLabel,
             tint = if (copied) {
                 MaterialTheme.colorScheme.primary
             } else {
@@ -442,7 +505,7 @@ private fun CopyCommandAction(command: String) {
             modifier = Modifier.size(14.dp),
         )
         Text(
-            text = if (copied) "已复制" else "复制",
+            text = if (copied) copiedLabel else copyLabel,
             style = MaterialTheme.typography.labelSmall,
             color = if (copied) {
                 MaterialTheme.colorScheme.primary
