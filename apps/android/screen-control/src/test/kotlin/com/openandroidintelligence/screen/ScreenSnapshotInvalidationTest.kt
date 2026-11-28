@@ -179,6 +179,33 @@ class ScreenSnapshotInvalidationTest {
         }
     }
 
+    @Test fun 派发前目标失效时保持未执行回执() = runTest {
+        var staleBeforeDispatch = true
+        val backend = GenerationBackend(beforeNative = {
+            if (staleBeforeDispatch) throw ScreenOperationException("SCREEN_STALE_REFERENCE")
+        })
+        val port = NativePhoneScreen(RuntimeEnvironment.getApplication(), backend, unownedFrameSource())
+        installTargetWindow()
+        val initial = request("native-fence-observe")
+        val id = snapshotId(port.execute(initial, ControlOperation.DumpTree(ScreenReadQuery()), {}, { true }))
+        var dispatches = 0
+        val action = ControlOperation.Screen(id, ScreenAction.Global("back"))
+        val nativeCall = request("native-fence-action").copy(beforeDispatch = {
+            assertTrue(backend.effects.isEmpty())
+            dispatches++
+        })
+
+        val rejected = runCatching { port.execute(nativeCall, action, {}, { true }) }.exceptionOrNull()
+        assertEquals("SNAPSHOT_STALE", (rejected as? ControlRequestException)?.code)
+        assertTrue(backend.effects.isEmpty())
+        assertEquals(0, dispatches)
+
+        staleBeforeDispatch = false
+        port.execute(nativeCall, action, {}, { true })
+        assertEquals(listOf("back"), backend.effects)
+        assertEquals(1, dispatches)
+    }
+
     @Test
     fun 本机浮层的延迟状态事件和重复无包名事件不使同一个目标失效() {
         installTargetWindow()
@@ -658,8 +685,9 @@ class ScreenSnapshotInvalidationTest {
         private val targetPackage: String = TARGET_PACKAGE,
         private val onRead: (Int) -> Unit = {},
         observedWindows: ObservedWindows? = null,
+        beforeNative: () -> Unit = {},
     ) : ScreenBackend {
-        private val runtime = TestRuntime(targetPackage, observedWindows)
+        private val runtime = TestRuntime(targetPackage, observedWindows, beforeNative)
         private val delegate = AndroidScreenBackend(runtime)
         var reads = 0
         val effects get() = runtime.effects
@@ -679,6 +707,7 @@ class ScreenSnapshotInvalidationTest {
     private inner class TestRuntime(
         private val targetPackage: String,
         observedWindows: ObservedWindows?,
+        private val beforeNative: () -> Unit,
     ) : ScreenRuntime {
         val effects = mutableListOf<String>()
 
@@ -704,6 +733,7 @@ class ScreenSnapshotInvalidationTest {
         override suspend fun gesture(points: List<Pair<Int, Int>>, durationMs: Long, generation: Long,
             beforeDispatch: () -> Unit, drag: Boolean): Boolean = false
         override fun global(action: String, generation: Long, beforeDispatch: () -> Unit): Boolean {
+            beforeNative()
             beforeDispatch()
             effects += action
             return true

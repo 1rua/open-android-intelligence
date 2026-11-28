@@ -47,12 +47,16 @@ class NativePhoneScreen internal constructor(
             ControlOperation.CaptureSom -> captureSom(context, revalidate)
             is ControlOperation.Screen -> {
                 val saved = snapshots[operation.snapshotId]?.takeIf { it.task == context.scope.task } ?: throw ControlRequestException("SNAPSHOT_STALE")
-                ScreenHostRegistry.controlLeases.withLease("remote:${context.scope.key.storageKey}", System.currentTimeMillis() + 5 * 60_000,
-                        { guard(revalidate) }) {
+                ScreenHostRegistry.controlLeases.withLease(
+                    requestId = "remote:${context.scope.key.storageKey}",
+                    expiresAtEpochMs = System.currentTimeMillis() + 5 * 60_000,
+                    revalidate = { guard(revalidate) },
+                    recordDispatch = context.beforeDispatch,
+                ) {
                     // 本机批准会换成执行浮层。首次布局前保护范围为全屏，等待已有的窗口布局信号后再复核目标。
                     awaitControlLayout()
                     guard(revalidate)
-                    val result = backend.execute(saved.screen.revision, operation.action) { guard(revalidate); context.beforeDispatch() }
+                    val result = backend.execute(saved.screen.revision, operation.action) { guard(revalidate) }
                     val settled = ScreenQuietWait(ScreenAccessibilityConnection.layoutEvents).await()
                     guard(revalidate)
                     val readAllowed = mayRead()

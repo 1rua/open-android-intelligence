@@ -55,3 +55,7 @@ DSH 手机的数据插件和原生屏幕曾只识别「允许只读」的免确�
 屏幕树曾为选入的每个节点重新编码整份结果。Java 21 下用含中文、转义字符和表情的同一份 512 节点样本测量了 65 次回执选点。改用逐节点字节计数后，中位耗时从约 17.8 毫秒降到 0.84 毫秒，每次中位分配量从约 66.2 MB 降到 2.3 MB。两份回执均为 115 节点及 47,723 字节，SHA-256 一致。带包名的外部应用内容事件直接使快照失效。若没有其他待复核的浮层窗口 ID，可省去主线程逐窗查询根节点。两条路径共享这一实现。[回执选点](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/ScreenTreeReader.kt#L109) · [窗口事件](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/ScreenAccessibilityService.kt#L198)
 
 样本计时来自本机 JVM。新包的 Note20 Ultra 帧表现和双路径操控仍待验证。调试端口拒绝连接，已登录的 DSH 设备目录也未返回该手机为在线主机。
+
+## 操控派发回执
+
+`13861` 仍出现长按以 `outcome_unknown/SNAPSHOT_STALE` 结束的样本。自动化在原生端口复现了相同错误码，且该样本在 Android 接收动作前便写了一次派发记录。现在由原生控制租约紧邻系统调用写入派发记录。回归分别验证了派发前目标失效时不写记录，以及确认派发时写入一次记录。真实长按的后续复测需要恢复真机连接。[原生端口](../../apps/android/screen-control/src/main/kotlin/com/openandroidintelligence/screen/NativePhoneScreen.kt#L48) · [派发检查](../../apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/ScreenControlLease.kt#L30)
